@@ -1,0 +1,150 @@
+import dotenv from 'dotenv';
+dotenv.config({ override: true });
+import express from 'express';
+import cors from 'cors';
+import cron from 'node-cron';
+
+// ─── Validação de variáveis de ambiente obrigatórias ─────────────────────────
+
+const REQUIRED_ENV = ['JWT_SECRET', 'ENCRYPTION_KEY', 'DATABASE_URL'] as const;
+
+for (const key of REQUIRED_ENV) {
+  if (!process.env[key]) {
+    console.error(`[FATAL] Variável de ambiente obrigatória ausente: ${key}`);
+    process.exit(1);
+  }
+}
+
+if (process.env.JWT_SECRET!.length < 32) {
+  console.error('[FATAL] JWT_SECRET deve ter no mínimo 32 caracteres');
+  process.exit(1);
+}
+
+if (process.env.ENCRYPTION_KEY!.length < 32) {
+  console.error('[FATAL] ENCRYPTION_KEY deve ter no mínimo 32 caracteres');
+  process.exit(1);
+}
+import { PrismaClient } from '@prisma/client';
+import authRoutes from './routes/auth.routes.js';
+import campaignRoutes from './routes/campaigns.routes.js';
+import copiesRoutes from './routes/copies.routes.js';
+import audiencesRoutes from './routes/audiences.routes.js';
+import abTestsRoutes from './routes/abtests.routes.js';
+import automationsRoutes from './routes/automations.routes.js';
+import mcpRoutes from './routes/mcp.routes.js';
+import analysisRoutes from './routes/analysis.routes.js';
+import instagramRoutes from './routes/instagram.routes.js';
+import { SyncService } from './services/sync.service.js';
+
+const app = express();
+const prisma = new PrismaClient();
+const PORT = process.env.PORT ?? 3001;
+
+app.use(cors({ origin: process.env.FRONTEND_URL ?? 'http://localhost:5173' }));
+app.use(express.json());
+
+// ─── Rotas ────────────────────────────────────────────────────────────────────
+
+app.use('/api/auth', authRoutes);
+app.use('/api/campaigns', campaignRoutes);
+app.use('/api/copies', copiesRoutes);
+app.use('/api/audiences', audiencesRoutes);
+app.use('/api/ab-tests', abTestsRoutes);
+app.use('/api/automations', automationsRoutes);
+app.use('/api/mcp', mcpRoutes);
+app.use('/api/analysis', analysisRoutes);
+app.use('/api/instagram', instagramRoutes);
+
+app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date() }));
+
+// ─── Cron Jobs ────────────────────────────────────────────────────────────────
+
+async function runSyncForAllConnectedUsers(
+  task: (svc: SyncService) => Promise<void>,
+): Promise<void> {
+  const connections = await prisma.mCPConnection.findMany({
+    where: { connected: true },
+  });
+
+  await Promise.allSettled(
+    connections.map(async (conn) => {
+      const svc = new SyncService(conn.userId);
+      await task(svc);
+    }),
+  );
+}
+
+// A cada hora — sincroniza métricas
+cron.schedule('0 * * * *', () => {
+  console.log('[Cron] Sincronizando métricas...');
+  runSyncForAllConnectedUsers((svc) => svc.syncPerformanceMetrics()).catch(console.error);
+});
+
+// A cada 15 minutos — sincroniza status + executa automações
+cron.schedule('*/15 * * * *', async () => {
+  console.log('[Cron] Sincronizando status...');
+  await runSyncForAllConnectedUsers((svc) => svc.syncCampaignStatuses()).catch(console.error);
+
+  // Executa regras de automação ativas para todos os usuários conectados
+  const connections = await prisma.mCPConnection.findMany({ where: { connected: true } });
+  for (const conn of connections) {
+    const rules = await prisma.automationRule.findMany({
+      where: { userId: conn.userId, active: true },
+    });
+    if (!rules.length) continue;
+
+    const { createMetaMCPService } = await import('./services/meta.mcp.service.js');
+    const svc = await createMetaMCPService(conn.userId);
+    const today = new Date().toISOString().split('T')[0];
+
+    for (const rule of rules) {
+      try {
+        const since = new Date(Date.now() - rule.window * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        const range = { since, until: today };
+
+        let insights;
+        if (rule.targetType === 'campaign') insights = await svc.getCampaignInsights(rule.targetId, range);
+        else if (rule.targetType === 'adset') insights = await svc.getAdSetInsights(rule.targetId, range);
+        else insights = await svc.getAdInsights(rule.targetId, range);
+
+        const val = (insights as unknown as Record<string, number>)[rule.trigger] ?? 0;
+        const triggered =
+          (rule.condition === 'gt' && val > rule.value) ||
+          (rule.condition === 'lt' && val < rule.value) ||
+          (rule.condition === 'gte' && val >= rule.value) ||
+          (rule.condition === 'lte' && val <= rule.value);
+
+        if (triggered) {
+          if (rule.action === 'PAUSE') {
+            if (rule.targetType === 'adset') await svc.updateAdSetStatus(rule.targetId, 'PAUSED');
+            else if (rule.targetType === 'ad') await svc.updateAdStatus(rule.targetId, 'PAUSED');
+          } else if (rule.action === 'ACTIVATE') {
+            if (rule.targetType === 'adset') await svc.updateAdSetStatus(rule.targetId, 'ACTIVE');
+            else if (rule.targetType === 'ad') await svc.updateAdStatus(rule.targetId, 'ACTIVE');
+          } else if (rule.action === 'SCALE_UP') {
+            await svc.updateCampaignBudget(rule.targetId, val * 1.2);
+          } else if (rule.action === 'SCALE_DOWN') {
+            await svc.updateCampaignBudget(rule.targetId, val * 0.8);
+          }
+
+          await prisma.ruleLog.create({
+            data: { ruleId: rule.id, action: rule.action, metrics: JSON.stringify(insights) },
+          });
+          console.log(`[Automação] Regra "${rule.name}" executada — ${rule.action} (${rule.trigger}=${val})`);
+        }
+
+        await prisma.automationRule.update({ where: { id: rule.id }, data: { lastChecked: new Date() } });
+      } catch (err) {
+        console.error(`[Automação] Erro na regra "${rule.name}":`, err);
+      }
+    }
+    await svc.disconnect();
+  }
+});
+
+// ─── Start ────────────────────────────────────────────────────────────────────
+
+app.listen(PORT, () => {
+  console.log(`✅ Backend rodando em http://localhost:${PORT}`);
+  console.log(`   Crons: métricas (1h) | status + automações (15min)`);
+});

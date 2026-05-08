@@ -1,0 +1,238 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String
+  createdAt DateTime @default(now())
+
+  mcpConnection MCPConnection?
+}
+
+model Campaign {
+  id        String @id @default(cuid())
+  userId    String
+  name      String
+  product   String
+  objective String
+  budget    Float
+  status    String @default("draft")
+
+  // Integração Meta
+  metaCampaignId  String?   @unique
+  metaAdAccountId String?
+  metaStatus      String?
+  publishedAt     DateTime?
+  lastSyncAt      DateTime?
+
+  // Métricas sincronizadas do Meta
+  metaSpend       Float?
+  metaImpressions Int?
+  metaClicks      Int?
+  metaConversions Int?
+  metaRoas        Float?
+  metaCpc         Float?
+  metaCpl         Float?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  copies    Copy[]
+  audiences Audience[]
+  briefs    CreativeBrief[]
+  abTests   ABTest[]
+  adSets    AdSet[]
+}
+
+model AdSet {
+  id               String   @id @default(cuid())
+  campaignId       String
+  campaign         Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  name             String
+  dailyBudget      Float
+  targeting        String
+  optimizationGoal String
+
+  // Meta IDs
+  metaAdSetId String? @unique
+  metaStatus  String?
+
+  // Métricas
+  metaSpend     Float?
+  metaRoas      Float?
+  metaCpl       Float?
+  metaFrequency Float?
+
+  ads       Ad[]
+  createdAt DateTime @default(now())
+}
+
+model Ad {
+  id      String @id @default(cuid())
+  adSetId String
+  adSet   AdSet  @relation(fields: [adSetId], references: [id], onDelete: Cascade)
+  name    String
+
+  headline String
+  bodyText String
+  cta      String
+  imageUrl String?
+  videoUrl String?
+
+  // Meta IDs
+  metaAdId       String? @unique
+  metaStatus     String?
+  metaCreativeId String?
+
+  // Métricas
+  metaCtr   Float?
+  metaCpc   Float?
+  metaSpend Float?
+
+  createdAt DateTime @default(now())
+}
+
+model MCPConnection {
+  id              String    @id @default(cuid())
+  userId          String    @unique
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  metaAccessToken String
+  adAccountIds    String
+  connected       Boolean   @default(false)
+  lastConnectedAt DateTime?
+  expiresAt       DateTime?
+  mcpUrl          String?
+  mcpProvider     String?   // meta / pipeboard / zapier
+  createdAt       DateTime  @default(now())
+}
+
+model SyncLog {
+  id        String   @id @default(cuid())
+  type      String
+  status    String
+  details   String?
+  duration  Int?
+  createdAt DateTime @default(now())
+}
+
+model AutomationRule {
+  id         String    @id @default(cuid())
+  userId     String
+  name       String
+  campaignId String?
+  targetId   String
+  targetType String
+  trigger    String
+  condition  String
+  value      Float
+  window     Int
+  action     String
+  alertEmail String?
+  active     Boolean   @default(true)
+  lastChecked DateTime?
+  createdAt  DateTime  @default(now())
+
+  logs RuleLog[]
+}
+
+model RuleLog {
+  id         String         @id @default(cuid())
+  ruleId     String
+  rule       AutomationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  action     String
+  metrics    String?
+  executedAt DateTime       @default(now())
+}
+
+model Copy {
+  id         String    @id @default(cuid())
+  campaignId String?
+  campaign   Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  userId     String
+  format     String
+  framework  String
+  headline   String
+  body       String
+  cta        String
+  score      Int?
+  favorite   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+}
+
+model Audience {
+  id             String    @id @default(cuid())
+  campaignId     String?
+  campaign       Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  userId         String
+  name           String
+  interests      String
+  behaviors      String?
+  ageMin         Int
+  ageMax         Int
+  gender         String
+  locations      String
+  estimatedSize  Int?
+  metaAudienceId String?
+  createdAt      DateTime  @default(now())
+}
+
+model CreativeBrief {
+  id               String    @id @default(cuid())
+  campaignId       String?
+  campaign         Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  userId           String
+  concept          String
+  midjourneyPrompt String?
+  palette          String
+  dimensions       String
+  elements         String
+  createdAt        DateTime  @default(now())
+}
+
+model ABTest {
+  id         String    @id @default(cuid())
+  campaignId String?
+  campaign   Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  userId     String
+  name       String
+  hypothesis String
+  variable   String
+  variantA   String
+  variantB   String
+  budget     Float
+  duration   Int
+  metric     String
+  status     String    @default("running")
+  winner     String?
+  createdAt  DateTime  @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String
+  action    String
+  resource  String
+  resourceId String?
+  details   String?
+  ip        String?
+  createdAt DateTime @default(now())
+}
+
+model CampaignInsight {
+  id              String   @id @default(cuid())
+  userId          String
+  type            String   // 'full_analysis' | 'suggestion'
+  title           String
+  summary         String
+  content         String   // JSON completo da análise
+  campaignsCount  Int      @default(0)
+  createdAt       DateTime @default(now())
+}
