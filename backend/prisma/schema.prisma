@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = env("DATABASE_PROVIDER")
   url      = env("DATABASE_URL")
 }
 
@@ -13,6 +13,14 @@ model User {
   password  String
   name      String
   createdAt DateTime @default(now())
+
+  // Redefinição de senha via token
+  passwordResetToken  String?
+  passwordResetExpiry DateTime?
+
+  // Marca o momento da última troca de senha.
+  // Tokens emitidos ANTES desta data são considerados inválidos (revogados).
+  passwordChangedAt DateTime?
 
   mcpConnection MCPConnection?
 }
@@ -61,6 +69,10 @@ model AdSet {
   targeting        String
   optimizationGoal String
 
+  // Público-alvo salvo (opcional)
+  audienceId String?
+  audience   Audience? @relation(fields: [audienceId], references: [id], onDelete: SetNull)
+
   // Meta IDs
   metaAdSetId String? @unique
   metaStatus  String?
@@ -81,11 +93,12 @@ model Ad {
   adSet   AdSet  @relation(fields: [adSetId], references: [id], onDelete: Cascade)
   name    String
 
-  headline String
-  bodyText String
-  cta      String
-  imageUrl String?
-  videoUrl String?
+  headline       String
+  bodyText       String
+  cta            String
+  imageUrl       String?
+  videoUrl       String?
+  destinationUrl String?
 
   // Meta IDs
   metaAdId       String? @unique
@@ -116,6 +129,7 @@ model MCPConnection {
 
 model SyncLog {
   id        String   @id @default(cuid())
+  userId    String   @default("")   // retrocompatível — registros antigos ficam com ""
   type      String
   status    String
   details   String?
@@ -182,6 +196,8 @@ model Audience {
   estimatedSize  Int?
   metaAudienceId String?
   createdAt      DateTime  @default(now())
+
+  adSets AdSet[]
 }
 
 model CreativeBrief {
@@ -235,4 +251,63 @@ model CampaignInsight {
   content         String   // JSON completo da análise
   campaignsCount  Int      @default(0)
   createdAt       DateTime @default(now())
+}
+
+model CreativeAnalysis {
+  id                     String   @id @default(cuid())
+  userId                 String
+  adId                   String?
+  campaignId             String?
+  adAccountId            String?
+  filePath               String
+  fileType               String
+  fileName               String
+  copyHeadline           String?
+  copyBody               String?
+  copyCta                String?
+  overallScore           Float
+  approvalRecommendation String
+  approvalReason         String
+  summary                String
+  criteriaScores         String
+  formatScores           String
+  strengths              String
+  improvements           String
+  realCtr                Float?
+  realCpl                Float?
+  realRoas               Float?
+  realImpressions        Int?
+  isComparison           Boolean  @default(false)
+  comparedWithId         String?
+  comparisonWinner       String?
+  comparisonDetails      String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+}
+
+// Histórico de mensagens do chat com o Agente IA
+model ChatMessage {
+  id        String   @id @default(cuid())
+  userId    String
+  role      String   // 'user' | 'assistant'
+  content   String
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+// Snapshot diário de métricas agregadas de todas as campanhas do usuário.
+// Gravado a cada sync (cron de 1h). Usado para o gráfico do dashboard.
+model DailyMetric {
+  id              String   @id @default(cuid())
+  userId          String
+  date            String   // YYYY-MM-DD
+  spend           Float    @default(0)
+  impressions     Int      @default(0)
+  clicks          Int      @default(0)
+  conversions     Int      @default(0)
+  activeCampaigns Int      @default(0)
+  createdAt       DateTime @default(now())
+
+  @@unique([userId, date])
 }
