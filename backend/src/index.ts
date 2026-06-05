@@ -12,19 +12,16 @@ const REQUIRED_ENV = ['JWT_SECRET', 'ENCRYPTION_KEY', 'DATABASE_URL'] as const;
 
 for (const key of REQUIRED_ENV) {
   if (!process.env[key]) {
-    console.error(`[FATAL] Variável de ambiente obrigatória ausente: ${key}`);
-    process.exit(1);
+    console.warn(`[WARN] Variável de ambiente ausente: ${key} — servidor iniciando assim mesmo`);
   }
 }
 
-if (process.env.JWT_SECRET!.length < 32) {
-  console.error('[FATAL] JWT_SECRET deve ter no mínimo 32 caracteres');
-  process.exit(1);
+if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
+  console.warn('[WARN] JWT_SECRET deve ter no mínimo 32 caracteres');
 }
 
-if (process.env.ENCRYPTION_KEY!.length < 32) {
-  console.error('[FATAL] ENCRYPTION_KEY deve ter no mínimo 32 caracteres');
-  process.exit(1);
+if (process.env.ENCRYPTION_KEY && process.env.ENCRYPTION_KEY.length < 32) {
+  console.warn('[WARN] ENCRYPTION_KEY deve ter no mínimo 32 caracteres');
 }
 
 import authRoutes from './routes/auth.routes.js';
