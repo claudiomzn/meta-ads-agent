@@ -166,6 +166,58 @@ router.get('/status', async (req: AuthRequest, res: Response) => {
   res.json(status);
 });
 
+// ─── Auto-connect usando token do servidor ────────────────────────────────────
+router.post('/auto-connect', async (req: AuthRequest, res: Response) => {
+  const accessToken = process.env.META_ACCESS_TOKEN;
+  const mcpUrl = process.env.META_MCP_URL ?? '';
+
+  if (!accessToken) {
+    res.status(400).json({ error: 'META_ACCESS_TOKEN não configurado no servidor' });
+    return;
+  }
+
+  // Busca contas de anúncios via Graph API
+  const graphResp = await fetch(
+    `https://graph.facebook.com/v20.0/me/adaccounts?fields=id,name,account_status&access_token=${accessToken}`
+  );
+  const graphData = await graphResp.json() as { data?: Array<{ id: string; name: string }> };
+
+  if (!graphResp.ok || !graphData.data?.length) {
+    res.status(400).json({
+      error: 'Nenhuma conta de anúncios encontrada. Verifique o META_ACCESS_TOKEN.',
+      detail: graphData,
+    });
+    return;
+  }
+
+  const adAccountIds = graphData.data.map((a) => a.id.replace('act_', ''));
+
+  await prisma.mCPConnection.upsert({
+    where: { userId: req.userId! },
+    update: {
+      metaAccessToken: encrypt(accessToken),
+      mcpUrl,
+      mcpProvider: 'pipeboard',
+      adAccountIds: JSON.stringify(adAccountIds),
+      connected: true,
+      lastConnectedAt: new Date(),
+    },
+    create: {
+      userId: req.userId!,
+      metaAccessToken: encrypt(accessToken),
+      mcpUrl,
+      mcpProvider: 'pipeboard',
+      adAccountIds: JSON.stringify(adAccountIds),
+      connected: true,
+      lastConnectedAt: new Date(),
+    },
+  });
+
+  await auditLog({ userId: req.userId!, action: 'MCP_AUTO_CONNECT', resource: 'mcp_connection' });
+
+  res.json({ success: true, accounts: graphData.data, adAccountIds });
+});
+
 // ─── Contas ───────────────────────────────────────────────────────────────────
 
 router.get('/accounts', async (req: AuthRequest, res: Response) => {
