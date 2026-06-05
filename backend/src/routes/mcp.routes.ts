@@ -1,16 +1,21 @@
+import prisma from '../lib/prisma.js';
 import { Router, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+
 import crypto from 'crypto';
+import path from 'path';
+import fs from 'fs';
 import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { publishRateLimit } from '../middleware/rateLimit.middleware.js';
 import { MetaMCPService, PublishValidationError, createMetaMCPService } from '../services/meta.mcp.service.js';
+import { MediaService } from '../services/media.service.js';
 import { SyncService } from '../services/sync.service.js';
 import { encrypt } from '../services/crypto.service.js';
 import { auditLog } from '../services/audit.service.js';
 
+const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
+
 const router = Router();
-const prisma = new PrismaClient();
 
 // ─── Webhook Meta (sem autenticação — chamado pelo Meta) ──────────────────────
 
@@ -28,12 +33,25 @@ router.get('/webhook', (req: AuthRequest, res: Response) => {
 
 router.post('/webhook', async (req: AuthRequest, res: Response) => {
   const signature = req.headers['x-hub-signature-256'] as string;
+  const appSecret = process.env.META_APP_SECRET;
 
-  if (process.env.META_APP_SECRET && signature) {
+  if (!appSecret) {
+    // Sem APP_SECRET configurado: rejeita em produção, aceita em desenvolvimento
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[Webhook] META_APP_SECRET não configurado — requisição bloqueada em produção');
+      res.status(401).json({ error: 'Webhook não configurado corretamente' });
+      return;
+    }
+    console.warn('[Webhook] META_APP_SECRET ausente — aceitando sem verificação (desenvolvimento)');
+  } else {
+    if (!signature) {
+      res.status(401).json({ error: 'Assinatura ausente' });
+      return;
+    }
     const expected =
       'sha256=' +
       crypto
-        .createHmac('sha256', process.env.META_APP_SECRET)
+        .createHmac('sha256', appSecret)
         .update(JSON.stringify(req.body))
         .digest('hex');
 
@@ -187,6 +205,51 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
   try {
     const svc = await createMetaMCPService(req.userId!);
 
+    // ── B + E: Upload local images and videos to Meta before building the plan ──
+    const imageHashMap = new Map<string, string>(); // localUrl → Meta image hash
+    const videoIdMap   = new Map<string, string>(); // localUrl → Meta video ID
+    const mediaSvc = new MediaService(req.userId!);
+
+    for (const adSet of campaign.adSets) {
+      for (const ad of adSet.ads) {
+        // Imagens
+        if (ad.imageUrl?.startsWith('/api/media/file/') && !imageHashMap.has(ad.imageUrl)) {
+          const filename = ad.imageUrl.replace('/api/media/file/', '');
+          const filePath = path.join(UPLOAD_DIR, filename);
+          if (fs.existsSync(filePath)) {
+            try {
+              send({ type: 'progress', message: `Enviando imagem "${filename}" para o Meta...` });
+              const uploaded = await mediaSvc.uploadImage(filePath, filename);
+              if (uploaded.hash) {
+                imageHashMap.set(ad.imageUrl, uploaded.hash);
+                send({ type: 'progress', message: `Imagem enviada (hash: ${uploaded.hash.slice(0, 8)}...)` });
+              }
+            } catch {
+              send({ type: 'progress', message: `Aviso: falha no upload da imagem "${filename}" — continuando sem ela` });
+            }
+          }
+        }
+        // Vídeos
+        if (ad.videoUrl?.startsWith('/api/media/file/') && !videoIdMap.has(ad.videoUrl)) {
+          const filename = ad.videoUrl.replace('/api/media/file/', '');
+          const filePath = path.join(UPLOAD_DIR, filename);
+          if (fs.existsSync(filePath)) {
+            try {
+              send({ type: 'progress', message: `Enviando vídeo "${filename}" para o Meta...` });
+              const uploaded = await mediaSvc.uploadVideo(filePath, filename);
+              if (uploaded.videoId) {
+                videoIdMap.set(ad.videoUrl, uploaded.videoId);
+                send({ type: 'progress', message: `Vídeo enviado (ID: ${uploaded.videoId})` });
+              }
+            } catch {
+              send({ type: 'progress', message: `Aviso: falha no upload do vídeo "${filename}" — continuando sem ele` });
+            }
+          }
+        }
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────────
+
     const plan = {
       localId: campaign.id,
       adAccountId: req.body.adAccountId ?? campaign.metaAdAccountId ?? '',
@@ -198,14 +261,25 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
         targeting: JSON.parse(as.targeting),
         optimizationGoal: as.optimizationGoal,
         billingEvent: 'IMPRESSIONS',
-        ads: as.ads.map((ad) => ({
-          name: ad.name,
-          headline: ad.headline,
-          bodyText: ad.bodyText,
-          ctaType: ad.cta,
-          destinationUrl: req.body.destinationUrl ?? 'https://example.com',
-          imageUrl: ad.imageUrl ?? undefined,
-        })),
+        ads: as.ads.map((ad) => {
+          const imageHash = ad.imageUrl ? imageHashMap.get(ad.imageUrl) : undefined;
+          const videoId   = ad.videoUrl ? videoIdMap.get(ad.videoUrl) : undefined;
+          return {
+            name: ad.name,
+            headline: ad.headline,
+            bodyText: ad.bodyText,
+            ctaType: ad.cta,
+            destinationUrl: ad.destinationUrl ?? req.body.destinationUrl ?? 'https://example.com',
+            // Imagem: usa hash (upload feito) → fallback URL original
+            ...(imageHash
+              ? { imageHash }
+              : ad.imageUrl ? { imageUrl: ad.imageUrl } : {}),
+            // Vídeo: usa videoId (upload feito) → fallback URL original
+            ...(videoId
+              ? { videoId }
+              : ad.videoUrl ? { videoUrl: ad.videoUrl } : {}),
+          };
+        }),
       })),
     };
 
@@ -255,7 +329,7 @@ router.patch('/campaigns/:id/status', async (req: AuthRequest, res: Response) =>
   }
 
   const svc = await createMetaMCPService(req.userId!);
-  await svc.updateAdSetStatus(id, status);
+  await svc.updateCampaignStatus(id, status);  // corrigido: era updateAdSetStatus
   await svc.disconnect();
 
   await auditLog({
@@ -278,6 +352,15 @@ router.patch('/campaigns/:id/budget', async (req: AuthRequest, res: Response) =>
     return;
   }
 
+  // Verifica ownership antes de chamar a API do Meta
+  const campaign = await prisma.campaign.findFirst({
+    where: { metaCampaignId: id, userId: req.userId! },
+  });
+  if (!campaign) {
+    res.status(404).json({ error: 'Campanha não encontrada' });
+    return;
+  }
+
   const svc = await createMetaMCPService(req.userId!);
   await svc.updateCampaignBudget(id, budget);
   await svc.disconnect();
@@ -296,6 +379,15 @@ router.patch('/campaigns/:id/budget', async (req: AuthRequest, res: Response) =>
 router.post('/adsets/:id/duplicate', publishRateLimit, async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const { newBudget } = req.body;
+
+  // Verifica ownership — o adSet deve pertencer a uma campanha do usuário
+  const adSet = await prisma.adSet.findFirst({
+    where: { metaAdSetId: id, campaign: { userId: req.userId! } },
+  });
+  if (!adSet) {
+    res.status(404).json({ error: 'Conjunto de anúncios não encontrado' });
+    return;
+  }
 
   const svc = await createMetaMCPService(req.userId!);
   const result = await svc.duplicateAdSet(id, newBudget);
@@ -340,6 +432,7 @@ router.post('/sync/now', async (req: AuthRequest, res: Response) => {
 
 router.get('/sync/log', async (req: AuthRequest, res: Response) => {
   const logs = await prisma.syncLog.findMany({
+    where: { userId: req.userId! },
     orderBy: { createdAt: 'desc' },
     take: 50,
   });

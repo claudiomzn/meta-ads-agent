@@ -1,10 +1,10 @@
+import prisma from '../lib/prisma.js';
 import { Router, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { AIService } from '../services/ai.service.js';
 
 const router = Router();
-const prisma = new PrismaClient();
 const ai = new AIService();
 
 router.use(authMiddleware);
@@ -40,6 +40,58 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
   });
 
   res.status(201).json(copy);
+});
+
+// Score de copy com IA — não salva, só analisa
+router.post('/score', async (req: AuthRequest, res: Response) => {
+  const { headline, body, cta, objective, product } = req.body as {
+    headline?: string; body?: string; cta?: string; objective?: string; product?: string;
+  };
+
+  if (!headline || !body || !cta) {
+    res.status(400).json({ error: 'headline, body e cta são obrigatórios' });
+    return;
+  }
+
+  try {
+    const result = await ai.scoreCopy({ headline, body, cta, objective, product });
+    res.json(result);
+  } catch (err) {
+    console.error('[score] Erro ao analisar copy:', err);
+    // Retorna score neutro em vez de 500 para não quebrar a UI
+    res.json({
+      score: 0,
+      strengths: [],
+      issues: ['Não foi possível analisar esta copy agora. Tente novamente.'],
+      suggestion: '',
+    });
+  }
+});
+
+// Melhora uma copy baseado nos problemas da análise
+router.post('/improve', async (req: AuthRequest, res: Response) => {
+  const { headline, body, cta, objective, product, issues, suggestion } = req.body as {
+    headline?: string; body?: string; cta?: string;
+    objective?: string; product?: string;
+    issues?: string[]; suggestion?: string;
+  };
+
+  if (!headline || !body || !cta) {
+    res.status(400).json({ error: 'headline, body e cta são obrigatórios' });
+    return;
+  }
+
+  try {
+    const result = await ai.improveCopy({
+      headline, body, cta, objective, product,
+      issues: issues ?? [],
+      suggestion: suggestion ?? '',
+    });
+    res.json(result);
+  } catch (err) {
+    console.error('[improve] Erro:', err);
+    res.status(500).json({ error: 'Não foi possível melhorar a copy agora. Tente novamente.' });
+  }
 });
 
 router.patch('/:id/favorite', async (req: AuthRequest, res: Response) => {

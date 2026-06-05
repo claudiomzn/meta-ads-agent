@@ -1,5 +1,7 @@
+import prisma from './lib/prisma.js';
 import dotenv from 'dotenv';
 dotenv.config({ override: true });
+import 'express-async-errors'; // captura erros async em Express 4 automaticamente
 import express from 'express';
 import cors from 'cors';
 import cron from 'node-cron';
@@ -24,7 +26,7 @@ if (process.env.ENCRYPTION_KEY!.length < 32) {
   console.error('[FATAL] ENCRYPTION_KEY deve ter no mínimo 32 caracteres');
   process.exit(1);
 }
-import { PrismaClient } from '@prisma/client';
+
 import authRoutes from './routes/auth.routes.js';
 import campaignRoutes from './routes/campaigns.routes.js';
 import copiesRoutes from './routes/copies.routes.js';
@@ -34,10 +36,13 @@ import automationsRoutes from './routes/automations.routes.js';
 import mcpRoutes from './routes/mcp.routes.js';
 import analysisRoutes from './routes/analysis.routes.js';
 import instagramRoutes from './routes/instagram.routes.js';
+import mediaRoutes from './routes/media.routes.js';
+import dashboardRoutes from './routes/dashboard.routes.js';
 import { SyncService } from './services/sync.service.js';
+import creativeAnalysisRoutes from './routes/creative-analysis.routes.js';
+import agentRoutes from './routes/agent.routes.js';
 
 const app = express();
-const prisma = new PrismaClient();
 const PORT = process.env.PORT ?? 3001;
 
 app.use(cors({ origin: process.env.FRONTEND_URL ?? 'http://localhost:5173' }));
@@ -54,8 +59,20 @@ app.use('/api/automations', automationsRoutes);
 app.use('/api/mcp', mcpRoutes);
 app.use('/api/analysis', analysisRoutes);
 app.use('/api/instagram', instagramRoutes);
+app.use('/api/media', mediaRoutes);
+app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/creative-analysis', creativeAnalysisRoutes);
+app.use('/api/agent', agentRoutes);
 
 app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date() }));
+
+// ─── Middleware global de erros ────────────────────────────────────────────────
+// Captura qualquer erro não tratado em rotas async e retorna JSON limpo
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[Error]', err.message ?? err);
+  const status = (err as { status?: number }).status ?? 500;
+  res.status(status).json({ error: err.message ?? 'Internal Server Error' });
+});
 
 // ─── Cron Jobs ────────────────────────────────────────────────────────────────
 

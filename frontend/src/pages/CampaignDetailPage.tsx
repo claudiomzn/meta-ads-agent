@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, ExternalLink, TrendingUp, DollarSign, MousePointerClick, Eye } from 'lucide-react';
-import { useCampaign } from '@/hooks/useCampaigns';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { ArrowLeft, ExternalLink, TrendingUp, DollarSign, MousePointerClick, Eye, Pencil, Copy } from 'lucide-react';
+import { useCampaign, useDuplicateCampaign } from '@/hooks/useCampaigns';
+import { CopyScoreWidget } from '@/components/CopyScoreWidget';
 import { useMCPStatus } from '@/hooks/useMCP';
 import { PublishButton } from '@/components/PublishButton';
 import { Badge } from '@/components/ui/badge';
@@ -9,13 +10,18 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/utils';
+import { AdPreviewModal } from '@/components/preview/AdPreviewModal';
+import type { AdPreviewData } from '@/utils/preview-checklist';
 
 export default function CampaignDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { data: campaign, isLoading } = useCampaign(id!);
   const { data: mcpStatus } = useMCPStatus();
+  const duplicateCampaign = useDuplicateCampaign();
   const [adAccountId, setAdAccountId] = useState('');
   const [destinationUrl, setDestinationUrl] = useState('');
+  const [previewAd, setPreviewAd] = useState<AdPreviewData | null>(null);
 
   if (isLoading) return <div className="text-muted-foreground text-sm">Carregando...</div>;
   if (!campaign) return <div className="text-destructive">Campanha não encontrada</div>;
@@ -51,17 +57,39 @@ export default function CampaignDetailPage() {
           <p className="mt-1 text-muted-foreground">{campaign.product} · {campaign.objective}</p>
         </div>
 
-        {isPublished && campaign.metaCampaignId && (
-          <a
-            href={`https://business.facebook.com/adsmanager/manage/campaigns?selected_campaign_ids=${campaign.metaCampaignId}`}
-            target="_blank"
-            rel="noreferrer"
-            className="flex items-center gap-1.5 text-sm text-[#1877F2] hover:underline"
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {!isPublished && (
+            <Button asChild variant="outline" size="sm">
+              <Link to={`/campaigns/${id}/edit`}>
+                <Pencil className="h-3.5 w-3.5 mr-1" /> Editar
+              </Link>
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={duplicateCampaign.isPending}
+            onClick={() =>
+              duplicateCampaign.mutate(campaign.id, {
+                onSuccess: (copy) => navigate(`/campaigns/${copy.id}`),
+              })
+            }
           >
-            <ExternalLink className="h-3.5 w-3.5" />
-            Ver no Gerenciador
-          </a>
-        )}
+            <Copy className="h-3.5 w-3.5 mr-1" />
+            {duplicateCampaign.isPending ? 'Duplicando...' : 'Duplicar'}
+          </Button>
+          {isPublished && campaign.metaCampaignId && (
+            <a
+              href={`https://business.facebook.com/adsmanager/manage/campaigns?selected_campaign_ids=${campaign.metaCampaignId}`}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-1.5 text-sm text-[#1877F2] hover:underline"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              Ver no Gerenciador
+            </a>
+          )}
+        </div>
       </div>
 
       {/* Métricas reais */}
@@ -121,23 +149,51 @@ export default function CampaignDetailPage() {
                 </div>
 
                 {/* Anúncios */}
-                <div className="space-y-2 pl-4 border-l-2 border-gray-100">
+                <div className="space-y-3 pl-4 border-l-2 border-gray-100">
                   {as.ads.map((ad) => (
-                    <div key={ad.id} className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium truncate">{ad.headline}</p>
-                        <p className="text-xs text-muted-foreground truncate">{ad.bodyText}</p>
+                    <div key={ad.id} className="space-y-2">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium truncate">{ad.headline}</p>
+                          <p className="text-xs text-muted-foreground truncate">{ad.bodyText}</p>
+                        </div>
+                        <div className="flex-shrink-0 flex items-center gap-2">
+                          <button
+                            onClick={() => setPreviewAd({
+                              headline: ad.headline,
+                              bodyText: ad.bodyText,
+                              cta: ad.cta,
+                              destinationUrl: ad.destinationUrl ?? '',
+                              imageUrl: ad.imageUrl ?? undefined,
+                              videoUrl: ad.videoUrl ?? undefined,
+                              pageName: campaign.name,
+                            })}
+                            className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium"
+                            title="Ver prévia visual"
+                          >
+                            <Eye size={13} />
+                            Prévia
+                          </button>
+                          <div className="text-right">
+                            {ad.metaCtr != null && (
+                              <p className={`text-xs ${ad.metaCtr < 1 && (ad.metaSpend ?? 0) > 50 ? 'text-red-600 font-medium' : 'text-muted-foreground'}`}>
+                                CTR {formatPercent(ad.metaCtr)}
+                              </p>
+                            )}
+                            {ad.metaAdId && (
+                              <p className="text-xs text-green-600">publicado</p>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                      <div className="flex-shrink-0 text-right">
-                        {ad.metaCtr != null && (
-                          <p className={`text-xs ${ad.metaCtr < 1 && (ad.metaSpend ?? 0) > 50 ? 'text-red-600 font-medium' : 'text-muted-foreground'}`}>
-                            CTR {formatPercent(ad.metaCtr)}
-                          </p>
-                        )}
-                        {ad.metaAdId && (
-                          <p className="text-xs text-green-600">publicado</p>
-                        )}
-                      </div>
+                      <CopyScoreWidget
+                        headline={ad.headline}
+                        body={ad.bodyText}
+                        cta={ad.cta}
+                        objective={campaign.objective}
+                        product={campaign.product}
+                        compact
+                      />
                     </div>
                   ))}
                 </div>
@@ -202,6 +258,15 @@ export default function CampaignDetailPage() {
             {campaign.lastSyncAt && <span className="ml-1 text-green-600">Sincronizado em {new Date(campaign.lastSyncAt).toLocaleDateString('pt-BR')}.</span>}
           </p>
         </div>
+      )}
+
+      {/* Modal de prévia */}
+      {previewAd && (
+        <AdPreviewModal
+          isOpen={true}
+          onClose={() => setPreviewAd(null)}
+          ad={previewAd}
+        />
       )}
     </div>
   );

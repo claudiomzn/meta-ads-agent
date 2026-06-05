@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { api } from '@/services/api';
 
 export interface AdRecord {
@@ -8,6 +9,8 @@ export interface AdRecord {
   bodyText: string;
   cta: string;
   imageUrl?: string;
+  videoUrl?: string;
+  destinationUrl?: string;
   metaAdId?: string;
   metaStatus?: string;
   metaCtr?: number;
@@ -21,6 +24,16 @@ export interface AdSetRecord {
   dailyBudget: number;
   targeting: string;
   optimizationGoal: string;
+  audienceId?: string;
+  audience?: {
+    id: string;
+    name: string;
+    ageMin: number;
+    ageMax: number;
+    gender: string;
+    locations: string;
+    interests: string;
+  } | null;
   metaAdSetId?: string;
   metaStatus?: string;
   metaSpend?: number;
@@ -74,6 +87,8 @@ interface AdInput {
   bodyText: string;
   cta: string;
   imageUrl?: string;
+  videoUrl?: string;
+  destinationUrl?: string;
 }
 
 interface AdSetInput {
@@ -98,7 +113,11 @@ export function useCreateCampaign() {
   return useMutation({
     mutationFn: (data: CreateCampaignInput) =>
       api.post<CampaignRecord>('/campaigns', data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['campaigns'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['campaigns'] });
+      toast.success('Campanha criada com sucesso!');
+    },
+    onError: (e: Error) => toast.error(`Erro ao criar campanha: ${e.message}`),
   });
 }
 
@@ -106,7 +125,11 @@ export function useUpdateCampaign(id: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: Partial<CampaignRecord>) => api.put<CampaignRecord>(`/campaigns/${id}`, data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['campaigns', id] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['campaigns', id] });
+      toast.success('Campanha salva!');
+    },
+    onError: (e: Error) => toast.error(`Erro ao salvar: ${e.message}`),
   });
 }
 
@@ -114,6 +137,22 @@ export function useDeleteCampaign() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.delete(`/campaigns/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['campaigns'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['campaigns'] });
+      toast.success('Campanha deletada.');
+    },
+    onError: (e: Error) => toast.error(`Erro ao deletar: ${e.message}`),
+  });
+}
+
+export function useDuplicateCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<CampaignRecord>(`/campaigns/${id}/duplicate`, {}),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['campaigns'] });
+      toast.success(`"${data.name}" criada como rascunho.`);
+    },
+    onError: (e: Error) => toast.error(`Erro ao duplicar: ${e.message}`),
   });
 }

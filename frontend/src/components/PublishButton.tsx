@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { CheckCircle, XCircle, Loader2, AlertTriangle, ExternalLink, Play } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { api } from '@/services/api';
@@ -73,7 +74,8 @@ export function PublishButton({ campaign, adAccountId, destinationUrl, onDone }:
           headline: ad.headline,
           bodyText: ad.bodyText,
           ctaType: ad.cta,
-          destinationUrl,
+          // Usa URL do anúncio (ex: WhatsApp) se disponível; fallback para a URL global
+          destinationUrl: ad.destinationUrl || destinationUrl,
           imageUrl: ad.imageUrl,
         })),
       })),
@@ -134,9 +136,12 @@ export function PublishButton({ campaign, adAccountId, destinationUrl, onDone }:
               setResult(evt.result);
               setPhase('done');
               onDone?.(evt.result);
+              toast.success('Campanha publicada no Meta Ads!');
             } else if (evt.type === 'error') {
-              setError(evt.errors?.join(', ') ?? evt.message ?? 'Erro');
+              const msg = evt.errors?.join(', ') ?? evt.message ?? 'Erro';
+              setError(msg);
               setPhase('error');
+              toast.error(`Falha na publicação: ${msg}`);
             }
           } catch { /* ignora linha inválida */ }
         }
@@ -215,6 +220,18 @@ export function PublishButton({ campaign, adAccountId, destinationUrl, onDone }:
                     ))}
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* Aviso suave: score de copy */}
+            {phase === 'preview' && (
+              <div className="flex items-start gap-2 rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2.5 text-xs text-yellow-800">
+                <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0 text-yellow-500" />
+                <span>
+                  <strong>Dica:</strong> analise suas copies com IA antes de publicar.
+                  Acesse a página de detalhe da campanha → cada anúncio tem o botão{' '}
+                  <em>"Score IA"</em>. Copies abaixo de 5.0 tendem a ter CTR baixo.
+                </span>
               </div>
             )}
 

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Users, Trash2, Sparkles, Loader2, X } from 'lucide-react';
+import { toast } from 'sonner';
 import { api } from '@/services/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -20,6 +21,8 @@ interface AudienceRecord {
   estimatedSize?: number;
   metaAudienceId?: string;
   createdAt: string;
+  // Conjuntos de anúncios que usam este público
+  adSets?: { id: string; name: string; campaign?: { name: string } }[];
 }
 
 const GENDER_LABELS: Record<string, string> = { all: 'Todos', male: 'Masculino', female: 'Feminino' };
@@ -34,10 +37,16 @@ function AudienceCard({ audience, onDelete }: { audience: AudienceRecord; onDele
       <CardContent className="p-5 space-y-3">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <p className="font-semibold truncate">{audience.name}</p>
               {audience.metaAudienceId && (
                 <Badge variant="success" className="text-xs">no Meta</Badge>
+              )}
+              {(audience.adSets?.length ?? 0) > 0 && (
+                <Badge variant="secondary" className="text-xs gap-1">
+                  <Users className="h-2.5 w-2.5" />
+                  {audience.adSets!.length} campanha{audience.adSets!.length > 1 ? 's' : ''}
+                </Badge>
               )}
             </div>
             <p className="text-xs text-muted-foreground mt-0.5">
@@ -125,12 +134,18 @@ export default function AudiencesPage() {
       qc.invalidateQueries({ queryKey: ['audiences'] });
       setShowForm(false);
       setForm(EMPTY_FORM);
+      toast.success('Público salvo com sucesso!');
     },
+    onError: (e: Error) => toast.error(`Erro ao salvar público: ${e.message}`),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/audiences/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['audiences'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['audiences'] });
+      toast.success('Público removido.');
+    },
+    onError: (e: Error) => toast.error(`Erro ao remover: ${e.message}`),
   });
 
   async function suggestInterests() {

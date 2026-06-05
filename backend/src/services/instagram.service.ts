@@ -1,9 +1,9 @@
+import prisma from '../lib/prisma.js';
 import axios from 'axios';
-import { PrismaClient } from '@prisma/client';
+
 import Anthropic from '@anthropic-ai/sdk';
 import { decrypt } from './crypto.service.js';
 
-const prisma = new PrismaClient();
 const GRAPH = 'https://graph.facebook.com/v20.0';
 
 export interface IGPost {
@@ -83,7 +83,19 @@ export class InstagramService {
   async getAccount(): Promise<IGAccount> {
     const token = await this.getToken();
 
-    // Busca páginas do Facebook vinculadas
+    // Se META_INSTAGRAM_ACCOUNT_ID está configurado, usa diretamente (Page Token)
+    const envIgId = process.env.META_INSTAGRAM_ACCOUNT_ID;
+    if (envIgId) {
+      const igRes = await axios.get(`${GRAPH}/${envIgId}`, {
+        params: {
+          access_token: token,
+          fields: 'id,name,username,followers_count,media_count,profile_picture_url,biography',
+        },
+      });
+      return igRes.data as IGAccount;
+    }
+
+    // Fallback: busca páginas do Facebook vinculadas (requer User Token)
     const pagesRes = await axios.get(`${GRAPH}/me/accounts`, {
       params: { access_token: token, fields: 'id,name,instagram_business_account' },
     });

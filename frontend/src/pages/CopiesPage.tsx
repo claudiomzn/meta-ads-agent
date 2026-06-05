@@ -1,14 +1,19 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Sparkles, Loader2, Heart, Trash2, Copy, Star } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
+import { Sparkles, Loader2, Heart, Trash2, Copy, Star, Megaphone, Eye } from 'lucide-react';
+import { CopyScoreWidget } from '@/components/CopyScoreWidget';
 import { api } from '@/services/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { AdPreviewModal } from '@/components/preview/AdPreviewModal';
+import type { AdPreviewData } from '@/utils/preview-checklist';
+import { AudiencePicker, audienceToText } from '@/components/AudiencePicker';
 
 interface CopyRecord {
   id: string;
@@ -32,10 +37,12 @@ const FORMATS = ['Feed', 'Stories', 'Reels', 'Carrossel', 'Vídeo'];
 
 const TONES = ['Persuasivo', 'Urgente', 'Empático', 'Profissional', 'Descontraído', 'Provocativo'];
 
-function CopyCard({ copy, onFavorite, onDelete }: {
+function CopyCard({ copy, onFavorite, onDelete, onCreateCampaign, onPreview }: {
   copy: CopyRecord;
   onFavorite: (id: string) => void;
   onDelete: (id: string) => void;
+  onCreateCampaign: (copy: CopyRecord) => void;
+  onPreview: (copy: CopyRecord) => void;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -59,6 +66,9 @@ function CopyCard({ copy, onFavorite, onDelete }: {
           )}
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
+          <button onClick={() => onPreview(copy)} className="rounded p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50" title="Visualizar no anúncio">
+            <Eye className="h-3.5 w-3.5" />
+          </button>
           <button onClick={copyToClipboard} className="rounded p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100" title="Copiar">
             <Copy className="h-3.5 w-3.5" />
           </button>
@@ -82,20 +92,38 @@ function CopyCard({ copy, onFavorite, onDelete }: {
         </span>
         {copied && <span className="text-xs text-green-600 font-medium">✅ Copiado!</span>}
       </div>
+
+      {/* Score de copy com IA */}
+      <div className="pt-1 border-t">
+        <CopyScoreWidget headline={copy.headline} body={copy.body} cta={copy.cta} compact />
+      </div>
+
+      <Button
+        variant="outline"
+        size="sm"
+        className="w-full border-[#1877F2]/40 text-[#1877F2] hover:bg-[#e7f0fd] hover:border-[#1877F2]"
+        onClick={() => onCreateCampaign(copy)}
+      >
+        <Megaphone className="h-3.5 w-3.5 mr-1.5" />
+        Criar campanha com este copy
+      </Button>
     </div>
   );
 }
 
 export default function CopiesPage() {
+  const navigate = useNavigate();
   const qc = useQueryClient();
   const { data: copies = [], isLoading } = useQuery<CopyRecord[]>({
     queryKey: ['copies'],
     queryFn: () => api.get('/copies'),
   });
+  const [previewAd, setPreviewAd] = useState<AdPreviewData | null>(null);
 
   // Form state
   const [product, setProduct] = useState('');
   const [audience, setAudience] = useState('');
+  const [selectedAudienceId, setSelectedAudienceId] = useState<string | null>(null);
   const [framework, setFramework] = useState('AIDA');
   const [format, setFormat] = useState('Feed');
   const [tone, setTone] = useState('Persuasivo');
@@ -106,11 +134,16 @@ export default function CopiesPage() {
   const favoriteMutation = useMutation({
     mutationFn: (id: string) => api.patch(`/copies/${id}/favorite`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['copies'] }),
+    onError: (e: Error) => toast.error(`Erro: ${e.message}`),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/copies/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['copies'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['copies'] });
+      toast.success('Copy removida.');
+    },
+    onError: (e: Error) => toast.error(`Erro ao remover: ${e.message}`),
   });
 
   async function generate() {
@@ -120,8 +153,11 @@ export default function CopiesPage() {
     try {
       await api.post('/copies/generate', { product, audience, framework, format, tone });
       qc.invalidateQueries({ queryKey: ['copies'] });
+      toast.success('Copies geradas com sucesso!');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Erro ao gerar copy');
+      const msg = err instanceof Error ? err.message : 'Erro ao gerar copy';
+      setError(msg);
+      toast.error(msg);
     } finally {
       setGenerating(false);
     }
@@ -152,9 +188,31 @@ export default function CopiesPage() {
                 <Input placeholder="Ex: Curso de inglês online" value={product} onChange={(e) => setProduct(e.target.value)} />
               </div>
 
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Público-alvo</label>
-                <Input placeholder="Ex: Profissionais 25-40 anos" value={audience} onChange={(e) => setAudience(e.target.value)} />
+              {/* Público-alvo — picker de salvos + campo livre */}
+              <div className="space-y-2">
+                <AudiencePicker
+                  label="Público-alvo salvo"
+                  value={selectedAudienceId}
+                  onChange={(aud) => {
+                    setSelectedAudienceId(aud?.id ?? null);
+                    if (aud) setAudience(audienceToText(aud));
+                    else setAudience('');
+                  }}
+                  placeholder="🎯 Selecionar público da biblioteca..."
+                />
+                <div className="space-y-1">
+                  <label className="text-xs text-muted-foreground">
+                    {selectedAudienceId ? 'Descrição (editável)' : 'Ou descreva manualmente'}
+                  </label>
+                  <Input
+                    placeholder="Ex: Profissionais 25-40 anos, interessados em saúde"
+                    value={audience}
+                    onChange={(e) => {
+                      setAudience(e.target.value);
+                      if (selectedAudienceId) setSelectedAudienceId(null); // desvincula ao editar
+                    }}
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -260,12 +318,37 @@ export default function CopiesPage() {
                   copy={c}
                   onFavorite={(id) => favoriteMutation.mutate(id)}
                   onDelete={(id) => { if (confirm('Deletar este copy?')) deleteMutation.mutate(id); }}
+                  onCreateCampaign={(copy) => {
+                    // Salva dados do copy no sessionStorage para o wizard ler
+                    sessionStorage.setItem('campaignFromCopy', JSON.stringify({
+                      fromCopy: { headline: copy.headline, body: copy.body, cta: copy.cta, format: copy.format },
+                      product,
+                      audience,
+                    }));
+                    navigate('/campaigns/new');
+                  }}
+                  onPreview={(copy) => setPreviewAd({
+                    headline: copy.headline,
+                    bodyText: copy.body,
+                    cta: copy.cta,
+                    destinationUrl: '',
+                    pageName: 'Sua Empresa',
+                  })}
                 />
               ))}
             </div>
           )}
         </div>
       </div>
+
+      {/* Modal de prévia */}
+      {previewAd && (
+        <AdPreviewModal
+          isOpen={true}
+          onClose={() => setPreviewAd(null)}
+          ad={previewAd}
+        />
+      )}
     </div>
   );
 }

@@ -1,12 +1,12 @@
+import prisma from '../lib/prisma.js';
 import { Router, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+
 import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { createMetaMCPService } from '../services/meta.mcp.service.js';
 import { auditLog } from '../services/audit.service.js';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 router.use(authMiddleware);
 

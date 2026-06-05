@@ -1,23 +1,26 @@
+import prisma from '../lib/prisma.js';
 import { Router, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+
 import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { AIService } from '../services/ai.service.js';
 
 const router = Router();
-const prisma = new PrismaClient();
 const ai = new AIService();
 
 router.use(authMiddleware);
 
 // Gera plano de campanha via IA (sem salvar)
 router.post('/generate-plan', async (req: AuthRequest, res: Response) => {
-  const { product, objective, budget, audience, differentials } = req.body;
+  const { product, objective, budget, audience, differentials, ticketMedio, regiao, concorrentes, niche, businessName } = req.body;
   if (!product || !objective || !budget) {
     res.status(400).json({ error: 'product, objective e budget são obrigatórios' });
     return;
   }
-  const plan = await ai.generateCampaignPlan({ product, objective, budget, audience, differentials });
+  const plan = await ai.generateCampaignPlan({
+    product, objective, budget, audience, differentials,
+    ticketMedio, regiao, concorrentes, niche, businessName,
+  });
   res.json(plan);
 });
 
@@ -27,6 +30,7 @@ const AdSchema = z.object({
   bodyText: z.string().min(1),
   cta: z.string().min(1),
   imageUrl: z.string().optional(),
+  videoUrl: z.string().optional(),
   destinationUrl: z.string().optional(),
 });
 
@@ -36,6 +40,7 @@ const AdSetSchema = z.object({
   targeting: z.record(z.unknown()).default({}),
   optimizationGoal: z.string().min(1),
   billingEvent: z.string().default('IMPRESSIONS'),
+  audienceId: z.string().optional(),
   ads: z.array(AdSchema).default([]),
 });
 
@@ -60,7 +65,7 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
   const campaign = await prisma.campaign.findFirst({
     where: { id: req.params.id, userId: req.userId! },
     include: {
-      adSets: { include: { ads: true } },
+      adSets: { include: { ads: true, audience: true } },
       copies: true,
       audiences: true,
       briefs: true,
@@ -96,6 +101,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
               dailyBudget: as.dailyBudget,
               targeting: JSON.stringify(as.targeting),
               optimizationGoal: as.optimizationGoal,
+              audienceId: as.audienceId ?? undefined,
               ads: {
                 create: as.ads.map((ad) => ({
                   name: ad.name,
@@ -103,13 +109,15 @@ router.post('/', async (req: AuthRequest, res: Response) => {
                   bodyText: ad.bodyText,
                   cta: ad.cta,
                   imageUrl: ad.imageUrl,
+                  videoUrl: ad.videoUrl,
+                  destinationUrl: ad.destinationUrl,
                 })),
               },
             })),
           }
         : undefined,
     },
-    include: { adSets: { include: { ads: true } } },
+    include: { adSets: { include: { ads: true, audience: true } } },
   });
 
   res.status(201).json(campaign);
@@ -118,25 +126,106 @@ router.post('/', async (req: AuthRequest, res: Response) => {
 router.put('/:id', async (req: AuthRequest, res: Response) => {
   const existing = await prisma.campaign.findFirst({
     where: { id: req.params.id, userId: req.userId! },
+    include: { adSets: { include: { ads: true, audience: true } } },
   });
-  if (!existing) {
-    res.status(404).json({ error: 'Campanha não encontrada' });
-    return;
-  }
+  if (!existing) { res.status(404).json({ error: 'Campanha não encontrada' }); return; }
 
-  const UpdateSchema = CampaignSchema.omit({ adSets: true }).partial();
-  const parsed = UpdateSchema.safeParse(req.body);
+  const parsed = CampaignSchema.partial().safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.flatten() });
     return;
   }
 
+  const { adSets, ...campaignData } = parsed.data;
+
   const updated = await prisma.campaign.update({
     where: { id: req.params.id },
-    data: parsed.data,
+    data: {
+      ...campaignData,
+      // Se vieram adSets, apaga os existentes e recria
+      ...(adSets
+        ? {
+            adSets: {
+              deleteMany: {},
+              create: adSets.map((as) => ({
+                name: as.name,
+                dailyBudget: as.dailyBudget,
+                targeting: typeof as.targeting === 'string' ? as.targeting : JSON.stringify(as.targeting ?? {}),
+                optimizationGoal: as.optimizationGoal,
+                audienceId: as.audienceId ?? undefined,
+                ads: {
+                  create: as.ads.map((ad) => ({
+                    name: ad.name,
+                    headline: ad.headline,
+                    bodyText: ad.bodyText,
+                    cta: ad.cta,
+                    imageUrl: ad.imageUrl,
+                    videoUrl: ad.videoUrl,
+                    destinationUrl: ad.destinationUrl,
+                  })),
+                },
+              })),
+            },
+          }
+        : {}),
+    },
+    include: { adSets: { include: { ads: true, audience: true } } },
   });
 
   res.json(updated);
+});
+
+// ─── Duplicar campanha ────────────────────────────────────────────────────────
+
+router.post('/:id/duplicate', async (req: AuthRequest, res: Response) => {
+  const original = await prisma.campaign.findFirst({
+    where: { id: req.params.id, userId: req.userId! },
+    include: { adSets: { include: { ads: true, audience: true } } },
+  });
+
+  if (!original) {
+    res.status(404).json({ error: 'Campanha não encontrada' });
+    return;
+  }
+
+  // Remove IDs gerados e campos Meta (a cópia é um rascunho limpo)
+  const {
+    id, createdAt, updatedAt,
+    metaCampaignId, metaAdAccountId, metaStatus, publishedAt, lastSyncAt,
+    metaSpend, metaImpressions, metaClicks, metaConversions, metaRoas, metaCpc, metaCpl,
+    adSets,
+    ...campaignData
+  } = original;
+
+  const duplicate = await prisma.campaign.create({
+    data: {
+      ...campaignData,
+      name: `${original.name} (cópia)`,
+      status: 'draft',
+      adSets: {
+        create: adSets.map((as) => ({
+          name: as.name,
+          dailyBudget: as.dailyBudget,
+          targeting: as.targeting,
+          optimizationGoal: as.optimizationGoal,
+          ads: {
+            create: as.ads.map((ad) => ({
+              name: ad.name,
+              headline: ad.headline,
+              bodyText: ad.bodyText,
+              cta: ad.cta,
+              imageUrl: ad.imageUrl,
+              videoUrl: ad.videoUrl,
+              destinationUrl: ad.destinationUrl,
+            })),
+          },
+        })),
+      },
+    },
+    include: { adSets: { include: { ads: true, audience: true } } },
+  });
+
+  res.status(201).json(duplicate);
 });
 
 router.delete('/:id', async (req: AuthRequest, res: Response) => {
@@ -150,6 +239,44 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
 
   await prisma.campaign.delete({ where: { id: req.params.id } });
   res.status(204).send();
+});
+
+// ─── Prévia de anúncio ────────────────────────────────────────────────────────
+// Retorna os dados necessários para renderizar o AdPreviewModal
+router.get('/ads/:adId/preview-data', async (req: AuthRequest, res: Response) => {
+  const ad = await prisma.ad.findFirst({
+    where: { id: req.params.adId },
+    include: {
+      adSet: {
+        include: { campaign: true },
+      },
+    },
+  });
+
+  if (!ad) {
+    res.status(404).json({ error: 'Anúncio não encontrado' });
+    return;
+  }
+
+  // Garante que o anúncio pertence ao usuário autenticado
+  if (ad.adSet.campaign.userId !== req.userId) {
+    res.status(403).json({ error: 'Acesso negado' });
+    return;
+  }
+
+  // Busca o nome do usuário para usar como pageName
+  const user = await prisma.user.findUnique({ where: { id: req.userId! } });
+
+  res.json({
+    headline:       ad.headline,
+    bodyText:       ad.bodyText,
+    cta:            ad.cta,
+    destinationUrl: ad.destinationUrl ?? '',
+    imageUrl:       ad.imageUrl ?? undefined,
+    videoUrl:       ad.videoUrl ?? undefined,
+    pageName:       user?.name ?? 'Sua Empresa',
+    pageAvatarUrl:  undefined,
+  });
 });
 
 export default router;

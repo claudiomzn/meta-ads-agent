@@ -1,11 +1,11 @@
+import prisma from '../lib/prisma.js';
 import { Router, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+
 import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { AIService } from '../services/ai.service.js';
 
 const router = Router();
-const prisma = new PrismaClient();
 const ai = new AIService();
 
 router.use(authMiddleware);
@@ -26,6 +26,11 @@ router.get('/', async (req: AuthRequest, res: Response) => {
   const audiences = await prisma.audience.findMany({
     where: { userId: req.userId! },
     orderBy: { createdAt: 'desc' },
+    include: {
+      adSets: {
+        select: { id: true, name: true, campaign: { select: { name: true } } },
+      },
+    },
   });
   res.json(audiences);
 });
@@ -52,17 +57,28 @@ router.post('/suggest', async (req: AuthRequest, res: Response) => {
     return;
   }
 
-  const brief = await ai.generateCreativeBrief({
-    product,
-    audience: 'público geral',
-    objective: 'sugestão de interesses',
-  }) as Record<string, string>;
+  try {
+    // Gera plano para extrair interesses de targeting sugeridos pela IA
+    const plan = await ai.generateCampaignPlan({
+      product,
+      objective: 'LEAD_GENERATION',
+      budget: 1000,
+      audience: 'público geral',
+    }) as { adSets?: Array<{ targeting?: { interests?: Array<{ name: string }> } }> };
 
-  // Retorna interesses e comportamentos sugeridos
-  res.json({
-    interests: brief.interests ?? 'Marketing digital, Empreendedorismo, Negócios',
-    behaviors: brief.behaviors ?? 'Compradores online',
-  });
+    const rawInterests = plan.adSets?.[0]?.targeting?.interests ?? [];
+    const interestNames = rawInterests.map((i) => i.name).filter(Boolean).join(', ');
+
+    res.json({
+      interests: interestNames || 'Marketing digital, Empreendedorismo, Negócios',
+      behaviors: 'Compradores online, Usuários de dispositivos móveis',
+    });
+  } catch {
+    res.json({
+      interests: 'Marketing digital, Empreendedorismo, Negócios',
+      behaviors: 'Compradores online',
+    });
+  }
 });
 
 router.delete('/:id', async (req: AuthRequest, res: Response) => {

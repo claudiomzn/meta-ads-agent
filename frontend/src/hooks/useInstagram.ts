@@ -1,4 +1,5 @@
 import { useQuery, useMutation } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { api } from '@/services/api';
 
 export interface IGPost {
@@ -57,5 +58,7 @@ export function useInstagramPosts() {
 export function useInstagramAnalyze() {
   return useMutation<IGData, Error>({
     mutationFn: () => api.post<IGData>('/instagram/analyze'),
+    onSuccess: () => toast.success('Análise do Instagram concluída!'),
+    onError: (e: Error) => toast.error(`Erro na análise: ${e.message}`),
   });
 }

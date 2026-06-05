@@ -1,8 +1,14 @@
+import prisma from '../lib/prisma.js';
 import Anthropic from '@anthropic-ai/sdk';
-import { PrismaClient } from '@prisma/client';
 
-const prisma = new PrismaClient();
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+
+function getClient(): Anthropic {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    throw new Error('ANTHROPIC_API_KEY não configurada no .env');
+  }
+  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+}
 
 // ─── Tipos de retorno da análise ──────────────────────────────────────────────
 
@@ -263,7 +269,7 @@ Retorne APENAS o JSON abaixo, sem markdown, sem texto fora do JSON:
 Gere no mínimo 2 sugestões e no máximo 3. Baseie TODAS as sugestões em evidências do histórico.
 Se não houver dados de métricas reais, baseie-se nos objetivos e estrutura das campanhas existentes.`;
 
-    const response = await client.messages.create({
+    const response = await getClient().messages.create({
       model: 'claude-sonnet-4-6',
       max_tokens: 6000,
       system: [
@@ -276,8 +282,9 @@ Se não houver dados de métricas reais, baseie-se nos objetivos e estrutura das
       messages: [{ role: 'user', content: prompt }],
     });
 
-    const text =
+    const rawText =
       response.content[0].type === 'text' ? response.content[0].text : '{}';
+    const text = rawText.replace(/```(?:json)?\s*([\s\S]*?)```/g, '$1').trim();
 
     const analysis = JSON.parse(text) as Omit<
       FullAnalysis,

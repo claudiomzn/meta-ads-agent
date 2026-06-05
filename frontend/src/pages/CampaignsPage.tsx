@@ -1,9 +1,11 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Megaphone, TrendingUp, DollarSign, MoreVertical, Trash2 } from 'lucide-react';
-import { useCampaigns, useDeleteCampaign } from '@/hooks/useCampaigns';
+import { Plus, Megaphone, TrendingUp, DollarSign, MoreVertical, Trash2, Pencil, Copy, Search, X } from 'lucide-react';
+import { useCampaigns, useDeleteCampaign, useDuplicateCampaign } from '@/hooks/useCampaigns';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { formatCurrency, formatNumber } from '@/lib/utils';
 
 const STATUS_LABELS: Record<string, { label: string; variant: 'success' | 'warning' | 'secondary' | 'outline' }> = {
@@ -13,9 +15,29 @@ const STATUS_LABELS: Record<string, { label: string; variant: 'success' | 'warni
   imported: { label: 'Importado', variant: 'outline' },
 };
 
+const STATUS_FILTER_OPTIONS = [
+  { value: '', label: 'Todos' },
+  { value: 'ACTIVE', label: 'Ativo' },
+  { value: 'PAUSED', label: 'Pausado' },
+  { value: 'draft', label: 'Rascunho' },
+  { value: 'imported', label: 'Importado' },
+];
+
 export default function CampaignsPage() {
   const { data: campaigns = [], isLoading } = useCampaigns();
   const deleteCampaign = useDeleteCampaign();
+  const duplicateCampaign = useDuplicateCampaign();
+
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+
+  const filtered = campaigns.filter((c) => {
+    const matchesSearch = c.name.toLowerCase().includes(search.toLowerCase()) ||
+      c.product.toLowerCase().includes(search.toLowerCase());
+    const statusKey = c.metaStatus ?? c.status;
+    const matchesStatus = statusFilter === '' || statusKey === statusFilter;
+    return matchesSearch && matchesStatus;
+  });
 
   if (isLoading) {
     return (
@@ -32,7 +54,11 @@ export default function CampaignsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Campanhas</h1>
-          <p className="text-muted-foreground">{campaigns.length} campanha(s) no total</p>
+          <p className="text-muted-foreground">
+            {filtered.length !== campaigns.length
+              ? `${filtered.length} de ${campaigns.length} campanha(s)`
+              : `${campaigns.length} campanha(s) no total`}
+          </p>
         </div>
         <Button asChild variant="meta">
           <Link to="/campaigns/new">
@@ -41,6 +67,41 @@ export default function CampaignsPage() {
           </Link>
         </Button>
       </div>
+
+      {/* Busca + filtro de status */}
+      {campaigns.length > 0 && (
+        <div className="flex gap-2 flex-wrap">
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+            <Input
+              placeholder="Buscar por nome ou produto..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-9 pr-8"
+            />
+            {search && (
+              <button onClick={() => setSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+          <div className="flex rounded-lg border overflow-hidden text-sm">
+            {STATUS_FILTER_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => setStatusFilter(opt.value)}
+                className={`px-3 py-2 font-medium transition-colors ${
+                  statusFilter === opt.value
+                    ? 'bg-[#1877F2] text-white'
+                    : 'text-gray-500 hover:bg-gray-50'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {campaigns.length === 0 ? (
         <Card className="border-dashed">
@@ -60,9 +121,13 @@ export default function CampaignsPage() {
             </Button>
           </CardContent>
         </Card>
+      ) : filtered.length === 0 ? (
+        <div className="rounded-lg border border-dashed p-10 text-center text-sm text-muted-foreground">
+          Nenhuma campanha encontrada para os filtros selecionados.
+        </div>
       ) : (
         <div className="space-y-3">
-          {campaigns.map((c) => {
+          {filtered.map((c) => {
             const statusKey = c.metaStatus ?? c.status;
             const statusInfo = STATUS_LABELS[statusKey] ?? { label: statusKey, variant: 'secondary' as const };
 
@@ -106,6 +171,25 @@ export default function CampaignsPage() {
                     <span className="text-xs text-muted-foreground">
                       {c.adSets.length} conjunto(s)
                     </span>
+                    <Link
+                      to={`/campaigns/${c.id}/edit`}
+                      className="rounded p-1.5 text-gray-400 hover:text-[#1877F2] hover:bg-[#e7f0fd] transition-colors"
+                      title="Editar campanha"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Link>
+                    <button
+                      onClick={(e) => {
+                        e.preventDefault();
+                        duplicateCampaign.mutate(c.id);
+                      }}
+                      disabled={duplicateCampaign.isPending}
+                      className="rounded p-1.5 text-gray-400 hover:text-[#1877F2] hover:bg-[#e7f0fd] opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-40"
+                      title="Duplicar campanha"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </button>
                     <button
                       onClick={() => {
                         if (confirm(`Deletar "${c.name}"?`)) deleteCampaign.mutate(c.id);

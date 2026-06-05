@@ -14,7 +14,7 @@ import { useMCPStatus } from '@/hooks/useMCP';
 
 describe('MCPStatusBadge', () => {
   it('mostra "Verificando..." durante carregamento', () => {
-    vi.mocked(useMCPStatus).mockReturnValue({ data: undefined, isLoading: true } as ReturnType<typeof useMCPStatus>);
+    vi.mocked(useMCPStatus).mockReturnValue({ data: undefined, isLoading: true } as unknown as ReturnType<typeof useMCPStatus>);
     render(<MCPStatusBadge />);
     expect(screen.getByText(/verificando/i)).toBeInTheDocument();
   });
@@ -23,7 +23,7 @@ describe('MCPStatusBadge', () => {
     vi.mocked(useMCPStatus).mockReturnValue({
       data: { connected: false, adAccountIds: [] },
       isLoading: false,
-    } as ReturnType<typeof useMCPStatus>);
+    } as unknown as ReturnType<typeof useMCPStatus>);
     render(<MCPStatusBadge />);
     expect(screen.getByText(/desconectado/i)).toBeInTheDocument();
   });
@@ -32,7 +32,7 @@ describe('MCPStatusBadge', () => {
     vi.mocked(useMCPStatus).mockReturnValue({
       data: { connected: true, adAccountIds: ['act_111', 'act_222'], provider: 'pipeboard' },
       isLoading: false,
-    } as ReturnType<typeof useMCPStatus>);
+    } as unknown as ReturnType<typeof useMCPStatus>);
     render(<MCPStatusBadge />);
     expect(screen.getByText(/meta ads conectado/i)).toBeInTheDocument();
     expect(screen.getByText(/2 conta/i)).toBeInTheDocument();
@@ -42,7 +42,7 @@ describe('MCPStatusBadge', () => {
     vi.mocked(useMCPStatus).mockReturnValue({
       data: { connected: true, adAccountIds: ['act_123'] },
       isLoading: false,
-    } as ReturnType<typeof useMCPStatus>);
+    } as unknown as ReturnType<typeof useMCPStatus>);
     render(<MCPStatusBadge />);
     await userEvent.click(screen.getByRole('button', { name: /sincronizar/i }));
     expect(mockSync).toHaveBeenCalledOnce();

@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { api } from '@/services/api';
 
 export interface MCPStatus {
@@ -26,7 +27,11 @@ export function useMCPConnect() {
       mcpProvider: 'meta' | 'pipeboard' | 'zapier';
       adAccountIds: string[];
     }) => api.post('/mcp/connect', data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['mcp-status'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mcp-status'] });
+      toast.success('Meta Ads conectado com sucesso!');
+    },
+    onError: (e: Error) => toast.error(`Falha na conexão: ${e.message}`),
   });
 }
 
@@ -34,7 +39,11 @@ export function useMCPDisconnect() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => api.delete('/mcp/disconnect'),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['mcp-status'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mcp-status'] });
+      toast.info('Meta Ads desconectado.');
+    },
+    onError: (e: Error) => toast.error(`Erro ao desconectar: ${e.message}`),
   });
 }
 
@@ -42,6 +51,10 @@ export function useSyncNow() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => api.post('/mcp/sync/now'),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['campaigns'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['campaigns'] });
+      toast.success('Sincronização concluída!');
+    },
+    onError: (e: Error) => toast.error(`Erro na sincronização: ${e.message}`),
   });
 }

@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Wifi, WifiOff, RefreshCw, LogOut, ExternalLink, Clock, CheckCircle, XCircle, Trash2 } from 'lucide-react';
+import { Wifi, WifiOff, RefreshCw, LogOut, ExternalLink, Clock, CheckCircle, XCircle, Lock } from 'lucide-react';
+import { toast } from 'sonner';
 import { useMCPStatus, useMCPDisconnect, useSyncNow } from '@/hooks/useMCP';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/services/api';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -39,6 +41,33 @@ export default function SettingsPage() {
   });
 
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [logsVisible, setLogsVisible] = useState(10);
+
+  // ── Troca de senha ────────────────────────────────────────────
+  const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' });
+  const [pwLoading, setPwLoading] = useState(false);
+
+  async function handleChangePassword(e: React.FormEvent) {
+    e.preventDefault();
+    if (pwForm.next !== pwForm.confirm) {
+      toast.error('As senhas novas não coincidem.');
+      return;
+    }
+    if (pwForm.next.length < 6) {
+      toast.error('Nova senha deve ter pelo menos 6 caracteres.');
+      return;
+    }
+    setPwLoading(true);
+    try {
+      await api.put('/auth/password', { currentPassword: pwForm.current, newPassword: pwForm.next });
+      toast.success('Senha alterada com sucesso!');
+      setPwForm({ current: '', next: '', confirm: '' });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao alterar senha');
+    } finally {
+      setPwLoading(false);
+    }
+  }
 
   function handleLogout() {
     logout();
@@ -73,6 +102,53 @@ export default function SettingsPage() {
               Sair
             </Button>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Trocar senha */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Lock className="h-4 w-4 text-muted-foreground" />
+            Alterar senha
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleChangePassword} className="space-y-3 max-w-sm">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Senha atual</label>
+              <Input
+                type="password"
+                placeholder="••••••••"
+                value={pwForm.current}
+                onChange={(e) => setPwForm((f) => ({ ...f, current: e.target.value }))}
+                required
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Nova senha</label>
+              <Input
+                type="password"
+                placeholder="Mín. 6 caracteres"
+                value={pwForm.next}
+                onChange={(e) => setPwForm((f) => ({ ...f, next: e.target.value }))}
+                required
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Confirmar nova senha</label>
+              <Input
+                type="password"
+                placeholder="Repita a nova senha"
+                value={pwForm.confirm}
+                onChange={(e) => setPwForm((f) => ({ ...f, confirm: e.target.value }))}
+                required
+              />
+            </div>
+            <Button type="submit" variant="outline" size="sm" disabled={pwLoading}>
+              {pwLoading ? 'Salvando...' : 'Alterar senha'}
+            </Button>
+          </form>
         </CardContent>
       </Card>
 
@@ -187,7 +263,7 @@ export default function SettingsPage() {
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {syncLogs.slice(0, 10).map((log) => (
+              {syncLogs.slice(0, logsVisible).map((log) => (
                 <div key={log.id} className="flex items-center justify-between rounded-md border px-3 py-2.5">
                   <div className="flex items-center gap-2.5">
                     {log.status === 'success'
@@ -211,6 +287,14 @@ export default function SettingsPage() {
                 </div>
               ))}
             </div>
+            {syncLogs.length > logsVisible && (
+              <button
+                onClick={() => setLogsVisible((v) => v + 20)}
+                className="mt-3 w-full rounded-md border border-dashed py-2 text-xs text-muted-foreground hover:text-foreground hover:border-gray-400 transition-colors"
+              >
+                Ver mais ({syncLogs.length - logsVisible} restantes)
+              </button>
+            )}
           </CardContent>
         </Card>
       )}

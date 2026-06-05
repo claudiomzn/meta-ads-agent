@@ -1,6 +1,7 @@
+import prisma from '../lib/prisma.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { PrismaClient } from '@prisma/client';
+
 import { decrypt } from './crypto.service.js';
 import type {
   AdAccount,
@@ -24,7 +25,6 @@ import type {
   AdStatus,
 } from '../types/meta.types.js';
 
-const prisma = new PrismaClient();
 
 export class PublishValidationError extends Error {
   constructor(
@@ -256,6 +256,10 @@ export class MetaMCPService {
   }
 
   // ─── Escrita — Edição ─────────────────────────────────────────────────────
+
+  async updateCampaignStatus(campaignId: string, status: AdStatus): Promise<void> {
+    await this.call('update_campaign', { campaign_id: campaignId, status });
+  }
 
   async updateCampaignBudget(campaignId: string, budget: number): Promise<void> {
     await this.call('update_campaign', {

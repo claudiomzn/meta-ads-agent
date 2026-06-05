@@ -11,8 +11,11 @@ router.get('/account', async (req: AuthRequest, res: Response) => {
     const svc = new InstagramService(req.userId!);
     const account = await svc.getAccount();
     res.json(account);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Erro desconhecido';
+  } catch (err: unknown) {
+    const axiosErr = (err as { response?: { data?: unknown } }).response?.data;
+    const msg = axiosErr
+      ? JSON.stringify(axiosErr)
+      : err instanceof Error ? err.message : 'Erro desconhecido';
     res.status(400).json({ error: msg });
   }
 });

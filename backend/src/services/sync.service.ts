@@ -1,8 +1,8 @@
-import { PrismaClient } from '@prisma/client';
+import prisma from '../lib/prisma.js';
+
 import { createMetaMCPService } from './meta.mcp.service.js';
 import type { DateRange } from '../types/meta.types.js';
 
-const prisma = new PrismaClient();
 
 function todayRange(): DateRange {
   const today = new Date().toISOString().split('T')[0];
@@ -16,6 +16,7 @@ function last30Days(): DateRange {
 }
 
 async function withSyncLog(
+  userId: string,
   type: string,
   fn: () => Promise<void>,
 ): Promise<void> {
@@ -23,16 +24,11 @@ async function withSyncLog(
   try {
     await fn();
     await prisma.syncLog.create({
-      data: { type, status: 'success', duration: Date.now() - start },
+      data: { userId, type, status: 'success', duration: Date.now() - start },
     });
   } catch (err) {
     await prisma.syncLog.create({
-      data: {
-        type,
-        status: 'error',
-        details: String(err),
-        duration: Date.now() - start,
-      },
+      data: { userId, type, status: 'error', details: String(err), duration: Date.now() - start },
     });
     console.error(`[SyncService] Erro em "${type}":`, err);
   }
@@ -47,7 +43,7 @@ export class SyncService {
 
   // Sincroniza métricas de todas as campanhas publicadas (roda a cada hora)
   async syncPerformanceMetrics(): Promise<void> {
-    await withSyncLog('metrics', async () => {
+    await withSyncLog(this.userId, 'metrics', async () => {
       const campaigns = await prisma.campaign.findMany({
         where: { userId: this.userId, metaCampaignId: { not: null } },
         include: { adSets: { include: { ads: true } } },
@@ -99,17 +95,72 @@ export class SyncService {
                 metaSpend: adInsights.spend,
               },
             });
+
+            // Atualiza métricas reais nas análises de criativos vinculadas a este anúncio
+            const creativeAnalyses = await prisma.creativeAnalysis.findMany({
+              where: { adId: ad.id },
+            });
+            if (creativeAnalyses.length > 0) {
+              await prisma.creativeAnalysis.updateMany({
+                where: { adId: ad.id },
+                data: {
+                  realCtr: adInsights.ctr ?? undefined,
+                  realCpl: adInsights.cpl ?? undefined,
+                  realRoas: undefined, // anúncio individual não tem ROAS direto
+                  realImpressions: adInsights.impressions ?? undefined,
+                },
+              });
+            }
           }
         }
       }
 
       await svc.disconnect();
+
+      // ── Snapshot diário ──────────────────────────────────────────────────
+      // Agrega totais de todas as campanhas e salva/atualiza o registro de hoje.
+      await this.saveDailySnapshot();
+    });
+  }
+
+  // Grava (ou atualiza) o snapshot do dia com os totais atuais das campanhas
+  async saveDailySnapshot(): Promise<void> {
+    const today = new Date().toISOString().split('T')[0];
+
+    const campaigns = await prisma.campaign.findMany({
+      where: { userId: this.userId, metaSpend: { not: null } },
+      select: {
+        metaSpend: true,
+        metaImpressions: true,
+        metaClicks: true,
+        metaConversions: true,
+        metaStatus: true,
+      },
+    });
+
+    if (!campaigns.length) return;
+
+    const totals = campaigns.reduce(
+      (acc, c) => ({
+        spend: acc.spend + (c.metaSpend ?? 0),
+        impressions: acc.impressions + (c.metaImpressions ?? 0),
+        clicks: acc.clicks + (c.metaClicks ?? 0),
+        conversions: acc.conversions + (c.metaConversions ?? 0),
+        activeCampaigns: acc.activeCampaigns + (c.metaStatus === 'ACTIVE' ? 1 : 0),
+      }),
+      { spend: 0, impressions: 0, clicks: 0, conversions: 0, activeCampaigns: 0 },
+    );
+
+    await prisma.dailyMetric.upsert({
+      where: { userId_date: { userId: this.userId, date: today } },
+      update: totals,
+      create: { userId: this.userId, date: today, ...totals },
     });
   }
 
   // Sincroniza status (ativo/pausado/rejeitado) de cada campanha (roda a cada 15 min)
   async syncCampaignStatuses(): Promise<void> {
-    await withSyncLog('status', async () => {
+    await withSyncLog(this.userId, 'status', async () => {
       const conn = await prisma.mCPConnection.findUnique({ where: { userId: this.userId } });
       if (!conn?.connected || !conn.adAccountIds) return;
 
@@ -133,7 +184,7 @@ export class SyncService {
 
   // Importa campanhas criadas diretamente no Gerenciador de Anúncios
   async importExternalCampaigns(adAccountId: string): Promise<void> {
-    await withSyncLog('import', async () => {
+    await withSyncLog(this.userId, 'import', async () => {
       const svc = await createMetaMCPService(this.userId);
       const metaCampaigns = await svc.getCampaigns(adAccountId);
 

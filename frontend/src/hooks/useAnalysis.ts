@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { api } from '@/services/api';
 
 interface InsightSummary {
@@ -90,6 +91,8 @@ export function useRunAnalysis() {
     mutationFn: () => api.post<FullAnalysis>('/analysis/run', {}),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['insights'] });
+      toast.success('Análise IA concluída!');
     },
+    onError: (e: Error) => toast.error(`Erro na análise: ${e.message}`),
   });
 }

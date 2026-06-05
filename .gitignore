@@ -30,5 +30,9 @@ Thumbs.db
 .idea/
 *.swp
 
-# Prisma
-prisma/migrations/migration_lock.toml
+# Uploads (imagens enviadas pelos usuários)
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Prisma - NÃO ignorar migration_lock.toml (Railway precisa dele)
+# prisma/migrations/migration_lock.toml

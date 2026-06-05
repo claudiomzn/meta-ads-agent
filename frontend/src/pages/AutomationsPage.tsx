@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Bot, Plus, X, Play, Loader2, Trash2, ToggleLeft, ToggleRight, Clock, CheckCircle, XCircle } from 'lucide-react';
+import { Bot, Plus, X, Play, Loader2, Trash2, ToggleLeft, ToggleRight, Clock, CheckCircle } from 'lucide-react';
+import { toast } from 'sonner';
 import { api } from '@/services/api';
 import { useMCPStatus } from '@/hooks/useMCP';
 import { Button } from '@/components/ui/button';
@@ -10,6 +11,12 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { Link } from 'react-router-dom';
+
+interface CampaignOption {
+  id: string;
+  name: string;
+  metaCampaignId?: string | null;
+}
 
 interface RuleLog {
   id: string;
@@ -218,6 +225,10 @@ export default function AutomationsPage() {
     queryKey: ['automations'],
     queryFn: () => api.get('/automations'),
   });
+  const { data: campaigns = [] } = useQuery<CampaignOption[]>({
+    queryKey: ['campaigns'],
+    queryFn: () => api.get('/campaigns'),
+  });
 
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState<FormData>(EMPTY);
@@ -225,17 +236,28 @@ export default function AutomationsPage() {
   const createMutation = useMutation({
     mutationFn: (data: Omit<FormData, 'value' | 'window'> & { value: number; window: number }) =>
       api.post('/automations', data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['automations'] }); setShowForm(false); setForm(EMPTY); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['automations'] });
+      setShowForm(false);
+      setForm(EMPTY);
+      toast.success('Automação criada!');
+    },
+    onError: (e: Error) => toast.error(`Erro ao criar automação: ${e.message}`),
   });
 
   const toggleMutation = useMutation({
     mutationFn: (id: string) => api.patch(`/automations/${id}/toggle`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['automations'] }),
+    onError: (e: Error) => toast.error(`Erro ao alterar automação: ${e.message}`),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/automations/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['automations'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['automations'] });
+      toast.success('Automação removida.');
+    },
+    onError: (e: Error) => toast.error(`Erro ao remover: ${e.message}`),
   });
 
   function set(field: keyof FormData, value: string) {
@@ -376,8 +398,26 @@ export default function AutomationsPage() {
                   </Select>
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium">ID do alvo no Meta *</label>
-                  <Input className="h-9" placeholder="120200..." value={form.targetId} onChange={(e) => set('targetId', e.target.value)} />
+                  <label className="text-xs font-medium">Campanha *</label>
+                  <Select
+                    value={form.targetId}
+                    onValueChange={(v) => set('targetId', v)}
+                  >
+                    <SelectTrigger className="h-9">
+                      <SelectValue placeholder={campaigns.length === 0 ? 'Nenhuma campanha' : 'Escolha...'} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {campaigns.map((c) => (
+                        <SelectItem key={c.id} value={c.metaCampaignId ?? c.id}>
+                          {c.name}
+                          {!c.metaCampaignId && <span className="ml-1.5 text-xs text-gray-400">(rascunho)</span>}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {campaigns.length === 0 && (
+                    <p className="text-xs text-muted-foreground">Crie uma campanha primeiro.</p>
+                  )}
                 </div>
               </div>
               {form.action === 'ALERT' && (
