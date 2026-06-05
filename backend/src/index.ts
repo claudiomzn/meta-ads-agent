@@ -6,22 +6,19 @@ import express from 'express';
 import cors from 'cors';
 import cron from 'node-cron';
 
-// ─── Validação de variáveis de ambiente obrigatórias ─────────────────────────
+// ─── Log de ambiente para diagnóstico ────────────────────────────────────────
+console.log('[STARTUP] NODE_ENV:', process.env.NODE_ENV);
+console.log('[STARTUP] PORT:', process.env.PORT);
+console.log('[STARTUP] DATABASE_URL set:', !!process.env.DATABASE_URL, '| length:', process.env.DATABASE_URL?.length ?? 0);
+console.log('[STARTUP] JWT_SECRET set:', !!process.env.JWT_SECRET);
+console.log('[STARTUP] ENCRYPTION_KEY set:', !!process.env.ENCRYPTION_KEY);
 
 const REQUIRED_ENV = ['JWT_SECRET', 'ENCRYPTION_KEY', 'DATABASE_URL'] as const;
 
 for (const key of REQUIRED_ENV) {
   if (!process.env[key]) {
-    console.warn(`[WARN] Variável de ambiente ausente: ${key} — servidor iniciando assim mesmo`);
+    console.warn(`[WARN] Variável de ambiente ausente: ${key}`);
   }
-}
-
-if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
-  console.warn('[WARN] JWT_SECRET deve ter no mínimo 32 caracteres');
-}
-
-if (process.env.ENCRYPTION_KEY && process.env.ENCRYPTION_KEY.length < 32) {
-  console.warn('[WARN] ENCRYPTION_KEY deve ter no mínimo 32 caracteres');
 }
 
 import authRoutes from './routes/auth.routes.js';
