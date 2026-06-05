@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Meta Ads AI Agent — Backend",
   "main": "dist/index.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "prisma generate && tsc",
