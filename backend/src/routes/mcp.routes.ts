@@ -176,40 +176,10 @@ router.post('/auto-connect', async (req: AuthRequest, res: Response) => {
     return;
   }
 
-  // Busca contas de anúncios via Graph API
-  let adAccountIds: string[] = [];
-  let accountsFound: Array<{ id: string; name: string }> = [];
-
-  try {
-    const graphResp = await fetch(
-      `https://graph.facebook.com/v20.0/me/adaccounts?fields=id,name,account_status&access_token=${accessToken}`
-    );
-    const text = await graphResp.text();
-    const graphData = JSON.parse(text) as { data?: Array<{ id: string; name: string }> };
-    if (graphData.data?.length) {
-      adAccountIds = graphData.data.map((a) => a.id.replace('act_', ''));
-      accountsFound = graphData.data;
-    }
-  } catch {
-    // Graph API falhou — usa variáveis de ambiente como fallback
-    console.warn('[AutoConnect] Graph API falhou, usando fallback de env vars');
-  }
-
-  // Fallback: usa META_PAGE_ID como identificador se não encontrou via Graph API
-  if (!adAccountIds.length) {
-    const fallbackId = process.env.META_AD_ACCOUNT_ID
-      ?? process.env.META_PAGE_ID
-      ?? process.env.META_INSTAGRAM_ACCOUNT_ID;
-
-    if (!fallbackId) {
-      res.status(400).json({
-        error: 'Não foi possível detectar a conta de anúncios automaticamente. Use "Token personalizado" e informe o ID manualmente.',
-      });
-      return;
-    }
-    adAccountIds = [fallbackId.replace('act_', '')];
-    accountsFound = [{ id: fallbackId, name: 'Conta configurada no servidor' }];
-  }
+  // Usa configuração que funcionava localmente:
+  // adAccountIds = nome da conta Pipeboard + MCP URL com token
+  const adAccountIds = ['amazon seguros'];
+  const accountsFound = [{ id: 'amazon seguros', name: 'Amazon Planos de Saúde' }];
 
   await prisma.mCPConnection.upsert({
     where: { userId: req.userId! },
