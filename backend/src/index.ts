@@ -39,7 +39,22 @@ import agentRoutes from './routes/agent.routes.js';
 const app = express();
 const PORT = process.env.PORT ?? 3001;
 
-app.use(cors({ origin: process.env.FRONTEND_URL ?? 'http://localhost:5173' }));
+const allowedOrigins = [
+  'http://localhost:5173',
+  'https://app.adsgenius.net',
+  'https://adsgenius.net',
+  process.env.FRONTEND_URL,
+].filter(Boolean) as string[];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Permite requests sem origin (ex: mobile, Postman, curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    callback(new Error(`CORS: origin ${origin} não permitida`));
+  },
+  credentials: true,
+}));
 app.use(express.json());
 
 // ─── Rotas ────────────────────────────────────────────────────────────────────
