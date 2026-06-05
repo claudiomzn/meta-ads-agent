@@ -177,20 +177,39 @@ router.post('/auto-connect', async (req: AuthRequest, res: Response) => {
   }
 
   // Busca contas de anúncios via Graph API
-  const graphResp = await fetch(
-    `https://graph.facebook.com/v20.0/me/adaccounts?fields=id,name,account_status&access_token=${accessToken}`
-  );
-  const graphData = await graphResp.json() as { data?: Array<{ id: string; name: string }> };
+  let adAccountIds: string[] = [];
+  let accountsFound: Array<{ id: string; name: string }> = [];
 
-  if (!graphResp.ok || !graphData.data?.length) {
-    res.status(400).json({
-      error: 'Nenhuma conta de anúncios encontrada. Verifique o META_ACCESS_TOKEN.',
-      detail: graphData,
-    });
-    return;
+  try {
+    const graphResp = await fetch(
+      `https://graph.facebook.com/v20.0/me/adaccounts?fields=id,name,account_status&access_token=${accessToken}`
+    );
+    const text = await graphResp.text();
+    const graphData = JSON.parse(text) as { data?: Array<{ id: string; name: string }> };
+    if (graphData.data?.length) {
+      adAccountIds = graphData.data.map((a) => a.id.replace('act_', ''));
+      accountsFound = graphData.data;
+    }
+  } catch {
+    // Graph API falhou — usa variáveis de ambiente como fallback
+    console.warn('[AutoConnect] Graph API falhou, usando fallback de env vars');
   }
 
-  const adAccountIds = graphData.data.map((a) => a.id.replace('act_', ''));
+  // Fallback: usa META_PAGE_ID como identificador se não encontrou via Graph API
+  if (!adAccountIds.length) {
+    const fallbackId = process.env.META_AD_ACCOUNT_ID
+      ?? process.env.META_PAGE_ID
+      ?? process.env.META_INSTAGRAM_ACCOUNT_ID;
+
+    if (!fallbackId) {
+      res.status(400).json({
+        error: 'Não foi possível detectar a conta de anúncios automaticamente. Use "Token personalizado" e informe o ID manualmente.',
+      });
+      return;
+    }
+    adAccountIds = [fallbackId.replace('act_', '')];
+    accountsFound = [{ id: fallbackId, name: 'Conta configurada no servidor' }];
+  }
 
   await prisma.mCPConnection.upsert({
     where: { userId: req.userId! },
@@ -215,7 +234,7 @@ router.post('/auto-connect', async (req: AuthRequest, res: Response) => {
 
   await auditLog({ userId: req.userId!, action: 'MCP_AUTO_CONNECT', resource: 'mcp_connection' });
 
-  res.json({ success: true, accounts: graphData.data, adAccountIds });
+  res.json({ success: true, accounts: accountsFound, adAccountIds });
 });
 
 // ─── Contas ───────────────────────────────────────────────────────────────────
