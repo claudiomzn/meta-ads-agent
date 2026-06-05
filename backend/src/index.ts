@@ -158,7 +158,8 @@ cron.schedule('*/15 * * * *', async () => {
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
-  console.log(`✅ Backend rodando em http://localhost:${PORT}`);
+app.listen(Number(PORT), '0.0.0.0', () => {
+  console.log(`✅ Backend rodando em http://0.0.0.0:${PORT}`);
+  console.log(`   NODE_ENV: ${process.env.NODE_ENV}`);
   console.log(`   Crons: métricas (1h) | status + automações (15min)`);
 });

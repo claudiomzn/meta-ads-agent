@@ -21,6 +21,6 @@ RUN npx tsc
 # Remove devDependencies após o build (reduz tamanho da imagem)
 RUN npm prune --production
 
-# Railway injeta PORT automaticamente — o app usa process.env.PORT
-# Sem EXPOSE fixo para não conflitar com a porta dinâmica do Railway
+# Railway injeta PORT — app escuta em 0.0.0.0:PORT
+EXPOSE 3000
 CMD ["node", "dist/index.js"]
