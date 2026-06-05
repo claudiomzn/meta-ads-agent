@@ -1,5 +1,8 @@
 FROM node:20-slim
 
+# Instala OpenSSL necessário para Prisma no Debian slim
+RUN apt-get update && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Copia arquivos de dependência
