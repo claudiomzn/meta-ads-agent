@@ -84,6 +84,15 @@ export class SyncService {
             },
           });
 
+          // Status real dos anúncios (detecta reprovados: DISAPPROVED / WITH_ISSUES)
+          let liveAdStatuses = new Map<string, string>();
+          try {
+            const liveAds = await svc.getAds(adSet.metaAdSetId);
+            liveAdStatuses = new Map(liveAds.map((a) => [a.id, a.status]));
+          } catch (err) {
+            console.warn('[SyncService] Falha ao buscar status dos anúncios:', err);
+          }
+
           for (const ad of adSet.ads) {
             if (!ad.metaAdId) continue;
             const adInsights = await svc.getAdInsights(ad.metaAdId, range);
@@ -93,6 +102,7 @@ export class SyncService {
                 metaCtr: adInsights.ctr,
                 metaCpc: adInsights.cpc,
                 metaSpend: adInsights.spend,
+                metaStatus: liveAdStatuses.get(ad.metaAdId) ?? ad.metaStatus,
               },
             });
 

@@ -371,10 +371,29 @@ router.get('/proactive-alerts', async (req: AuthRequest, res: Response) => {
     take: 20,
   });
 
+  // Alertas determinísticos: anúncios reprovados pelo Meta (independe de gasto/IA)
+  const disapprovedAds = await prisma.ad.findMany({
+    where: {
+      metaStatus: { in: ['DISAPPROVED', 'WITH_ISSUES'] },
+      adSet: { campaign: { userId: req.userId! } },
+    },
+    include: { adSet: { include: { campaign: true } } },
+    take: 5,
+  });
+  const disapprovedAlerts = disapprovedAds.map((ad) => ({
+    id: `disapproved-${ad.id}`,
+    type: 'critical' as const,
+    emoji: '⛔',
+    message: `Anúncio reprovado: "${ad.name}"`,
+    detail: `Na campanha "${ad.adSet.campaign.name}". ${ad.metaStatus === 'WITH_ISSUES' ? 'Com problemas de política' : 'Reprovado pelo Meta'} — edite o criativo e reenvie para revisão.`,
+    campaignId: ad.adSet.campaign.id,
+    action: null,
+  }));
+
   const published = campaigns.filter((c) => c.metaSpend != null && c.metaSpend > 0);
 
   if (published.length === 0) {
-    res.json({ alerts: [] });
+    res.json({ alerts: disapprovedAlerts });
     return;
   }
 
@@ -455,11 +474,11 @@ Se não houver action possível, use null.`,
     if (!jsonMatch) throw new Error('JSON não encontrado');
 
     const parsed = JSON.parse(jsonMatch[0]);
-    res.json(parsed);
+    res.json({ ...parsed, alerts: [...disapprovedAlerts, ...(parsed.alerts ?? [])] });
   } catch (err) {
     console.error('[ProactiveAlerts] Erro:', err);
     // Fallback algorítmico
-    const alerts: object[] = [];
+    const alerts: object[] = [...disapprovedAlerts];
     for (const c of published.slice(0, 3)) {
       if ((c.metaRoas ?? 0) < 1 && (c.metaSpend ?? 0) > 100) {
         alerts.push({
