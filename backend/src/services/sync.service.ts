@@ -39,7 +39,7 @@ async function withSyncLog(
 
 // Notifica o admin quando um tipo de sincronização falha 2x seguidas para o mesmo usuário.
 // Dispara apenas na 2ª falha consecutiva (não a cada falha subsequente).
-async function alertOnConsecutiveFailures(userId: string, type: string, details: string): Promise<void> {
+export async function alertOnConsecutiveFailures(userId: string, type: string, details: string): Promise<void> {
   const adminEmail = process.env.ADMIN_ALERT_EMAIL;
   if (!adminEmail) return;
 

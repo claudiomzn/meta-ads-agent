@@ -9,7 +9,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { publishRateLimit } from '../middleware/rateLimit.middleware.js';
 import { MetaMCPService, PublishValidationError, createMetaMCPService } from '../services/meta.mcp.service.js';
 import { MediaService } from '../services/media.service.js';
-import { SyncService } from '../services/sync.service.js';
+import { SyncService, alertOnConsecutiveFailures } from '../services/sync.service.js';
 import { encrypt } from '../services/crypto.service.js';
 import { auditLog } from '../services/audit.service.js';
 
@@ -469,6 +469,29 @@ router.post('/sync/now', async (req: AuthRequest, res: Response) => {
   await syncSvc.syncPerformanceMetrics();
   await syncSvc.syncCampaignStatuses();
   res.json({ success: true, syncedAt: new Date() });
+});
+
+// Apenas para ambiente de teste — simula 2 falhas consecutivas de sync e dispara o alerta
+router.post('/sync/test-alert', async (req: AuthRequest, res: Response) => {
+  if (process.env.NODE_ENV === 'production') {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
+
+  const userId = req.userId!;
+  const type = 'metrics';
+  const details = 'Erro simulado para teste de alerta';
+
+  await prisma.syncLog.createMany({
+    data: [
+      { userId, type, status: 'error', details },
+      { userId, type, status: 'error', details },
+    ],
+  });
+
+  await alertOnConsecutiveFailures(userId, type, details);
+
+  res.json({ success: true, message: 'Alerta de teste disparado (verifique o email/log)' });
 });
 
 router.get('/sync/log', async (req: AuthRequest, res: Response) => {
