@@ -146,6 +146,62 @@ export function resetPasswordEmail(resetUrl: string, userName: string): { html: 
   return { html, text };
 }
 
+const SYNC_TYPE_LABELS: Record<string, string> = {
+  metrics: 'Sincronização de métricas',
+  status: 'Sincronização de status das campanhas',
+  import: 'Importação de campanhas externas',
+};
+
+export function syncFailureAlertEmail(
+  userEmail: string,
+  type: string,
+  details: string | null,
+): { html: string; text: string } {
+  const label = SYNC_TYPE_LABELS[type] ?? type;
+  const html = `
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head><meta charset="UTF-8" /><title>Falha de sincronização Meta Ads</title></head>
+<body style="margin:0;padding:0;background:#f5f7fa;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f7fa;padding:40px 0;">
+    <tr>
+      <td align="center">
+        <table width="520" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+          <tr>
+            <td style="background:#d93025;padding:28px 40px;">
+              <span style="color:#fff;font-size:16px;font-weight:bold;">⚠️ Alerta — Meta Ads Agent</span>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:40px;">
+              <h1 style="margin:0 0 16px;font-size:20px;color:#111;">${label} falhou 2x seguidas</h1>
+              <p style="margin:0 0 8px;color:#555;font-size:15px;line-height:1.6;">
+                Usuário: <strong>${userEmail}</strong>
+              </p>
+              <p style="margin:0 0 16px;color:#555;font-size:15px;line-height:1.6;">
+                A sincronização com o Meta Ads (via Pipeboard/MCP) falhou nas duas últimas tentativas.
+                O dashboard deste usuário pode estar exibindo dados desatualizados.
+              </p>
+              ${details ? `<pre style="background:#f5f5f5;border-radius:8px;padding:12px;font-size:12px;color:#a33;white-space:pre-wrap;word-break:break-all;">${details.slice(0, 1000)}</pre>` : ''}
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#f9f9f9;padding:20px 40px;border-top:1px solid #eee;">
+              <p style="margin:0;color:#aaa;font-size:12px;text-align:center;">Meta Ads Agent · Alerta automático de sincronização.</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+
+  const text = `[Meta Ads Agent] ${label} falhou 2x seguidas para ${userEmail}.\n\nO dashboard deste usuário pode estar exibindo dados desatualizados.\n\n${details ? `Detalhes: ${details.slice(0, 1000)}` : ''}`;
+
+  return { html, text };
+}
+
 export function welcomeEmail(userName: string): { html: string; text: string } {
   const html = `
 <!DOCTYPE html>

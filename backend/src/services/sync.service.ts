@@ -1,6 +1,7 @@
 import prisma from '../lib/prisma.js';
 
 import { createMetaMCPService } from './meta.mcp.service.js';
+import { sendMail, syncFailureAlertEmail } from './email.service.js';
 import type { DateRange } from '../types/meta.types.js';
 
 
@@ -27,10 +28,42 @@ async function withSyncLog(
       data: { userId, type, status: 'success', duration: Date.now() - start },
     });
   } catch (err) {
+    const details = String(err);
     await prisma.syncLog.create({
-      data: { userId, type, status: 'error', details: String(err), duration: Date.now() - start },
+      data: { userId, type, status: 'error', details, duration: Date.now() - start },
     });
     console.error(`[SyncService] Erro em "${type}":`, err);
+    await alertOnConsecutiveFailures(userId, type, details);
+  }
+}
+
+// Notifica o admin quando um tipo de sincronização falha 2x seguidas para o mesmo usuário.
+// Dispara apenas na 2ª falha consecutiva (não a cada falha subsequente).
+async function alertOnConsecutiveFailures(userId: string, type: string, details: string): Promise<void> {
+  const adminEmail = process.env.ADMIN_ALERT_EMAIL;
+  if (!adminEmail) return;
+
+  const lastLogs = await prisma.syncLog.findMany({
+    where: { userId, type },
+    orderBy: { createdAt: 'desc' },
+    take: 3,
+  });
+
+  const lastTwoFailed = lastLogs.length >= 2 && lastLogs[0].status === 'error' && lastLogs[1].status === 'error';
+  const isSecondConsecutiveFailure = lastTwoFailed && (lastLogs.length < 3 || lastLogs[2].status !== 'error');
+  if (!isSecondConsecutiveFailure) return;
+
+  try {
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+    const { html, text } = syncFailureAlertEmail(user?.email ?? userId, type, details);
+    await sendMail({
+      to: adminEmail,
+      subject: `⚠️ Falha de sincronização Meta Ads — ${user?.email ?? userId}`,
+      html,
+      text,
+    });
+  } catch (alertErr) {
+    console.error('[SyncService] Falha ao enviar alerta de sincronização:', alertErr);
   }
 }
 
