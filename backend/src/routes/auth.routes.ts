@@ -70,6 +70,68 @@ router.post('/login', authRateLimit, async (req: Request, res: Response) => {
   res.json({ token, user: { id: user.id, name: user.name, email: user.email } });
 });
 
+// ─── SSO: login automático via conta do AdsGenius (Supabase) ────────────────
+// Recebe o access_token da sessão Supabase do usuário, valida direto na API
+// do Supabase, e encontra/cria a conta correspondente neste backend pelo
+// supabaseUserId (fallback: email). Elimina o segundo login do Meta Ads.
+
+const SsoSchema = z.object({
+  access_token: z.string().min(10),
+});
+
+router.post('/sso', authRateLimit, async (req: Request, res: Response) => {
+  const parsed = SsoSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !supabaseAnonKey) {
+    res.status(500).json({ error: 'SSO não configurado no servidor' });
+    return;
+  }
+
+  const userResp = await fetch(`${supabaseUrl}/auth/v1/user`, {
+    headers: {
+      Authorization: `Bearer ${parsed.data.access_token}`,
+      apikey: supabaseAnonKey,
+    },
+  });
+  if (!userResp.ok) {
+    res.status(401).json({ error: 'Sessão do AdsGenius inválida ou expirada' });
+    return;
+  }
+  const supaUser = await userResp.json() as { id: string; email: string; user_metadata?: { full_name?: string } };
+  if (!supaUser.email) {
+    res.status(400).json({ error: 'Conta do AdsGenius sem email' });
+    return;
+  }
+
+  let user = await prisma.user.findUnique({ where: { supabaseUserId: supaUser.id } });
+  if (!user) {
+    // Vincula pelo email se já existia uma conta separada deste backend
+    user = await prisma.user.findUnique({ where: { email: supaUser.email.toLowerCase() } });
+    if (user) {
+      user = await prisma.user.update({ where: { id: user.id }, data: { supabaseUserId: supaUser.id } });
+    } else {
+      const randomPassword = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10);
+      user = await prisma.user.create({
+        data: {
+          email: supaUser.email.toLowerCase(),
+          password: randomPassword,
+          name: supaUser.user_metadata?.full_name ?? supaUser.email.split('@')[0],
+          supabaseUserId: supaUser.id,
+        },
+      });
+    }
+  }
+
+  const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET!, { expiresIn: '7d' });
+  res.json({ token, user: { id: user.id, name: user.name, email: user.email } });
+});
+
 router.get('/me', authMiddleware, async (req: AuthRequest, res: Response) => {
   const user = await prisma.user.findUnique({
     where: { id: req.userId },

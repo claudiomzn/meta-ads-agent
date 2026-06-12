@@ -22,6 +22,9 @@ model User {
   // Tokens emitidos ANTES desta data são considerados inválidos (revogados).
   passwordChangedAt DateTime?
 
+  // Identidade unificada: id do usuário no Supabase (login principal do AdsGenius)
+  supabaseUserId String? @unique
+
   mcpConnection MCPConnection?
 }
 
