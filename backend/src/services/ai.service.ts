@@ -60,6 +60,15 @@ interface GeneratedCopy {
   cta: string;
 }
 
+export interface CreativeVariation {
+  framework: string;
+  headline: string;
+  body: string;
+  cta: string;
+  visualConcept: string;
+  imagePrompt: string;
+}
+
 interface GenerateCampaignParams {
   product: string;
   objective: string;
@@ -247,6 +256,66 @@ Retorne APENAS este JSON (sem markdown, sem texto extra). Use NO MÁXIMO 2 conju
 
     const text = response.content[0].type === 'text' ? response.content[0].text : '{}';
     return JSON.parse(extractJson(text));
+  }
+
+  // ── Estúdio de Criativos: N variações (copy + conceito + prompt de imagem) ──
+  // Tudo numa única chamada — eficiente em custo e latência.
+  async generateCreativeSet(params: {
+    product: string;
+    audience?: string;
+    objective?: string;
+    differentials?: string;
+    tone?: string;
+    niche?: string;
+    businessName?: string;
+    count?: number;
+  }): Promise<{ variations: CreativeVariation[] }> {
+    const { product, audience, objective, differentials, tone, niche, businessName } = params;
+    const count = Math.min(Math.max(params.count ?? 12, 1), 12);
+    const nicheCtx = niche ? NICHE_CONTEXT[niche] ?? NICHE_CONTEXT.outro : null;
+
+    const userPrompt = `Crie ${count} variações de criativo para anúncios no Meta Ads (Facebook/Instagram). Seja específico e fiel ao briefing.
+
+Negócio: ${businessName || product}
+Produto/serviço: ${product}
+${objective ? `Objetivo: ${objective}` : ''}
+${audience ? `Público-alvo: ${audience}` : ''}
+${differentials ? `Diferenciais: ${differentials}` : ''}
+${tone ? `Tom de voz: ${tone}` : 'Tom de voz: persuasivo e direto'}
+${nicheCtx ? `
+--- Contexto do setor (use para personalizar) ---
+Dores típicas: ${nicheCtx.dores}
+Público típico: ${nicheCtx.publico}
+Ganchos que convertem: ${nicheCtx.ganchos}
+CTAs recomendados: ${nicheCtx.ctas}` : ''}
+
+Varie os ângulos e use frameworks diferentes (AIDA, PAS, BAB) entre as variações.
+Para cada variação, o "imagePrompt" deve estar EM INGLÊS, descrevendo uma cena fotográfica de alta qualidade (fotorrealista, iluminação profissional, composição com espaço livre para texto), SEM nenhum texto escrito dentro da imagem, adequada à marca.
+
+Retorne APENAS este JSON (sem markdown):
+{
+  "variations": [
+    {
+      "framework": "AIDA|PAS|BAB",
+      "headline": "título (máx 80 chars)",
+      "body": "texto do anúncio (máx 300 chars)",
+      "cta": "texto do botão (máx 25 chars)",
+      "visualConcept": "conceito visual em português (1 frase, o que aparece na arte)",
+      "imagePrompt": "detailed English prompt for an image model, photorealistic, professional lighting, negative space, NO text in image"
+    }
+  ]
+}`;
+
+    const response = await getClient().messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 4096,
+      system: [{ type: 'text', text: this.systemPrompt, cache_control: { type: 'ephemeral' } }],
+      messages: [{ role: 'user', content: userPrompt }],
+    });
+
+    const text = response.content[0].type === 'text' ? response.content[0].text : '{}';
+    const parsed = JSON.parse(extractJson(text)) as { variations?: CreativeVariation[] };
+    return { variations: parsed.variations ?? [] };
   }
 
   // ── Score de copy ─────────────────────────────────────────────────────────
