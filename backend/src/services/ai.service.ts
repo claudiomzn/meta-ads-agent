@@ -290,7 +290,8 @@ Ganchos que convertem: ${nicheCtx.ganchos}
 CTAs recomendados: ${nicheCtx.ctas}` : ''}
 
 Varie os ângulos e use frameworks diferentes (AIDA, PAS, BAB) entre as variações.
-Para cada variação, o "imagePrompt" deve estar EM INGLÊS, descrevendo uma cena fotográfica de alta qualidade (fotorrealista, iluminação profissional, composição com espaço livre para texto), SEM nenhum texto escrito dentro da imagem, adequada à marca.
+
+O "imagePrompt" é para o modelo Ideogram (que renderiza texto legível dentro da imagem) e deve estar EM INGLÊS, descrevendo um CRIATIVO DE ANÚNCIO profissional para Meta Ads: cena fotográfica de alta qualidade (fotorrealista, iluminação profissional, composição equilibrada) COM uma chamada curta integrada à arte de forma legível e bem posicionada. Especifique o texto curto exato a renderizar (em português, poucas palavras — ex: a oferta ou um gancho), o estilo tipográfico (limpo, alto contraste) e o local. Mantenha pouco texto (headline curta + talvez a oferta), nunca o parágrafo inteiro.
 
 Retorne APENAS este JSON (sem markdown):
 {
@@ -301,7 +302,7 @@ Retorne APENAS este JSON (sem markdown):
       "body": "texto do anúncio (máx 300 chars)",
       "cta": "texto do botão (máx 25 chars)",
       "visualConcept": "conceito visual em português (1 frase, o que aparece na arte)",
-      "imagePrompt": "detailed English prompt for an image model, photorealistic, professional lighting, negative space, NO text in image"
+      "imagePrompt": "detailed English prompt for Ideogram: professional Meta Ads creative, photorealistic scene, with a short legible Portuguese headline/offer integrated into the design (specify the exact short text, clean high-contrast typography, placement). Keep on-image text minimal."
     }
   ]
 }`;
