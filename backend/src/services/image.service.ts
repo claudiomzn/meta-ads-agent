@@ -1,12 +1,20 @@
-// Geração de imagem para criativos via fal.ai (Flux 1.1 Pro).
+// Geração de imagem para criativos via fal.ai.
+//
+// Modelo padrão: Ideogram v4 (excelente para anúncios — renderiza texto/oferta
+// legível dentro da arte, ideal para o mercado de performance brasileiro).
 //
 // Ativa-se automaticamente quando FAL_KEY está configurada no ambiente.
 // Sem a key, generateImage() retorna null (o funil continua funcionando com
 // o conceito visual + copy; a arte real "liga" assim que a key for adicionada).
+//
+// Configurável por env (sem precisar mexer no código):
+//   FAL_KEY             — credencial do fal.ai (obrigatória para gerar)
+//   FAL_IMAGE_MODEL     — id do modelo (default: ideogram/v4)
+//   FAL_RENDERING_SPEED — TURBO | BALANCED | QUALITY (default: QUALITY)
 
-const FAL_ENDPOINT = 'https://fal.run/fal-ai/flux-pro/v1.1';
+const FAL_BASE = 'https://fal.run';
 
-// Proporções do Meta → tamanhos aceitos pelo Flux
+// Proporções do Meta → tamanhos aceitos pelo fal (image_size)
 export type CreativeAspect = '1:1' | '4:5' | '9:16';
 
 const ASPECT_TO_SIZE: Record<CreativeAspect, string> = {
@@ -14,6 +22,14 @@ const ASPECT_TO_SIZE: Record<CreativeAspect, string> = {
   '4:5': 'portrait_4_3',
   '9:16': 'portrait_16_9',
 };
+
+function modelId(): string {
+  return process.env.FAL_IMAGE_MODEL ?? 'ideogram/v4';
+}
+
+function renderingSpeed(): string {
+  return process.env.FAL_RENDERING_SPEED ?? 'QUALITY';
+}
 
 export function isImageGenEnabled(): boolean {
   return !!process.env.FAL_KEY;
@@ -31,7 +47,7 @@ export async function generateImage(
   if (!key) return null;
 
   try {
-    const res = await fetch(FAL_ENDPOINT, {
+    const res = await fetch(`${FAL_BASE}/${modelId()}`, {
       method: 'POST',
       headers: {
         Authorization: `Key ${key}`,
@@ -40,9 +56,8 @@ export async function generateImage(
       body: JSON.stringify({
         prompt,
         image_size: ASPECT_TO_SIZE[aspect],
+        rendering_speed: renderingSpeed(),
         num_images: 1,
-        output_format: 'jpeg',
-        enable_safety_checker: true,
       }),
     });
 
