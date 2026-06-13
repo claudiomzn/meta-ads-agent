@@ -118,12 +118,30 @@ beforeEach(() => {
 // ─── Testes ───────────────────────────────────────────────────────────────────
 
 describe('POST /api/mcp/connect', () => {
-  it('conecta com dados válidos', async () => {
+  it('conecta com dados válidos (provedor Meta — valida token via MCP)', async () => {
     const res = await request(app)
       .post('/api/mcp/connect')
       .set('Authorization', `Bearer ${token}`)
       .send({
         accessToken: 'EAA...',
+        mcpUrl: 'https://mcp.pipeboard.co/meta-ads',
+        mcpProvider: 'meta',
+        adAccountIds: ['act_123'],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.provider).toBe('meta');
+    expect(mockConnect).toHaveBeenCalledOnce();
+    expect(mockListAdAccounts).toHaveBeenCalledOnce();
+    expect(mockDisconnect).toHaveBeenCalledOnce();
+  });
+
+  it('conecta via Pipeboard sem testar token (auth embutida na URL)', async () => {
+    const res = await request(app)
+      .post('/api/mcp/connect')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
         mcpUrl: 'https://mcp.pipeboard.co/meta-ads',
         mcpProvider: 'pipeboard',
         adAccountIds: ['act_123'],
@@ -132,9 +150,8 @@ describe('POST /api/mcp/connect', () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.provider).toBe('pipeboard');
-    expect(mockConnect).toHaveBeenCalledOnce();
-    expect(mockListAdAccounts).toHaveBeenCalledOnce();
-    expect(mockDisconnect).toHaveBeenCalledOnce();
+    // Para Pipeboard a auth já está na URL — não há chamada de teste ao MCP
+    expect(mockConnect).not.toHaveBeenCalled();
   });
 
   it('rejeita quando mcpUrl é inválida', async () => {
@@ -165,7 +182,7 @@ describe('POST /api/mcp/connect', () => {
     expect(res.status).toBe(400);
   });
 
-  it('retorna 400 quando conexão MCP falha', async () => {
+  it('retorna 400 quando conexão MCP falha (provedor Meta)', async () => {
     mockConnect.mockRejectedValueOnce(new Error('Token inválido'));
 
     const res = await request(app)
@@ -174,7 +191,7 @@ describe('POST /api/mcp/connect', () => {
       .send({
         accessToken: 'token-invalido',
         mcpUrl: 'https://mcp.pipeboard.co/meta-ads',
-        mcpProvider: 'pipeboard',
+        mcpProvider: 'meta',
         adAccountIds: ['act_123'],
       });
 
