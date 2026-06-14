@@ -258,6 +258,83 @@ Retorne APENAS este JSON (sem markdown, sem texto extra). Use NO MÁXIMO 2 conju
     return JSON.parse(extractJson(text));
   }
 
+  // ── Público-alvo: deriva idade, gênero, localização e interesses do briefing ──
+  // Retorna um "spec" que será resolvido em IDs reais do Meta (interesses/geo).
+  async generateTargeting(params: {
+    product: string;
+    audience?: string;
+    niche?: string;
+    objective?: string;
+    businessName?: string;
+    regiao?: string;
+  }): Promise<{
+    ageMin: number;
+    ageMax: number;
+    genders: number[]; // [1]=homens, [2]=mulheres, [1,2]=ambos
+    location: { query: string; type: 'country' | 'region' | 'city' };
+    interestKeywords: string[];
+    rationale: string;
+  }> {
+    const { product, audience, niche, objective, businessName, regiao } = params;
+    const nicheCtx = niche ? NICHE_CONTEXT[niche] ?? NICHE_CONTEXT.outro : null;
+
+    const userPrompt = `Defina o público-alvo (targeting) ideal para uma campanha de Meta Ads.
+
+Negócio: ${businessName || product}
+Produto/Serviço: ${product}
+${objective ? `Objetivo: ${objective}` : ''}
+${audience ? `Público descrito pelo anunciante: ${audience}` : ''}
+${regiao ? `Região-alvo informada: ${regiao}` : ''}
+${nicheCtx ? `Público típico do setor: ${nicheCtx.publico}` : ''}
+
+Regras:
+- "interestKeywords": 3 a 5 interesses do catálogo do Facebook que descrevam quem compra isso. Use termos CURTOS e COMUNS, em português ou o nome reconhecido pelo Meta (ex: "Plano de saúde", "Empreendedorismo", "Academias de ginástica"). Evite frases longas.
+- "location.query": cidade, estado ou país. Se o anunciante mencionou uma cidade/região, use-a; senão use "Brasil".
+- "location.type": "city", "region" ou "country" — coerente com o query.
+- "genders": [1,2] para ambos, [1] só homens, [2] só mulheres.
+- idade entre 18 e 65.
+
+Retorne APENAS este JSON (sem markdown):
+{
+  "ageMin": 25,
+  "ageMax": 55,
+  "genders": [1, 2],
+  "location": { "query": "Brasil", "type": "country" },
+  "interestKeywords": ["interesse 1", "interesse 2", "interesse 3"],
+  "rationale": "1 frase explicando o público"
+}`;
+
+    const response = await getClient().messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1024,
+      system: [{ type: 'text', text: this.systemPrompt, cache_control: { type: 'ephemeral' } }],
+      messages: [{ role: 'user', content: userPrompt }],
+    });
+
+    const text = response.content[0].type === 'text' ? response.content[0].text : '{}';
+    const parsed = JSON.parse(extractJson(text));
+
+    // Saneamento — garante valores válidos mesmo se a IA divergir do schema
+    const ageMin = Math.min(Math.max(Number(parsed.ageMin) || 18, 18), 65);
+    const ageMax = Math.min(Math.max(Number(parsed.ageMax) || 65, ageMin), 65);
+    const gendersRaw: number[] = Array.isArray(parsed.genders) ? parsed.genders.map(Number).filter((g: number) => g === 1 || g === 2) : [];
+    const genders = gendersRaw.length ? Array.from(new Set(gendersRaw)) : [1, 2];
+    const locType = ['country', 'region', 'city'].includes(parsed.location?.type) ? parsed.location.type : 'country';
+    const locQuery = String(parsed.location?.query || 'Brasil').trim() || 'Brasil';
+    const interestKeywords: string[] = Array.isArray(parsed.interestKeywords)
+      ? parsed.interestKeywords.map((k: unknown) => String(k).trim()).filter(Boolean).slice(0, 5)
+      : [];
+
+    return {
+      ageMin,
+      ageMax,
+      genders,
+      location: { query: locQuery, type: locType as 'country' | 'region' | 'city' },
+      interestKeywords,
+      rationale: String(parsed.rationale || ''),
+    };
+  }
+
   // ── Estúdio de Criativos: N variações (copy + conceito + prompt de imagem) ──
   // Tudo numa única chamada — eficiente em custo e latência.
   async generateCreativeSet(params: {

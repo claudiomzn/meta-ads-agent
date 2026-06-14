@@ -4,6 +4,7 @@ import { Router, Response } from 'express';
 import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { AIService } from '../services/ai.service.js';
+import { buildTargeting, type AdPlatform } from '../services/targeting.service.js';
 
 const router = Router();
 const ai = new AIService();
@@ -22,6 +23,33 @@ router.post('/generate-plan', async (req: AuthRequest, res: Response) => {
     ticketMedio, regiao, concorrentes, niche, businessName,
   });
   res.json(plan);
+});
+
+// Monta o público-alvo automaticamente a partir do briefing (idade, gênero,
+// localização e interesses reais do Meta). Usado pelo Estúdio de Criativos
+// antes de criar a campanha.
+router.post('/build-targeting', async (req: AuthRequest, res: Response) => {
+  const { product, audience, niche, objective, businessName, regiao, platform } = req.body as {
+    product?: string; audience?: string; niche?: string; objective?: string;
+    businessName?: string; regiao?: string; platform?: AdPlatform;
+  };
+
+  if (!product?.trim()) {
+    res.status(400).json({ error: 'product é obrigatório' });
+    return;
+  }
+
+  try {
+    const result = await buildTargeting(
+      req.userId!,
+      { product, audience, niche, objective, businessName, regiao },
+      platform ?? 'ambos',
+    );
+    res.json(result);
+  } catch (err) {
+    console.error('[campaigns] Falha ao montar targeting:', err);
+    res.status(500).json({ error: 'Não foi possível montar o público-alvo automaticamente.' });
+  }
 });
 
 const AdSchema = z.object({

@@ -17,6 +17,40 @@ const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
 
 const router = Router();
 
+// Remove interesses com ID inválido (ex: "PLACEHOLDER" gerado pela IA no fluxo
+// antigo, ou qualquer ID não-numérico) — o Meta rejeita o conjunto inteiro se
+// um interesse não existir. Garante que a publicação não quebre por isso.
+function sanitizeTargeting(targeting: Record<string, unknown>): Record<string, unknown> {
+  if (!targeting || typeof targeting !== 'object') return targeting;
+
+  const isValidId = (id: unknown) => typeof id === 'string' && /^\d+$/.test(id);
+  const cleanInterests = (arr: unknown): unknown[] =>
+    Array.isArray(arr) ? arr.filter((i) => i && typeof i === 'object' && isValidId((i as { id?: unknown }).id)) : [];
+
+  const t = { ...targeting };
+
+  // interests no nível raiz
+  if ('interests' in t) {
+    const kept = cleanInterests(t.interests);
+    if (kept.length) t.interests = kept;
+    else delete t.interests;
+  }
+
+  // interests dentro de flexible_spec
+  if (Array.isArray(t.flexible_spec)) {
+    const specs = (t.flexible_spec as Array<Record<string, unknown>>)
+      .map((spec) => {
+        const kept = cleanInterests(spec.interests);
+        return kept.length ? { ...spec, interests: kept } : null;
+      })
+      .filter(Boolean);
+    if (specs.length) t.flexible_spec = specs;
+    else delete t.flexible_spec;
+  }
+
+  return t;
+}
+
 // ─── Webhook Meta (sem autenticação — chamado pelo Meta) ──────────────────────
 
 router.get('/webhook', (req: AuthRequest, res: Response) => {
@@ -302,7 +336,7 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
       adSets: campaign.adSets.map((as) => ({
         name: as.name,
         dailyBudget: as.dailyBudget,
-        targeting: JSON.parse(as.targeting),
+        targeting: sanitizeTargeting(JSON.parse(as.targeting)),
         optimizationGoal: as.optimizationGoal,
         billingEvent: 'IMPRESSIONS',
         ads: as.ads.map((ad) => {

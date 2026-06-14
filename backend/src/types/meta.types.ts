@@ -187,3 +187,23 @@ export interface MCPStatus {
 }
 
 export type AdStatus = 'ACTIVE' | 'PAUSED' | 'DELETED' | 'ARCHIVED';
+
+// ─── Targeting (busca de interesses / localizações reais no Meta) ─────────────
+export interface MetaInterest {
+  id: string;
+  name: string;
+  audience_size?: number;
+  audience_size_lower_bound?: number;
+  audience_size_upper_bound?: number;
+  path?: string[];
+}
+
+export interface MetaGeoLocation {
+  key: string;
+  name: string;
+  type: string; // country | region | city | zip | geo_market | ...
+  country_code?: string;
+  country_name?: string;
+  region?: string;
+  region_id?: number;
+}

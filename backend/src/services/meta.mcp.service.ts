@@ -23,6 +23,8 @@ import type {
   ValidationResult,
   MCPStatus,
   AdStatus,
+  MetaInterest,
+  MetaGeoLocation,
 } from '../types/meta.types.js';
 
 
@@ -184,6 +186,29 @@ export class MetaMCPService {
     return this.call<LookalikeAudience[]>('get_lookalike_audiences', {
       ad_account_id: adAccountId,
     });
+  }
+
+  // ─── Leitura — Targeting (interesses e localizações reais) ────────────────
+  // Resolvem nomes/keywords em IDs válidos do catálogo do Meta — necessário
+  // para montar o público automaticamente (interesses precisam de ID real,
+  // não basta o nome).
+
+  async searchInterests(query: string, limit = 25): Promise<MetaInterest[]> {
+    const res = await this.call<{ data?: MetaInterest[] }>('search_interests', { query, limit });
+    return res.data ?? [];
+  }
+
+  async searchGeoLocations(
+    query: string,
+    locationTypes?: string[],
+    limit = 25,
+  ): Promise<MetaGeoLocation[]> {
+    const res = await this.call<{ data?: MetaGeoLocation[] }>('search_geo_locations', {
+      query,
+      ...(locationTypes?.length ? { location_types: locationTypes } : {}),
+      limit,
+    });
+    return res.data ?? [];
   }
 
   // ─── Leitura — Conta ──────────────────────────────────────────────────────
