@@ -271,7 +271,7 @@ Retorne APENAS este JSON (sem markdown, sem texto extra). Use NO MÁXIMO 2 conju
     count?: number;
   }): Promise<{ variations: CreativeVariation[] }> {
     const { product, audience, objective, differentials, tone, niche, businessName } = params;
-    const count = Math.min(Math.max(params.count ?? 12, 1), 12);
+    const count = Math.min(Math.max(params.count ?? 6, 1), 6);
     const nicheCtx = niche ? NICHE_CONTEXT[niche] ?? NICHE_CONTEXT.outro : null;
 
     const userPrompt = `Crie ${count} variações de criativo para anúncios no Meta Ads (Facebook/Instagram). Seja específico e fiel ao briefing.

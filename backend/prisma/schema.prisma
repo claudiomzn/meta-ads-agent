@@ -25,6 +25,9 @@ model User {
   // Identidade unificada: id do usuário no Supabase (login principal do AdsGenius)
   supabaseUserId String? @unique
 
+  // Estúdio de Criativos: quantas gerações o usuário já consumiu durante o trial
+  creativeGenerationsUsed Int @default(0)
+
   mcpConnection MCPConnection?
 }
 
