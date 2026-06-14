@@ -4,7 +4,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { AIService } from '../services/ai.service.js';
 import { generateImages, isImageGenEnabled, type CreativeAspect } from '../services/image.service.js';
 import { rehostImage } from '../services/storage.service.js';
-import { getUserPlan, isPaidPlan } from '../services/plan.service.js';
+import { getUserPlan, isPaidPlan, isLifetimeUser } from '../services/plan.service.js';
 
 const router = Router();
 const ai = new AIService();
@@ -20,11 +20,17 @@ function currentMonthKey(): string {
   return new Date().toISOString().slice(0, 7); // "2026-06"
 }
 
-type QuotaUser = { creativeGenerationsUsed: number; creativeGenerationsMonth: string | null };
+type QuotaUser = { email: string; creativeGenerationsUsed: number; creativeGenerationsMonth: string | null };
 
 function getQuota(plan: string | null, user: QuotaUser) {
-  const isTrial = !isPaidPlan(plan);
   const month = currentMonthKey();
+
+  // Acesso vitalício/interno: sem limites de cota
+  if (isLifetimeUser(user.email)) {
+    return { isTrial: false, limit: Infinity, used: 0, resetMonth: false, month };
+  }
+
+  const isTrial = !isPaidPlan(plan);
 
   if (isTrial) {
     return { isTrial, limit: TRIAL_GENERATION_LIMIT, used: user.creativeGenerationsUsed, resetMonth: false, month };

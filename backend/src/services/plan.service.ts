@@ -29,3 +29,14 @@ export async function getUserPlan(supabaseUserId: string | null | undefined): Pr
 export function isPaidPlan(plan: string | null): boolean {
   return plan === 'pro' || plan === 'agency';
 }
+
+// Lista de e-mails (separados por vírgula) com acesso vitalício e sem
+// limites de cota no Estúdio de Criativos — uso interno/fundador.
+const LIFETIME_EMAILS = (process.env.CREATIVE_STUDIO_LIFETIME_EMAILS ?? '')
+  .split(',')
+  .map((e) => e.trim().toLowerCase())
+  .filter(Boolean);
+
+export function isLifetimeUser(email: string | null | undefined): boolean {
+  return !!email && LIFETIME_EMAILS.includes(email.toLowerCase());
+}

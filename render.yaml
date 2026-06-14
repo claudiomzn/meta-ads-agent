@@ -41,6 +41,8 @@ services:
         sync: false
       - key: FAL_RENDERING_SPEED
         sync: false
+      - key: CREATIVE_STUDIO_LIFETIME_EMAILS
+        value: claudio_mir@yahoo.com.br
       - key: SMTP_HOST
         sync: false
       - key: SMTP_PORT
