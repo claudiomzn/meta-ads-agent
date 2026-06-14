@@ -33,6 +33,14 @@ services:
         sync: false
       - key: SUPABASE_ANON_KEY
         sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: FAL_KEY
+        sync: false
+      - key: FAL_IMAGE_MODEL
+        sync: false
+      - key: FAL_RENDERING_SPEED
+        sync: false
       - key: SMTP_HOST
         sync: false
       - key: SMTP_PORT
