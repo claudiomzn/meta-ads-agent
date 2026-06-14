@@ -184,6 +184,27 @@ model Copy {
   createdAt  DateTime @default(now())
 }
 
+// Criativo arquivado no Estúdio de Criativos (copy + arte gerada + briefing)
+model StudioCreative {
+  id            String   @id @default(cuid())
+  userId        String
+  framework     String
+  headline      String
+  body          String
+  cta           String
+  visualConcept String?
+  imagePrompt   String?
+  imageUrl      String?  // URL durável (Supabase Storage) ou do fal como fallback
+  aspect        String   @default("1:1")
+  product       String?
+  niche         String?
+  objective     String?
+  favorite      Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  @@index([userId])
+}
+
 model Audience {
   id             String    @id @default(cuid())
   campaignId     String?
