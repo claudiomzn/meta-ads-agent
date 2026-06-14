@@ -1,6 +1,6 @@
 // Geração de imagem para criativos via fal.ai.
 //
-// Modelo padrão: Ideogram v4 (excelente para anúncios — renderiza texto/oferta
+// Modelo padrão: Ideogram v3 (excelente para anúncios — renderiza texto/oferta
 // legível dentro da arte, ideal para o mercado de performance brasileiro).
 //
 // Ativa-se automaticamente quando FAL_KEY está configurada no ambiente.
@@ -9,7 +9,7 @@
 //
 // Configurável por env (sem precisar mexer no código):
 //   FAL_KEY             — credencial do fal.ai (obrigatória para gerar)
-//   FAL_IMAGE_MODEL     — id do modelo (default: ideogram/v4)
+//   FAL_IMAGE_MODEL     — id do modelo (default: fal-ai/ideogram/v3)
 //   FAL_RENDERING_SPEED — TURBO | BALANCED | QUALITY (default: QUALITY)
 
 const FAL_BASE = 'https://fal.run';
@@ -24,7 +24,7 @@ const ASPECT_TO_SIZE: Record<CreativeAspect, string> = {
 };
 
 function modelId(): string {
-  return process.env.FAL_IMAGE_MODEL ?? 'ideogram/v4';
+  return process.env.FAL_IMAGE_MODEL ?? 'fal-ai/ideogram/v3';
 }
 
 function renderingSpeed(): string {
