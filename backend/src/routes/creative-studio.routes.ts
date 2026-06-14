@@ -117,17 +117,22 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
     imageUrls = variations.map(() => null);
   }
 
-  if (imagesToGenerate > 0) {
+  // Só consome a cota pelas imagens que a fal.ai de fato retornou — se a
+  // geração falhar (ex: billing do fal.ai não configurado), não queremos
+  // descontar a cota do usuário sem entregar nada em troca.
+  const imagesGenerated = imageUrls.filter((u) => u !== null).length;
+
+  if (imagesGenerated > 0) {
     if (quota.isTrial) {
       await prisma.user.update({
         where: { id: req.userId! },
-        data: { creativeGenerationsUsed: { increment: imagesToGenerate } },
+        data: { creativeGenerationsUsed: { increment: imagesGenerated } },
       });
     } else {
       await prisma.user.update({
         where: { id: req.userId! },
         data: {
-          creativeGenerationsUsed: quota.resetMonth ? imagesToGenerate : { increment: imagesToGenerate },
+          creativeGenerationsUsed: quota.resetMonth ? imagesGenerated : { increment: imagesGenerated },
           creativeGenerationsMonth: quota.month,
         },
       });
@@ -148,8 +153,8 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
 
   res.json({
     creatives,
-    imageGenEnabled: imagesToGenerate > 0,
-    generationsLeft: Math.max(0, generationsLeft - imagesToGenerate),
+    imageGenEnabled: imagesGenerated > 0,
+    generationsLeft: Math.max(0, generationsLeft - imagesGenerated),
     monthlyLimit: quota.isTrial ? null : quota.limit,
   });
 });
