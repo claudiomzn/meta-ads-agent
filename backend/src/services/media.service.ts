@@ -25,13 +25,15 @@ export class MediaService {
   private async getToken(): Promise<string> {
     const conn = await prisma.mCPConnection.findUnique({ where: { userId: this.userId } });
     if (!conn) throw new Error('Conta Meta não conectada.');
-    const decrypted = decrypt(conn.metaAccessToken);
-    if (decrypted.startsWith('pipeboard:') || decrypted.startsWith('zapier')) {
+
+    // Pipeboard/Zapier não têm token Meta direto — usa o META_ACCESS_TOKEN do .env
+    if (conn.mcpProvider === 'pipeboard' || conn.mcpProvider === 'zapier') {
       const envToken = process.env.META_ACCESS_TOKEN;
       if (!envToken) throw new Error('META_ACCESS_TOKEN não configurado.');
       return envToken;
     }
-    return decrypted;
+
+    return decrypt(conn.metaAccessToken);
   }
 
   private async getAdAccountId(): Promise<string> {

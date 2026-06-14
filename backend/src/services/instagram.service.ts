@@ -60,10 +60,8 @@ export class InstagramService {
     const conn = await prisma.mCPConnection.findUnique({ where: { userId: this.userId } });
     if (!conn) throw new Error('Conta Meta não conectada. Faça o onboarding primeiro.');
 
-    const decrypted = decrypt(conn.metaAccessToken);
-
     // Pipeboard/Zapier não têm token Meta direto — usa o META_ACCESS_TOKEN do .env
-    if (decrypted.startsWith('pipeboard:') || decrypted.startsWith('zapier')) {
+    if (conn.mcpProvider === 'pipeboard' || conn.mcpProvider === 'zapier') {
       const envToken = process.env.META_ACCESS_TOKEN;
       if (!envToken) {
         throw new Error(
@@ -72,7 +70,7 @@ export class InstagramService {
       }
       this.token = envToken;
     } else {
-      this.token = decrypted;
+      this.token = decrypt(conn.metaAccessToken);
     }
 
     return this.token;

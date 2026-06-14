@@ -168,11 +168,14 @@ router.get('/status', async (req: AuthRequest, res: Response) => {
 
 // ─── Auto-connect usando token do servidor ────────────────────────────────────
 router.post('/auto-connect', async (req: AuthRequest, res: Response) => {
-  const accessToken = process.env.META_ACCESS_TOKEN;
+  // O bearer do MCP do Pipeboard é o PIPEBOARD_API_KEY (autenticação própria
+  // do Pipeboard, que já tem o Meta conectado via OAuth no dashboard dele) —
+  // não o META_ACCESS_TOKEN (esse é usado só para chamadas diretas à Graph API).
+  const accessToken = process.env.PIPEBOARD_API_KEY;
   const mcpUrl = process.env.META_MCP_URL ?? '';
 
   if (!accessToken) {
-    res.status(400).json({ error: 'META_ACCESS_TOKEN não configurado no servidor' });
+    res.status(400).json({ error: 'PIPEBOARD_API_KEY não configurado no servidor' });
     return;
   }
 
