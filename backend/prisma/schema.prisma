@@ -25,8 +25,11 @@ model User {
   // Identidade unificada: id do usuário no Supabase (login principal do AdsGenius)
   supabaseUserId String? @unique
 
-  // Estúdio de Criativos: quantas gerações o usuário já consumiu durante o trial
-  creativeGenerationsUsed Int @default(0)
+  // Estúdio de Criativos: controle de cota de artes geradas.
+  // Trial: contador vitalício (limite único durante o período de teste).
+  // Pro/Agência: contador mensal, resetado quando creativeGenerationsMonth muda.
+  creativeGenerationsUsed  Int     @default(0)
+  creativeGenerationsMonth String?
 
   mcpConnection MCPConnection?
 }

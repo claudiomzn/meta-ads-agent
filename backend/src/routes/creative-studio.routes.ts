@@ -9,29 +9,55 @@ import { getUserPlan, isPaidPlan } from '../services/plan.service.js';
 const router = Router();
 const ai = new AIService();
 
-// Quantas gerações completas (arte + copy) o plano de teste libera no total.
-// Acima desse limite, o trial continua tendo acesso só a copy + conceito (sem arte).
+// Cota de artes (imagens) geradas com IA:
+// - Trial: cota única (vitalícia) durante todo o período de teste.
+// - Pro/Agência: cota mensal, resetada automaticamente a cada novo mês.
 const TRIAL_GENERATION_LIMIT = Number(process.env.CREATIVE_STUDIO_TRIAL_LIMIT ?? 1);
+const PRO_MONTHLY_LIMIT = Number(process.env.CREATIVE_STUDIO_PRO_LIMIT ?? 24);
+const AGENCY_MONTHLY_LIMIT = Number(process.env.CREATIVE_STUDIO_AGENCY_LIMIT ?? 50);
+
+function currentMonthKey(): string {
+  return new Date().toISOString().slice(0, 7); // "2026-06"
+}
+
+type QuotaUser = { creativeGenerationsUsed: number; creativeGenerationsMonth: string | null };
+
+function getQuota(plan: string | null, user: QuotaUser) {
+  const isTrial = !isPaidPlan(plan);
+  const month = currentMonthKey();
+
+  if (isTrial) {
+    return { isTrial, limit: TRIAL_GENERATION_LIMIT, used: user.creativeGenerationsUsed, resetMonth: false, month };
+  }
+
+  const limit = plan === 'agency' ? AGENCY_MONTHLY_LIMIT : PRO_MONTHLY_LIMIT;
+  const resetMonth = user.creativeGenerationsMonth !== month;
+  const used = resetMonth ? 0 : user.creativeGenerationsUsed;
+  return { isTrial, limit, used, resetMonth, month };
+}
 
 router.use(authMiddleware);
 
-// Informa ao frontend se a geração de arte real está ativa (FAL_KEY configurada
-// e, no caso de usuários em trial, se ainda há gerações com arte disponíveis)
+// Informa ao frontend se a geração de arte real está ativa (FAL_KEY configurada)
+// e quantas artes ainda restam na cota do usuário (trial vitalícia, ou mensal
+// para Pro/Agência)
 router.get('/status', async (req: AuthRequest, res: Response) => {
   if (!isImageGenEnabled()) {
-    res.json({ imageGenEnabled: false });
+    res.json({ imageGenEnabled: false, generationsLeft: 0, monthlyLimit: null, isTrial: null });
     return;
   }
 
   const user = await prisma.user.findUnique({ where: { id: req.userId! } });
   const plan = await getUserPlan(user?.supabaseUserId);
-  const isTrial = !isPaidPlan(plan);
-  const trialGenerationsLeft = Math.max(0, TRIAL_GENERATION_LIMIT - (user?.creativeGenerationsUsed ?? 0));
+  const quota = getQuota(plan, user!);
+  const generationsLeft = Math.max(0, quota.limit - quota.used);
 
   res.json({
-    imageGenEnabled: !isTrial || trialGenerationsLeft > 0,
-    isTrial,
-    trialGenerationsLeft: isTrial ? trialGenerationsLeft : null,
+    imageGenEnabled: generationsLeft > 0,
+    isTrial: quota.isTrial,
+    generationsLeft,
+    monthlyLimit: quota.isTrial ? null : quota.limit,
+    trialGenerationsLeft: quota.isTrial ? generationsLeft : null,
   });
 });
 
@@ -51,20 +77,23 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
     return;
   }
 
-  // Controle de custo: usuários em trial têm direito a TRIAL_GENERATION_LIMIT
-  // gerações completas (1 imagem + 1 copy). Depois disso, continuam podendo
-  // gerar copies/conceitos, mas sem arte real (custo zero).
+  // Controle de custo: cada usuário tem uma cota de artes (imagens) geradas
+  // com IA — vitalícia no trial, mensal (resetada automaticamente) no Pro/Agência.
+  // Acima da cota, o estúdio continua gerando copy + conceito visual (custo zero).
   const user = await prisma.user.findUnique({ where: { id: req.userId! } });
   const plan = await getUserPlan(user?.supabaseUserId);
-  const isTrial = !isPaidPlan(plan);
-  const trialHasArtLeft = user!.creativeGenerationsUsed < TRIAL_GENERATION_LIMIT;
-  const allowArt = isImageGenEnabled() && (!isTrial || trialHasArtLeft);
+  const quota = getQuota(plan, user!);
+  const generationsLeft = Math.max(0, quota.limit - quota.used);
 
-  const effectiveCount = isTrial && trialHasArtLeft ? 1 : Math.min(Math.max(count ?? 6, 1), 6);
+  // No trial, a primeira geração entrega 1 criativo completo (1 arte + copy);
+  // depois disso, segue gerando o conjunto normal de copies sem arte.
+  const aiCount = quota.isTrial
+    ? (generationsLeft > 0 ? 1 : 6)
+    : Math.min(Math.max(count ?? 6, 1), 6);
 
   // 1. Copies + conceitos + prompts de imagem (uma única chamada à IA)
   const { variations } = await ai.generateCreativeSet({
-    product, audience, objective, differentials, tone, niche, businessName, count: effectiveCount,
+    product, audience, objective, differentials, tone, niche, businessName, count: aiCount,
   });
 
   if (variations.length === 0) {
@@ -72,18 +101,37 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
     return;
   }
 
-  // 2. Arte real (em paralelo) — só roda se FAL_KEY estiver configurada e o
-  // usuário ainda tiver direito a arte (plano pago, ou trial dentro do limite)
+  // 2. Arte real (em paralelo) — só para as primeiras `imagesToGenerate`
+  // variações, limitado pelo que resta da cota do usuário
   const aspectRatio: CreativeAspect = aspect ?? '1:1';
-  const imageUrls = allowArt
-    ? await generateImages(variations.map((v) => v.imagePrompt), aspectRatio)
-    : variations.map(() => null);
+  const imagesToGenerate = isImageGenEnabled() ? Math.min(generationsLeft, aiCount) : 0;
 
-  if (isTrial && trialHasArtLeft && isImageGenEnabled()) {
-    await prisma.user.update({
-      where: { id: req.userId! },
-      data: { creativeGenerationsUsed: { increment: 1 } },
-    });
+  let imageUrls: (string | null)[];
+  if (imagesToGenerate > 0) {
+    const generated = await generateImages(
+      variations.slice(0, imagesToGenerate).map((v) => v.imagePrompt),
+      aspectRatio,
+    );
+    imageUrls = [...generated, ...variations.slice(imagesToGenerate).map(() => null)];
+  } else {
+    imageUrls = variations.map(() => null);
+  }
+
+  if (imagesToGenerate > 0) {
+    if (quota.isTrial) {
+      await prisma.user.update({
+        where: { id: req.userId! },
+        data: { creativeGenerationsUsed: { increment: imagesToGenerate } },
+      });
+    } else {
+      await prisma.user.update({
+        where: { id: req.userId! },
+        data: {
+          creativeGenerationsUsed: quota.resetMonth ? imagesToGenerate : { increment: imagesToGenerate },
+          creativeGenerationsMonth: quota.month,
+        },
+      });
+    }
   }
 
   const creatives = variations.map((v, i) => ({
@@ -98,7 +146,12 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
     aspect: aspectRatio,
   }));
 
-  res.json({ creatives, imageGenEnabled: allowArt });
+  res.json({
+    creatives,
+    imageGenEnabled: imagesToGenerate > 0,
+    generationsLeft: Math.max(0, generationsLeft - imagesToGenerate),
+    monthlyLimit: quota.isTrial ? null : quota.limit,
+  });
 });
 
 // ─── Arquivo: salvar / listar / excluir criativos ──────────────────────────────
