@@ -74,42 +74,50 @@ export async function buildTargeting(
   let locationLabel = 'Brasil';
   const interests: { id: string; name: string }[] = [];
 
-  const svc = await createMetaMCPService(userId);
+  let svc: Awaited<ReturnType<typeof createMetaMCPService>> | null = null;
   try {
-    // ── Localização ──────────────────────────────────────────────────────────
-    try {
-      const locs = await svc.searchGeoLocations(spec.location.query, [spec.location.type]);
-      const top = locs[0];
-      if (top) {
-        if (top.type === 'country' && top.country_code) {
-          geoLocations = { countries: [top.country_code] };
-          locationLabel = top.name;
-        } else if (top.type === 'region') {
-          geoLocations = { regions: [{ key: top.key }] };
-          locationLabel = `${top.name} (estado)`;
-        } else if (top.type === 'city') {
-          geoLocations = { cities: [{ key: top.key, radius: 25, distance_unit: 'kilometer' }] };
-          locationLabel = `${top.name} + 25km`;
-        }
-      }
-    } catch (err) {
-      console.warn('[targeting] Falha ao resolver localização, usando Brasil:', err);
-    }
+    svc = await createMetaMCPService(userId);
+  } catch (err) {
+    console.warn('[targeting] Falha ao conectar ao MCP, usando padrão (Brasil, sem interesses):', err);
+  }
 
-    // ── Interesses ───────────────────────────────────────────────────────────
-    for (const keyword of spec.interestKeywords) {
+  if (svc) {
+    try {
+      // ── Localização ──────────────────────────────────────────────────────────
       try {
-        const found = await svc.searchInterests(keyword, 1);
-        const top = found[0];
-        if (top?.id && !interests.some((i) => i.id === top.id)) {
-          interests.push({ id: top.id, name: top.name });
+        const locs = await svc.searchGeoLocations(spec.location.query, [spec.location.type]);
+        const top = locs[0];
+        if (top) {
+          if (top.type === 'country' && top.country_code) {
+            geoLocations = { countries: [top.country_code] };
+            locationLabel = top.name;
+          } else if (top.type === 'region') {
+            geoLocations = { regions: [{ key: top.key }] };
+            locationLabel = `${top.name} (estado)`;
+          } else if (top.type === 'city') {
+            geoLocations = { cities: [{ key: top.key, radius: 25, distance_unit: 'kilometer' }] };
+            locationLabel = `${top.name} + 25km`;
+          }
         }
       } catch (err) {
-        console.warn(`[targeting] Falha ao resolver interesse "${keyword}":`, err);
+        console.warn('[targeting] Falha ao resolver localização, usando Brasil:', err);
       }
+
+      // ── Interesses ───────────────────────────────────────────────────────────
+      for (const keyword of spec.interestKeywords) {
+        try {
+          const found = await svc.searchInterests(keyword, 1);
+          const top = found[0];
+          if (top?.id && !interests.some((i) => i.id === top.id)) {
+            interests.push({ id: top.id, name: top.name });
+          }
+        } catch (err) {
+          console.warn(`[targeting] Falha ao resolver interesse "${keyword}":`, err);
+        }
+      }
+    } finally {
+      await svc.disconnect();
     }
-  } finally {
-    await svc.disconnect();
   }
 
   const bothGenders = spec.genders.includes(1) && spec.genders.includes(2);
