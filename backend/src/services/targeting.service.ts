@@ -54,7 +54,20 @@ export async function buildTargeting(
   platform: AdPlatform = 'ambos',
 ): Promise<{ targeting: Record<string, unknown>; summary: TargetingSummary }> {
   const ai = new AIService();
-  const spec = await ai.generateTargeting(briefing);
+  let spec: Awaited<ReturnType<AIService['generateTargeting']>>;
+  try {
+    spec = await ai.generateTargeting(briefing);
+  } catch (err) {
+    console.warn('[targeting] Falha ao gerar público com IA, usando padrão (Brasil, 18-65, ambos):', err);
+    spec = {
+      ageMin: 18,
+      ageMax: 65,
+      genders: [1, 2],
+      location: { query: 'Brasil', type: 'country' },
+      interestKeywords: [],
+      rationale: 'Não foi possível personalizar o público automaticamente — usando alcance amplo (Brasil, 18-65 anos, todos os gêneros).',
+    };
+  }
 
   // Baseline seguro — usado se a resolução via Meta falhar
   let geoLocations: Record<string, unknown> = { countries: ['BR'] };
