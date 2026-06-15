@@ -133,6 +133,7 @@ model MCPConnection {
   expiresAt       DateTime?
   mcpUrl          String?
   mcpProvider     String?   // meta / pipeboard / zapier
+  metaPixelId     String?
   createdAt       DateTime  @default(now())
 }
 
