@@ -342,3 +342,63 @@ model DailyMetric {
 
   @@unique([userId, date])
 }
+
+// ── Qualificação de Leads via WhatsApp (IA) ──────────────────────────────────
+// Config por cliente do bot de qualificação. Maior parte pode ser auto-preenchida
+// a partir da análise de site que o AdsGenius já faz.
+model WhatsappConfig {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+
+  enabled   Boolean  @default(false)
+
+  // Contexto do negócio (alimenta o system prompt do bot)
+  businessName String
+  product      String
+  differentials String?
+  region       String?
+  tone         String  @default("amigável e profissional")
+
+  // Perguntas de qualificação (JSON: array de strings) e critério de "qualificado"
+  questions          Json    @default("[]")
+  qualifiedCriteria  String  @default("Respondeu às perguntas de qualificação")
+  maxQuestions       Int     @default(4)
+  maxBotMessages     Int     @default(8)
+
+  // Handoff e atendimento
+  handoffContact     String?  // número/identificador do vendedor humano
+  businessHours      String?  // ex: "Seg-Sex 8-18h"
+
+  // Transporte (agnóstico): "evolution" | "meta" | "none"
+  transport          String  @default("none")
+  transportConfig    Json    @default("{}") // chaves específicas do transporte (instanceName, phoneId, etc.)
+
+  // Vínculo com a conversão do Google Ads / Meta (para disparar ao iniciar conversa)
+  conversionId       String?  // AW-XXXXX
+  conversionLabel    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Estado de cada conversa de lead (uma por número de telefone, por usuário).
+model WhatsappConversation {
+  id        String   @id @default(cuid())
+  userId    String
+  leadPhone String   // número do lead (E.164 ou id do WhatsApp)
+
+  state     String   @default("greeting") // greeting | qualifying | qualified | cold | handoff | closed
+  label     String?  // QUENTE | FRIO | SEM_RESPOSTA
+  questionsAsked Int  @default(0)
+  botMessages    Int  @default(0)
+
+  history   Json     @default("[]") // [{role:'user'|'assistant', text, at}]
+  summary   String?  // resumo de 1 linha gerado para o vendedor
+  conversionFired Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, leadPhone])
+  @@index([userId, state])
+}

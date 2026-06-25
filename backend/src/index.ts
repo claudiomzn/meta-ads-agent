@@ -37,6 +37,7 @@ import creativeAnalysisRoutes from './routes/creative-analysis.routes.js';
 import agentRoutes from './routes/agent.routes.js';
 import creativeStudioRoutes from './routes/creative-studio.routes.js';
 import pixelRoutes from './routes/pixel.routes.js';
+import whatsappRoutes from './routes/whatsapp.routes.js';
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -76,6 +77,7 @@ app.use('/api/creative-analysis', creativeAnalysisRoutes);
 app.use('/api/agent', agentRoutes);
 app.use('/api/creative-studio', creativeStudioRoutes);
 app.use('/api/pixel', pixelRoutes);
+app.use('/api/whatsapp', whatsappRoutes);
 
 app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date() }));
 
