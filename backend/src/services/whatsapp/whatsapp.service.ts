@@ -100,13 +100,16 @@ export class WhatsappService {
       await this.notifyVendor(config.handoffContact, msg.from, result.summary ?? '', transport);
     }
 
-    // Lead QUALIFICADO (QUENTE) → envia evento Lead via Meta CAPI, uma única vez.
-    // Disparamos só no lead qualificado (não no 1º contato) para o Meta otimizar
-    // por QUALIDADE de lead, não por volume de cliques.
+    // Lead QUALIFICADO (QUENTE) → envia a conversão de Lead server-side às DUAS
+    // plataformas, uma única vez. Só no lead qualificado (não no 1º contato),
+    // para os algoritmos otimizarem por QUALIDADE de lead, não volume de clique.
+    //   • Meta CAPI (evento Lead)
+    //   • Google Enhanced Conversions for Leads (upload pelo telefone)
     const isQualified = result.done && result.label === 'QUENTE';
-    const shouldFireCapi = isQualified && !conv.capiLeadFired;
-    if (shouldFireCapi) {
+    const shouldReport = isQualified && !conv.capiLeadFired;
+    if (shouldReport) {
       await this.fireCapiLead(conv.id, msg.from, msg.ctwaClid);
+      await this.fireGoogleLeadConversion(msg.from);
     }
 
     await prisma.whatsappConversation.update({
@@ -119,7 +122,7 @@ export class WhatsappService {
         history: history as unknown as object,
         summary: result.summary ?? conv.summary,
         conversionFired: conv.conversionFired || shouldFireConversion,
-        capiLeadFired: conv.capiLeadFired || shouldFireCapi,
+        capiLeadFired: conv.capiLeadFired || shouldReport,
       },
     });
 
@@ -151,6 +154,41 @@ export class WhatsappService {
       else console.warn(`[capi] Lead não enviado (lead ${leadPhone}): ${res.error}`);
     } catch (e) {
       console.error('[capi] erro inesperado ao enviar Lead:', e);
+    }
+  }
+
+  // Envia a conversão de Lead ao Google Ads (server-side, Enhanced Conversions),
+  // chamando a edge function do AdsGenius. Precisa do supabaseUserId do dono
+  // (identidade unificada) para a função achar a conexão Google. Não-fatal.
+  private async fireGoogleLeadConversion(leadPhone: string) {
+    try {
+      const base = process.env.SUPABASE_URL;
+      const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      if (!base || !serviceKey) return; // sem credenciais Supabase configuradas
+
+      const user = await prisma.user.findUnique({
+        where: { id: this.userId },
+        select: { supabaseUserId: true },
+      });
+      if (!user?.supabaseUserId) {
+        console.log('[google-conv] usuário sem supabaseUserId (sem SSO) — pulando upload');
+        return;
+      }
+
+      const resp = await fetch(`${base}/functions/v1/upload-lead-conversion`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${serviceKey}`,
+          apikey: serviceKey,
+        },
+        body: JSON.stringify({ user_id: user.supabaseUserId, phone: leadPhone }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (data?.ok) console.log(`[google-conv] Lead enviado (lead ${leadPhone})`);
+      else console.warn(`[google-conv] Lead não enviado (lead ${leadPhone}):`, data?.error ?? data?.partial_failure_error ?? resp.status);
+    } catch (e) {
+      console.error('[google-conv] erro inesperado ao enviar conversão:', e);
     }
   }
 
