@@ -5,6 +5,7 @@
 import prisma from '../../lib/prisma.js';
 import { resolveTransport, type InboundMessage } from './transport.js';
 import { nextReply, type QualConfig, type QualTurn } from './qualification.service.js';
+import { CapiService } from '../capi.service.js';
 
 interface HistoryItem { role: 'user' | 'assistant'; text: string; at: string }
 
@@ -99,6 +100,15 @@ export class WhatsappService {
       await this.notifyVendor(config.handoffContact, msg.from, result.summary ?? '', transport);
     }
 
+    // Lead QUALIFICADO (QUENTE) → envia evento Lead via Meta CAPI, uma única vez.
+    // Disparamos só no lead qualificado (não no 1º contato) para o Meta otimizar
+    // por QUALIDADE de lead, não por volume de cliques.
+    const isQualified = result.done && result.label === 'QUENTE';
+    const shouldFireCapi = isQualified && !conv.capiLeadFired;
+    if (shouldFireCapi) {
+      await this.fireCapiLead(conv.id, msg.from, msg.ctwaClid);
+    }
+
     await prisma.whatsappConversation.update({
       where: { id: conv.id },
       data: {
@@ -109,6 +119,7 @@ export class WhatsappService {
         history: history as unknown as object,
         summary: result.summary ?? conv.summary,
         conversionFired: conv.conversionFired || shouldFireConversion,
+        capiLeadFired: conv.capiLeadFired || shouldFireCapi,
       },
     });
 
@@ -124,6 +135,23 @@ export class WhatsappService {
     }
     // TODO: enviar Click/Enhanced Conversion ao Google Ads (precisa do gclid do lead).
     console.log(`[whatsapp] conversão disparada: ${conversionId}/${label} (lead ${lead})`);
+  }
+
+  // Envia o evento Lead ao Meta via CAPI. event_id estável por conversa para
+  // deduplicar com o Pixel. Não-fatal: erro aqui não pode quebrar o atendimento.
+  private async fireCapiLead(convId: string, leadPhone: string, ctwaClid?: string | null) {
+    try {
+      const capi = new CapiService(this.userId);
+      const res = await capi.sendLead({
+        phone: leadPhone,
+        eventId: `lead_${convId}`,
+        ctwaClid: ctwaClid ?? null,
+      });
+      if (res.ok) console.log(`[capi] Lead enviado (lead ${leadPhone}, conv ${convId})`);
+      else console.warn(`[capi] Lead não enviado (lead ${leadPhone}): ${res.error}`);
+    } catch (e) {
+      console.error('[capi] erro inesperado ao enviar Lead:', e);
+    }
   }
 
   private async notifyVendor(

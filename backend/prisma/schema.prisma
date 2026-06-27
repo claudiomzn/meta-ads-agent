@@ -395,6 +395,7 @@ model WhatsappConversation {
   history   Json     @default("[]") // [{role:'user'|'assistant', text, at}]
   summary   String?  // resumo de 1 linha gerado para o vendedor
   conversionFired Boolean @default(false)
+  capiLeadFired   Boolean @default(false) // evento Lead (Meta CAPI) já enviado p/ este lead
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

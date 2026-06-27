@@ -9,6 +9,12 @@ export interface InboundMessage {
   text: string;
   /** Identificador do transporte de origem (debug). */
   transport: string;
+  /**
+   * Click id de clique-para-WhatsApp (CTWA), quando o lead chegou por um
+   * anúncio Meta. Melhora muito a atribuição do evento CAPI. O transporte
+   * oficial do Meta preenche; transportes sem esse dado deixam indefinido.
+   */
+  ctwaClid?: string | null;
 }
 
 export interface WhatsappTransport {
