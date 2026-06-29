@@ -30,6 +30,8 @@ router.get('/', async (req: Request, res: Response) => {
       email: user.email,
       mcpConnected: Boolean(conn),
       mcpProvider: conn?.mcpProvider ?? null,
+      adAccountIds: conn?.adAccountIds ?? null,
+      mcpUrl: conn?.mcpUrl ?? null,
       pixelIdSaved: conn?.metaPixelId ?? null,
       status,
       sendResult,
