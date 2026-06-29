@@ -48,15 +48,82 @@ export class LogTransport implements WhatsappTransport {
   }
 }
 
+// ── Transporte EVOLUTION API ──────────────────────────────────────────────────
+// Envia/recebe mensagens via uma instância self-hosted da Evolution API
+// (https://doc.evolution-api.com). Config esperada (transportConfig):
+//   { baseUrl: "https://sua-evolution.com", apiKey: "...", instance: "nome" }
+export class EvolutionTransport implements WhatsappTransport {
+  readonly name = 'evolution';
+
+  constructor(
+    private baseUrl: string,
+    private apiKey: string,
+    private instance: string,
+  ) {}
+
+  // Não-fatal: falha no envio não pode derrubar o fluxo de qualificação.
+  async sendText(to: string, text: string): Promise<void> {
+    try {
+      const url = `${this.baseUrl.replace(/\/$/, '')}/message/sendText/${this.instance}`;
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: this.apiKey },
+        body: JSON.stringify({ number: to, text }),
+      });
+      if (!resp.ok) {
+        console.error(`[whatsapp:evolution] sendText falhou (${resp.status}):`, await resp.text());
+      }
+    } catch (e) {
+      console.error('[whatsapp:evolution] erro inesperado no sendText:', e);
+    }
+  }
+
+  // Webhook da Evolution API v2: { event: "messages.upsert", instance, data }
+  // onde `data` é o objeto da mensagem — { key: { remoteJid, fromMe, id }, message: {...} }
+  // (em algumas versões `data` vem como array; tratamos os dois casos).
+  parseInbound(payload: unknown): InboundMessage | null {
+    const body = payload as { event?: string; data?: unknown } | null;
+    if (!body) return null;
+    if (body.event && body.event !== 'messages.upsert') return null;
+
+    const raw = Array.isArray(body.data) ? body.data[0] : body.data;
+    const data = raw as {
+      key?: { remoteJid?: string; fromMe?: boolean };
+      message?: { conversation?: string; extendedTextMessage?: { text?: string } };
+    } | undefined;
+    if (!data?.key?.remoteJid) return null;
+
+    // Ignora mensagens enviadas por nós mesmos (eco do próprio bot).
+    if (data.key.fromMe) return null;
+
+    // Ignora mensagens de grupo (jid termina em @g.us; contatos terminam em @s.whatsapp.net).
+    if (data.key.remoteJid.endsWith('@g.us')) return null;
+
+    const text = data.message?.conversation ?? data.message?.extendedTextMessage?.text;
+    if (!text) return null; // status, ack, reação, mídia sem legenda, etc. — não é lead falando
+
+    const from = data.key.remoteJid.replace('@s.whatsapp.net', '');
+    return { from, text, transport: this.name };
+  }
+}
+
 // Resolve o transporte a partir da config do cliente.
-// Por enquanto só "log"; "evolution" e "meta" entram quando plugarmos.
 export function resolveTransport(
   transport: string,
-  _config: Record<string, unknown>,
+  config: Record<string, unknown>,
 ): WhatsappTransport {
   switch (transport) {
-    // case 'evolution': return new EvolutionTransport(_config);
-    // case 'meta':      return new MetaWhatsappTransport(_config);
+    case 'evolution': {
+      const baseUrl = config.baseUrl as string | undefined;
+      const apiKey = config.apiKey as string | undefined;
+      const instance = config.instance as string | undefined;
+      if (!baseUrl || !apiKey || !instance) {
+        console.warn('[whatsapp] transport "evolution" sem baseUrl/apiKey/instance — usando LogTransport');
+        return new LogTransport();
+      }
+      return new EvolutionTransport(baseUrl, apiKey, instance);
+    }
+    // case 'meta': return new MetaWhatsappTransport(config);
     default:
       return new LogTransport();
   }
