@@ -2,7 +2,6 @@ import prisma from '../lib/prisma.js';
 import axios from 'axios';
 
 import { decrypt } from './crypto.service.js';
-import { createMetaMCPService } from './meta.mcp.service.js';
 
 const GRAPH = 'https://graph.facebook.com/v20.0';
 
@@ -34,15 +33,22 @@ export class PixelService {
   }
 
   // Resolve o act_XXX real da conta — adAccountIds salvo no banco é só um label.
+  // IMPORTANTE: usa this.getToken() (já trata pipeboard/zapier corretamente)
+  // direto na Graph API — NÃO usar o MCP aqui. O MCP autentica com
+  // conn.metaAccessToken, que para contas pipeboard/zapier não é um token
+  // Meta válido (causava "invalid_token" ao criar o Pixel).
   private async getAdAccountId(): Promise<string> {
-    const svc = await createMetaMCPService(this.userId);
-    try {
-      const accounts = await svc.listAdAccounts();
-      if (!accounts.length) throw new Error('Nenhuma conta de anúncio vinculada.');
-      return accounts[0].id;
-    } finally {
-      await svc.disconnect();
-    }
+    const token = await this.getToken();
+    const res = await axios.get(`${GRAPH}/me/adaccounts`, {
+      params: { fields: 'id,name', access_token: token },
+    });
+    const accounts = res.data?.data ?? [];
+    if (!accounts.length) throw new Error('Nenhuma conta de anúncio vinculada.');
+    // TODO multi-tenant: se o token for compartilhado entre vários clientes
+    // (System User), accounts[0] pode não ser a conta certa deste usuário —
+    // hoje só há uma conta Meta real conectada, então é seguro. Revisar
+    // quando houver múltiplos clientes pipeboard/zapier simultâneos.
+    return accounts[0].id;
   }
 
   // Retorna o status atual do Pixel (conectado ou não)
