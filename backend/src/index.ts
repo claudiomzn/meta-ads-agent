@@ -39,7 +39,6 @@ import creativeStudioRoutes from './routes/creative-studio.routes.js';
 import pixelRoutes from './routes/pixel.routes.js';
 import capiRoutes from './routes/capi.routes.js';
 import whatsappRoutes from './routes/whatsapp.routes.js';
-import debugCapiTempRoutes from './routes/debug-capi-temp.routes.js'; // TEMPORARIO — remover apos validar CAPI
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -81,7 +80,6 @@ app.use('/api/creative-studio', creativeStudioRoutes);
 app.use('/api/pixel', pixelRoutes);
 app.use('/api/capi', capiRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
-app.use('/api/debug-capi-temp', debugCapiTempRoutes); // TEMPORARIO
 
 app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date() }));
 
