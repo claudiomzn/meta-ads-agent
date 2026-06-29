@@ -21,7 +21,7 @@ router.get('/', async (req: Request, res: Response) => {
     const status = await svc.getStatus();
 
     let sendResult = null;
-    if (testEventCode) {
+    if (req.query.send === '1') {
       sendResult = await svc.sendLead({ phone, eventId: `debugtest_${Date.now()}`, testEventCode });
     }
 
