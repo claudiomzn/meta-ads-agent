@@ -1,12 +1,80 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { AIService } from '../services/ai.service.js';
+import { executeProposal } from '../services/agentProposals.service.js';
+import { auditLog } from '../services/audit.service.js';
 import prisma from '../lib/prisma.js';
 
 const router = Router();
 const ai = new AIService();
 
 router.use(authMiddleware);
+
+// ─── GET /api/agent/proposals ─────────────────────────────────────────────────
+// Propostas do agente noturno (scan automático) — pendentes + decididas recentes
+router.get('/proposals', async (req: AuthRequest, res: Response) => {
+  const proposals = await prisma.agentProposal.findMany({
+    where: { userId: req.userId! },
+    orderBy: { createdAt: 'desc' },
+    take: 30,
+  });
+  res.json({ proposals });
+});
+
+// ─── POST /api/agent/proposals/:id/decide ────────────────────────────────────
+// decision: "approve" (executa no Meta) | "reject" (só descarta)
+router.post('/proposals/:id/decide', async (req: AuthRequest, res: Response) => {
+  const { id } = req.params;
+  const { decision } = req.body as { decision?: string };
+  if (!decision || !['approve', 'reject'].includes(decision)) {
+    res.status(400).json({ error: 'decision deve ser "approve" ou "reject"' });
+    return;
+  }
+
+  const proposal = await prisma.agentProposal.findFirst({ where: { id, userId: req.userId! } });
+  if (!proposal) {
+    res.status(404).json({ error: 'Proposta não encontrada' });
+    return;
+  }
+  if (proposal.status !== 'pending') {
+    res.status(409).json({ error: `Proposta já está ${proposal.status}` });
+    return;
+  }
+
+  if (decision === 'reject') {
+    await prisma.agentProposal.update({
+      where: { id },
+      data: { status: 'rejected', decidedAt: new Date() },
+    });
+    res.json({ ok: true, status: 'rejected' });
+    return;
+  }
+
+  await prisma.agentProposal.update({
+    where: { id },
+    data: { status: 'approved', decidedAt: new Date() },
+  });
+
+  try {
+    const result = await executeProposal(proposal);
+    await prisma.agentProposal.update({
+      where: { id },
+      data: { status: 'executed', executedAt: new Date(), result },
+    });
+    await auditLog({
+      userId: req.userId!,
+      action: 'AGENT_PROPOSAL_EXECUTED',
+      resource: 'agent_proposal',
+      resourceId: id,
+      details: { type: proposal.type, result },
+    });
+    res.json({ ok: true, status: 'executed', result });
+  } catch (err) {
+    const reason = String(err);
+    await prisma.agentProposal.update({ where: { id }, data: { status: 'failed', result: reason } });
+    res.status(500).json({ ok: false, status: 'failed', error: reason });
+  }
+});
 
 // ─── POST /api/agent/chat ─────────────────────────────────────────────────────
 // Conversa com IA usando streaming SSE — contexto real das campanhas do usuário
@@ -455,15 +523,15 @@ Responda APENAS com JSON válido (sem markdown):
       "action": {
         "label": "texto do botão (max 25 chars)",
         "method": "POST|PATCH",
-        "path": "/mcp/campaign/ID/status ou null",
+        "path": "/mcp/campaigns/META_CAMPAIGN_ID/status ou null",
         "body": {}
       } | null
     }
   ]
 }
 
-Para a action.path, use o id interno (campo "id") da campanha, não o metaCampaignId.
-Exemplos de path: "/mcp/campaign/CAMPAIGN_ID/status"
+Para a action.path, use o metaCampaignId da campanha, não o id interno (campo "id").
+Exemplos de path: "/mcp/campaigns/META_CAMPAIGN_ID/status" (method "PATCH")
 Exemplos de body para pausar: {"status":"PAUSED"} | para ativar: {"status":"ACTIVE"}
 Se não houver action possível, use null.`,
       }],
@@ -488,7 +556,7 @@ Se não houver action possível, use null.`,
           message: `"${c.name}" está gastando sem retorno`,
           detail: `ROAS de ${c.metaRoas?.toFixed(1) ?? 0}x. Cada R$1 investido está retornando menos de R$1.`,
           campaignId: c.id,
-          action: { label: 'Pausar campanha', method: 'POST', path: `/mcp/campaign/${c.id}/status`, body: { status: 'PAUSED' } },
+          action: { label: 'Pausar campanha', method: 'PATCH', path: `/mcp/campaigns/${c.metaCampaignId}/status`, body: { status: 'PAUSED' } },
         });
       } else if ((c.metaRoas ?? 0) > 5) {
         alerts.push({

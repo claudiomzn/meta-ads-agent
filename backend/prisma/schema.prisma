@@ -327,6 +327,25 @@ model ChatMessage {
   @@index([userId, createdAt])
 }
 
+// Proposta gerada pelo agente noturno (scan automático de madrugada) —
+// o usuário aprova ou rejeita com 1 clique; aprovar executa a ação no Meta.
+model AgentProposal {
+  id               String    @id @default(cuid())
+  userId           String
+  type             String
+  title            String
+  description      String
+  payload          String    // JSON
+  estimatedSavings Float     @default(0)
+  status           String    @default("pending") // pending | approved | rejected | executed | failed
+  result           String?
+  createdAt        DateTime  @default(now())
+  decidedAt        DateTime?
+  executedAt       DateTime?
+
+  @@index([userId, status])
+}
+
 // Snapshot diário de métricas agregadas de todas as campanhas do usuário.
 // Gravado a cada sync (cron de 1h). Usado para o gráfico do dashboard.
 model DailyMetric {

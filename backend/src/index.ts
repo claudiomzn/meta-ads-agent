@@ -176,10 +176,29 @@ cron.schedule('*/15 * * * *', async () => {
   }
 });
 
+// Todo dia às 5h — o agente analisa as campanhas de cada usuário conectado e
+// cria propostas de otimização (pausar campanha no prejuízo, pausar conjunto
+// saturado). Usa só dados já sincronizados pelos crons acima — sem custo
+// extra de chamadas ao Meta na hora do scan.
+cron.schedule('0 5 * * *', async () => {
+  console.log('[Cron] Agente noturno: analisando campanhas...');
+  const connections = await prisma.mCPConnection.findMany({ where: { connected: true } });
+  const { scanUser } = await import('./services/agentProposals.service.js');
+
+  for (const conn of connections) {
+    try {
+      const created = await scanUser(conn.userId);
+      if (created > 0) console.log(`[Agente] ${created} proposta(s) criada(s) para ${conn.userId}`);
+    } catch (err) {
+      console.error(`[Agente] Falha ao analisar ${conn.userId}:`, err);
+    }
+  }
+});
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`✅ Backend rodando em http://0.0.0.0:${PORT}`);
   console.log(`   NODE_ENV: ${process.env.NODE_ENV}`);
-  console.log(`   Crons: métricas (1h) | status + automações (15min)`);
+  console.log(`   Crons: métricas (1h) | status + automações (15min) | agente noturno (5h)`);
 });
