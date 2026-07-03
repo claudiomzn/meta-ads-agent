@@ -3,6 +3,13 @@ import { Router, Request, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { WhatsappService } from '../services/whatsapp/whatsapp.service.js';
 import { resolveTransport } from '../services/whatsapp/transport.js';
+import {
+  evolutionConfigured,
+  connectInstance,
+  disconnectInstance,
+  getConnectionState,
+  instanceName,
+} from '../services/whatsapp/evolution.manager.js';
 import prisma from '../lib/prisma.js';
 
 const router = Router();
@@ -36,6 +43,47 @@ router.post('/simulate', authMiddleware, async (req: AuthRequest, res: Response)
   const svc = new WhatsappService(req.userId!);
   const result = await svc.handleInbound({ from, text, transport: 'log' });
   res.json(result ?? { skipped: 'bot desligado ou sem config' });
+});
+
+// ── Evolution gerenciada (WhatsApp do AdsGenius, 1 clique + QR) ───────────────
+
+// Cria/renova a instância do usuário na Evolution central, configura o webhook
+// e devolve o QR pra escanear. Também já grava transport=evolution na config
+// do bot (só a instância — baseUrl/apiKey vêm do env do servidor).
+router.post('/evolution/connect', authMiddleware, async (req: AuthRequest, res: Response) => {
+  if (!evolutionConfigured()) {
+    return res.status(503).json({ error: 'WhatsApp gerenciado indisponível no momento (Evolution central não configurada)' });
+  }
+  const userId = req.userId!;
+  const result = await connectInstance(userId);
+
+  // Aponta a config do bot para a instância gerenciada, preservando o resto.
+  const existing = await prisma.whatsappConfig.findUnique({ where: { userId } });
+  const data = { transport: 'evolution', transportConfig: { instance: instanceName(userId) } };
+  if (existing) {
+    await prisma.whatsappConfig.update({ where: { userId }, data });
+  } else {
+    await prisma.whatsappConfig.create({
+      data: { userId, businessName: 'Meu Negócio', product: '', ...data },
+    });
+  }
+
+  res.json(result);
+});
+
+// Estado da conexão: "open" = WhatsApp conectado e recebendo mensagens.
+router.get('/evolution/status', authMiddleware, async (req: AuthRequest, res: Response) => {
+  if (!evolutionConfigured()) return res.json({ available: false, state: 'unavailable' });
+  const state = await getConnectionState(req.userId!);
+  res.json({ available: true, state, connected: state === 'open' });
+});
+
+// Desconecta a sessão do WhatsApp (logout). A instância continua existindo;
+// reconectar gera um QR novo.
+router.post('/evolution/disconnect', authMiddleware, async (req: AuthRequest, res: Response) => {
+  if (!evolutionConfigured()) return res.status(503).json({ error: 'Evolution central não configurada' });
+  await disconnectInstance(req.userId!);
+  res.json({ ok: true });
 });
 
 // ── Webhook (público) — recebe mensagens do provedor de WhatsApp ──────────────

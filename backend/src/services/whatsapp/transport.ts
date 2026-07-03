@@ -108,14 +108,17 @@ export class EvolutionTransport implements WhatsappTransport {
 }
 
 // Resolve o transporte a partir da config do cliente.
+// Para "evolution", baseUrl/apiKey caem para a Evolution CENTRAL do AdsGenius
+// (env EVOLUTION_URL/EVOLUTION_API_KEY) quando não vierem na config — é o modo
+// gerenciado, onde o cliente só escaneia o QR e a config guarda só a instância.
 export function resolveTransport(
   transport: string,
   config: Record<string, unknown>,
 ): WhatsappTransport {
   switch (transport) {
     case 'evolution': {
-      const baseUrl = config.baseUrl as string | undefined;
-      const apiKey = config.apiKey as string | undefined;
+      const baseUrl = (config.baseUrl as string | undefined) || process.env.EVOLUTION_URL;
+      const apiKey = (config.apiKey as string | undefined) || process.env.EVOLUTION_API_KEY;
       const instance = config.instance as string | undefined;
       if (!baseUrl || !apiKey || !instance) {
         console.warn('[whatsapp] transport "evolution" sem baseUrl/apiKey/instance — usando LogTransport');
