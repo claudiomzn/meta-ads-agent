@@ -87,6 +87,10 @@ export class SyncService {
       const svc = await createMetaMCPService(this.userId);
       const range = last30Days();
 
+      // Anúncios que MUDARAM para reprovado neste sync — o dono é avisado por
+      // email no fim (uma mensagem só, mesmo com vários anúncios).
+      const newlyDisapproved: { adName: string; campaignName: string; status: string }[] = [];
+
       for (const campaign of campaigns) {
         const insights = await svc.getCampaignInsights(campaign.metaCampaignId!, range);
 
@@ -128,6 +132,15 @@ export class SyncService {
 
           for (const ad of adSet.ads) {
             if (!ad.metaAdId) continue;
+            const newStatus = liveAdStatuses.get(ad.metaAdId) ?? ad.metaStatus;
+
+            // Avisa o CLIENTE quando um anúncio acabou de ser reprovado (só na
+            // transição — se já estava reprovado no sync anterior, não repete).
+            const badStatuses = ['DISAPPROVED', 'WITH_ISSUES'];
+            if (newStatus && badStatuses.includes(newStatus) && !badStatuses.includes(ad.metaStatus ?? '')) {
+              newlyDisapproved.push({ adName: ad.name, campaignName: campaign.name, status: newStatus });
+            }
+
             const adInsights = await svc.getAdInsights(ad.metaAdId, range);
             await prisma.ad.update({
               where: { id: ad.id },
@@ -135,7 +148,7 @@ export class SyncService {
                 metaCtr: adInsights.ctr,
                 metaCpc: adInsights.cpc,
                 metaSpend: adInsights.spend,
-                metaStatus: liveAdStatuses.get(ad.metaAdId) ?? ad.metaStatus,
+                metaStatus: newStatus,
               },
             });
 
@@ -159,6 +172,13 @@ export class SyncService {
       }
 
       await svc.disconnect();
+
+      // Avisa o cliente sobre anúncios recém-reprovados (não-fatal)
+      if (newlyDisapproved.length > 0) {
+        await this.notifyDisapprovedAds(newlyDisapproved).catch((err) =>
+          console.error('[SyncService] Falha ao avisar cliente sobre reprovação:', err),
+        );
+      }
 
       // ── Snapshot diário ──────────────────────────────────────────────────
       // Agrega totais de todas as campanhas e salva/atualiza o registro de hoje.
@@ -198,6 +218,54 @@ export class SyncService {
       where: { userId_date: { userId: this.userId, date: today } },
       update: totals,
       create: { userId: this.userId, date: today, ...totals },
+    });
+  }
+
+  // Email pro CLIENTE quando anúncio(s) dele acabaram de ser reprovados pelo
+  // Meta. Disparado só na transição de status, então não repete a cada sync.
+  private async notifyDisapprovedAds(ads: { adName: string; campaignName: string; status: string }[]): Promise<void> {
+    const user = await prisma.user.findUnique({
+      where: { id: this.userId },
+      select: { email: true, name: true },
+    });
+    if (!user?.email) return;
+
+    const rows = ads.map((a) => `
+      <tr>
+        <td style="padding:8px;border-bottom:1px solid #333;">⛔ ${a.adName}</td>
+        <td style="padding:8px;border-bottom:1px solid #333;">${a.campaignName}</td>
+        <td style="padding:8px;border-bottom:1px solid #333;">${a.status === 'WITH_ISSUES' ? 'Com problemas de política' : 'Reprovado'}</td>
+      </tr>`).join('');
+
+    const html = `
+    <div style="font-family:Arial,sans-serif;background:#0d0d0d;color:#fff;padding:24px;max-width:600px;margin:0 auto;border-radius:12px;">
+      <h2 style="color:#f87171;margin-bottom:4px;">⛔ AdsGenius — Anúncio reprovado pelo Meta</h2>
+      <p style="color:#aaa;margin-bottom:20px;">
+        ${ads.length === 1 ? 'Um dos seus anúncios foi reprovado' : `${ads.length} anúncios seus foram reprovados`} e <strong style="color:#fff;">parou de ser exibido</strong>. Enquanto isso, você pode estar perdendo clientes.
+      </p>
+      <table style="width:100%;border-collapse:collapse;font-size:14px;">
+        <thead><tr style="color:#888;font-size:12px;">
+          <th style="padding:8px;text-align:left;">Anúncio</th>
+          <th style="padding:8px;text-align:left;">Campanha</th>
+          <th style="padding:8px;text-align:left;">Situação</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <p style="margin-top:20px;color:#ddd;font-size:14px;">
+        <strong>O que fazer:</strong> edite o criativo no AdsGenius (geralmente é texto ou imagem que violou alguma política) e reenvie — a revisão do Meta costuma levar poucas horas.
+      </p>
+      <p style="margin-top:16px;">
+        <a href="https://app.adsgenius.net/app/meta" style="display:inline-block;background:#6366f1;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-size:14px;">Resolver agora</a>
+      </p>
+    </div>`;
+
+    await sendMail({
+      to: user.email,
+      subject: ads.length === 1
+        ? `⛔ Seu anúncio "${ads[0].adName}" foi reprovado pelo Meta`
+        : `⛔ ${ads.length} anúncios seus foram reprovados pelo Meta`,
+      html,
+      text: ads.map((a) => `${a.adName} (${a.campaignName}): ${a.status}`).join('\n'),
     });
   }
 
