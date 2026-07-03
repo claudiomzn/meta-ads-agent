@@ -299,6 +299,25 @@ export class MetaMCPService {
     });
   }
 
+  // Escala o orçamento diário da campanha por um fator (1.2 = +20%), partindo
+  // do orçamento ATUAL salvo no banco — nunca do valor de uma métrica. Usado
+  // pelas automações SCALE_UP/SCALE_DOWN. Retorna o novo orçamento, ou null se
+  // a campanha não for encontrada / não tiver orçamento conhecido.
+  async scaleCampaignBudget(metaCampaignId: string, factor: number): Promise<number | null> {
+    const campaign = await prisma.campaign.findFirst({
+      where: { metaCampaignId },
+      select: { id: true, budget: true },
+    });
+    if (!campaign || !campaign.budget || campaign.budget <= 0) {
+      console.warn(`[scaleBudget] Campanha ${metaCampaignId} sem orçamento conhecido — pulando scale`);
+      return null;
+    }
+    const newBudget = Math.round(campaign.budget * factor * 100) / 100;
+    await this.updateCampaignBudget(metaCampaignId, newBudget);
+    await prisma.campaign.update({ where: { id: campaign.id }, data: { budget: newBudget } });
+    return newBudget;
+  }
+
   async updateAdSetStatus(adSetId: string, status: AdStatus): Promise<void> {
     await this.call('update_ad_set', { ad_set_id: adSetId, status });
   }

@@ -152,13 +152,16 @@ cron.schedule('*/15 * * * *', async () => {
           if (rule.action === 'PAUSE') {
             if (rule.targetType === 'adset') await svc.updateAdSetStatus(rule.targetId, 'PAUSED');
             else if (rule.targetType === 'ad') await svc.updateAdStatus(rule.targetId, 'PAUSED');
+            else await svc.updateCampaignStatus(rule.targetId, 'PAUSED');
           } else if (rule.action === 'ACTIVATE') {
             if (rule.targetType === 'adset') await svc.updateAdSetStatus(rule.targetId, 'ACTIVE');
             else if (rule.targetType === 'ad') await svc.updateAdStatus(rule.targetId, 'ACTIVE');
+            else await svc.updateCampaignStatus(rule.targetId, 'ACTIVE');
           } else if (rule.action === 'SCALE_UP') {
-            await svc.updateCampaignBudget(rule.targetId, val * 1.2);
+            // Escala a partir do orçamento ATUAL — nunca do valor da métrica
+            await svc.scaleCampaignBudget(rule.targetId, 1.2);
           } else if (rule.action === 'SCALE_DOWN') {
-            await svc.updateCampaignBudget(rule.targetId, val * 0.8);
+            await svc.scaleCampaignBudget(rule.targetId, 0.8);
           }
 
           await prisma.ruleLog.create({

@@ -12,7 +12,9 @@ const mockGetAdSetInsights = vi.fn().mockResolvedValue({ spend: 100, cpl: 5.0 })
 const mockGetAdInsights = vi.fn().mockResolvedValue({ spend: 50, ctr: 0.03 });
 const mockUpdateAdSetStatus = vi.fn().mockResolvedValue(undefined);
 const mockUpdateAdStatus = vi.fn().mockResolvedValue(undefined);
+const mockUpdateCampaignStatus = vi.fn().mockResolvedValue(undefined);
 const mockUpdateCampaignBudget = vi.fn().mockResolvedValue(undefined);
+const mockScaleCampaignBudget = vi.fn().mockResolvedValue(120);
 const mockDisconnect = vi.fn().mockResolvedValue(undefined);
 
 vi.mock('../services/meta.mcp.service.js', () => ({
@@ -22,7 +24,9 @@ vi.mock('../services/meta.mcp.service.js', () => ({
     getAdInsights: mockGetAdInsights,
     updateAdSetStatus: mockUpdateAdSetStatus,
     updateAdStatus: mockUpdateAdStatus,
+    updateCampaignStatus: mockUpdateCampaignStatus,
     updateCampaignBudget: mockUpdateCampaignBudget,
+    scaleCampaignBudget: mockScaleCampaignBudget,
     disconnect: mockDisconnect,
   })),
 }));
@@ -77,7 +81,9 @@ beforeEach(() => {
   mockGetAdInsights.mockResolvedValue({ spend: 50, ctr: 0.03 });
   mockUpdateAdSetStatus.mockResolvedValue(undefined);
   mockUpdateAdStatus.mockResolvedValue(undefined);
+  mockUpdateCampaignStatus.mockResolvedValue(undefined);
   mockUpdateCampaignBudget.mockResolvedValue(undefined);
+  mockScaleCampaignBudget.mockResolvedValue(120);
   mockDisconnect.mockResolvedValue(undefined);
 });
 
@@ -229,7 +235,8 @@ describe('POST /api/automations/:id/run', () => {
   });
 
   it('executa ação PAUSE quando condição é atendida', async () => {
-    // roas = 0.5, condição: roas < 1.0 → atendida → PAUSE (targetType=campaign, não executa updateAdSetStatus direto)
+    // roas = 0.5, condição: roas < 1.0 → atendida → PAUSE pausa a CAMPANHA de
+    // verdade (antes, targetType=campaign era silenciosamente ignorado)
     mockGetCampaignInsights.mockResolvedValueOnce({ spend: 200, roas: 0.5 });
 
     const res = await request(app)
@@ -240,6 +247,7 @@ describe('POST /api/automations/:id/run', () => {
     expect(res.body.conditionMet).toBe(true);
     expect(res.body.executed).toBe(true);
     expect(res.body.metricValue).toBe(0.5);
+    expect(mockUpdateCampaignStatus).toHaveBeenCalledWith('act_123', 'PAUSED');
   });
 
   it('retorna 400 quando MCP não está conectado', async () => {

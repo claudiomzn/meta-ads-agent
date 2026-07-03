@@ -113,16 +113,20 @@ router.post('/:id/run', async (req: AuthRequest, res: Response) => {
         case 'PAUSE':
           if (rule.targetType === 'adset') await svc.updateAdSetStatus(rule.targetId, 'PAUSED');
           else if (rule.targetType === 'ad') await svc.updateAdStatus(rule.targetId, 'PAUSED');
+          else await svc.updateCampaignStatus(rule.targetId, 'PAUSED');
           break;
         case 'ACTIVATE':
           if (rule.targetType === 'adset') await svc.updateAdSetStatus(rule.targetId, 'ACTIVE');
           else if (rule.targetType === 'ad') await svc.updateAdStatus(rule.targetId, 'ACTIVE');
+          else await svc.updateCampaignStatus(rule.targetId, 'ACTIVE');
           break;
+        // Escala a partir do orçamento ATUAL (fator 1.2/0.8) — nunca do valor
+        // da métrica/gasto, que não tem relação com orçamento diário.
         case 'SCALE_UP':
-          await svc.updateCampaignBudget(rule.targetId, (insights.spend ?? 0) * 1.2);
+          await svc.scaleCampaignBudget(rule.targetId, 1.2);
           break;
         case 'SCALE_DOWN':
-          await svc.updateCampaignBudget(rule.targetId, (insights.spend ?? 0) * 0.8);
+          await svc.scaleCampaignBudget(rule.targetId, 0.8);
           break;
       }
       executed = true;
