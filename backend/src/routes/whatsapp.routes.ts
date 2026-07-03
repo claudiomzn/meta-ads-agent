@@ -9,6 +9,8 @@ import {
   disconnectInstance,
   getConnectionState,
   instanceName,
+  webhookSecret,
+  webhookUrl,
 } from '../services/whatsapp/evolution.manager.js';
 import prisma from '../lib/prisma.js';
 
@@ -86,11 +88,26 @@ router.post('/evolution/disconnect', authMiddleware, async (req: AuthRequest, re
   res.json({ ok: true });
 });
 
+// Devolve a URL completa do webhook (com o segredo) para a UI exibir no modo
+// self-hosted — o frontend não consegue calcular o HMAC sozinho.
+router.get('/webhook-url', authMiddleware, (req: AuthRequest, res: Response) => {
+  res.json({ url: webhookUrl(req.userId!) });
+});
+
 // ── Webhook (público) — recebe mensagens do provedor de WhatsApp ──────────────
-// O userId vem na URL porque o provedor não conhece nossa autenticação.
-// Ex: POST /api/whatsapp/webhook/<userId>
+// O userId vem na URL porque o provedor não conhece nossa autenticação; o
+// segredo ?key= impede injeção de mensagens falsas por quem souber um userId.
+// Ex: POST /api/whatsapp/webhook/<userId>?key=<hmac>
 router.post('/webhook/:userId', async (req: Request, res: Response) => {
   const { userId } = req.params;
+
+  // Chave errada/ausente: responde 200 (pra não gerar loop de reentrega no
+  // provedor) mas NÃO processa nada. Log pra diagnóstico.
+  if (String(req.query.key ?? '') !== webhookSecret(userId)) {
+    console.warn(`[whatsapp:webhook] chave inválida p/ ${userId} — mensagem descartada`);
+    return res.json({ ok: true });
+  }
+
   try {
     const svc = new WhatsappService(userId);
     const config = await svc.getConfig();

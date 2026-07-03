@@ -204,4 +204,10 @@ app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`✅ Backend rodando em http://0.0.0.0:${PORT}`);
   console.log(`   NODE_ENV: ${process.env.NODE_ENV}`);
   console.log(`   Crons: métricas (1h) | status + automações (15min) | agente noturno (5h)`);
+
+  // Self-heal: garante que os webhooks das instâncias gerenciadas usam a URL
+  // atual (com segredo). Não-bloqueante — falha aqui não impede o servidor.
+  import('./services/whatsapp/evolution.manager.js')
+    .then((m) => m.ensureManagedWebhooks())
+    .catch((err) => console.warn('[startup] ensureManagedWebhooks falhou:', err));
 });

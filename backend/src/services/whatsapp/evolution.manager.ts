@@ -7,10 +7,24 @@
 //   EVOLUTION_API_KEY  — AUTHENTICATION_API_KEY dessa Evolution
 //   PUBLIC_URL         — URL pública DESTE backend (p/ montar o webhook)
 
+import { createHmac } from 'crypto';
+import prisma from '../../lib/prisma.js';
+
 const PUBLIC_URL_DEFAULT = 'https://meta-ads-agent-backend.onrender.com';
 
 export function evolutionConfigured(): boolean {
   return !!(process.env.EVOLUTION_URL && process.env.EVOLUTION_API_KEY);
+}
+
+// Segredo por usuário embutido na URL do webhook. Sem ele, qualquer pessoa que
+// descobrisse um userId poderia injetar mensagens falsas no bot (gastando
+// créditos de IA e disparando conversões falsas). Derivado do JWT_SECRET do
+// servidor — não precisa de env nova nem de armazenar nada por usuário.
+export function webhookSecret(userId: string): string {
+  return createHmac('sha256', process.env.JWT_SECRET ?? '')
+    .update(`whatsapp-webhook:${userId}`)
+    .digest('hex')
+    .slice(0, 32);
 }
 
 function baseUrl(): string {
@@ -26,9 +40,9 @@ export function instanceName(userId: string): string {
   return `adsgenius_${userId}`;
 }
 
-function webhookUrl(userId: string): string {
+export function webhookUrl(userId: string): string {
   const pub = (process.env.PUBLIC_URL ?? PUBLIC_URL_DEFAULT).replace(/\/$/, '');
-  return `${pub}/api/whatsapp/webhook/${userId}`;
+  return `${pub}/api/whatsapp/webhook/${userId}?key=${webhookSecret(userId)}`;
 }
 
 export interface ConnectResult {
@@ -110,6 +124,38 @@ export async function connectInstance(userId: string): Promise<ConnectResult> {
     pairingCode: conn.pairingCode ?? null,
     state,
   };
+}
+
+// Re-registra o webhook (com o segredo atual) de todas as instâncias
+// gerenciadas de usuários com transporte evolution. Roda na subida do servidor:
+// instâncias conectadas antes da introdução do segredo passam a usar a URL nova
+// sem o usuário precisar reconectar (self-heal).
+export async function ensureManagedWebhooks(): Promise<void> {
+  if (!evolutionConfigured()) return;
+
+  const configs = await prisma.whatsappConfig.findMany({
+    where: { transport: 'evolution' },
+    select: { userId: true, transportConfig: true },
+  });
+
+  for (const cfg of configs) {
+    const tc = cfg.transportConfig as Record<string, unknown> | null;
+    // Só instâncias gerenciadas (criadas por nós) — self-hosted é do usuário
+    if (tc?.instance !== instanceName(cfg.userId)) continue;
+
+    const hook = webhookUrl(cfg.userId);
+    const body = { webhook: { enabled: true, url: hook, webhookByEvents: false, webhookBase64: false, events: ['MESSAGES_UPSERT'] } };
+    try {
+      const resp = await fetch(`${baseUrl()}/webhook/set/${instanceName(cfg.userId)}`, {
+        method: 'POST', headers: headers(), body: JSON.stringify(body),
+      });
+      if (!resp.ok && resp.status !== 404) {
+        console.warn(`[evolution] self-heal webhook falhou p/ ${cfg.userId} (${resp.status})`);
+      }
+    } catch (err) {
+      console.warn(`[evolution] self-heal webhook erro p/ ${cfg.userId}:`, err);
+    }
+  }
 }
 
 // Desconecta o WhatsApp do usuário (logout da sessão; a instância permanece).
