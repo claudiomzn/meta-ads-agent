@@ -499,6 +499,59 @@ router.get('/insights/:campaignId', async (req: AuthRequest, res: Response) => {
   res.json(insights);
 });
 
+// ─── Saturação de criativo (fadiga de frequência) por conta ──────────────────
+// Diferente de /insights/:campaignId (1 campanha), esta lista TODAS as
+// campanhas publicadas de uma conta com a frequência atual, pra tela de
+// Saturação. Frequência vem em tempo real do Meta (últimos 7 dias) — o campo
+// metaFrequency do AdSet no banco só é atualizado no sync horário.
+router.get('/saturation/:adAccountId', async (req: AuthRequest, res: Response) => {
+  const { adAccountId } = req.params;
+
+  const campaigns = await prisma.campaign.findMany({
+    where: {
+      userId: req.userId!,
+      metaAdAccountId: adAccountId,
+      metaCampaignId: { not: null },
+    },
+  });
+
+  if (campaigns.length === 0) {
+    res.json({ data: [] });
+    return;
+  }
+
+  const dateRange = {
+    since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+    until: new Date().toISOString().split('T')[0],
+  };
+
+  const svc = await createMetaMCPService(req.userId!);
+  const results = await Promise.all(
+    campaigns.map(async (c) => {
+      try {
+        const insights = await svc.getCampaignInsights(c.metaCampaignId!, dateRange);
+        return {
+          id: c.id,
+          campaign_id: c.metaCampaignId,
+          campaign_name: c.name,
+          status: c.metaStatus,
+          budget: c.budget,
+          frequency: insights.frequency ?? 0,
+          reach: insights.reach ?? 0,
+          impressions: insights.impressions ?? c.metaImpressions ?? 0,
+          spend: insights.spend ?? c.metaSpend ?? 0,
+        };
+      } catch (err) {
+        console.error(`[Saturation] Erro ao buscar insights de ${c.metaCampaignId}:`, err);
+        return null;
+      }
+    }),
+  );
+  await svc.disconnect();
+
+  res.json({ data: results.filter(Boolean) });
+});
+
 // ─── Sincronização ────────────────────────────────────────────────────────────
 
 router.post('/sync/now', async (req: AuthRequest, res: Response) => {

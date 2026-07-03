@@ -28,6 +28,12 @@ import type {
 } from '../types/meta.types.js';
 
 
+// Objetivos em que o Meta aceita targeting_optimization: 'expansion_all' sem
+// depender do optimization_goal do conjunto (Lead Generation, Web Conversion).
+// TRAFFIC/BRAND_AWARENESS ficam de fora — nem todo optimization_goal deles é
+// suportado (ex.: LANDING_PAGE_VIEWS), e enviar o campo lá pode quebrar a publicação.
+const TARGETING_EXPANSION_OBJECTIVES = new Set(['LEAD_GENERATION', 'CONVERSIONS']);
+
 export class PublishValidationError extends Error {
   constructor(
     public errors: string[],
@@ -412,11 +418,19 @@ export class MetaMCPService {
     for (const adSetPlan of plan.adSets) {
       log(`Criando conjunto "${adSetPlan.name}"...`);
 
+      // Detailed Targeting Expansion: deixa o Meta ir além dos interesses
+      // definidos quando encontra pessoas com maior chance de conversão, sem
+      // alterar geo/idade/gênero/exclusões. Só suportado para os objetivos
+      // abaixo — em outros o Meta rejeita a publicação com erro.
+      const targeting = TARGETING_EXPANSION_OBJECTIVES.has(plan.objective)
+        ? { ...adSetPlan.targeting, targeting_optimization: 'expansion_all' }
+        : adSetPlan.targeting;
+
       const adSet = await this.createAdSet({
         campaignId: campaign.id,
         name: adSetPlan.name,
         dailyBudget: adSetPlan.dailyBudget,
-        targeting: adSetPlan.targeting,
+        targeting,
         optimizationGoal: adSetPlan.optimizationGoal,
         billingEvent: adSetPlan.billingEvent,
         bidStrategy: adSetPlan.bidStrategy,
