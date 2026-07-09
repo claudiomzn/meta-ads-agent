@@ -132,14 +132,14 @@ model MCPConnection {
   lastConnectedAt DateTime?
   expiresAt       DateTime?
   mcpUrl          String?
-  mcpProvider     String?   // meta / pipeboard / zapier
+  mcpProvider     String? // meta / pipeboard / zapier
   metaPixelId     String?
   createdAt       DateTime  @default(now())
 }
 
 model SyncLog {
   id        String   @id @default(cuid())
-  userId    String   @default("")   // retrocompatível — registros antigos ficam com ""
+  userId    String   @default("") // retrocompatível — registros antigos ficam com ""
   type      String
   status    String
   details   String?
@@ -148,21 +148,21 @@ model SyncLog {
 }
 
 model AutomationRule {
-  id         String    @id @default(cuid())
-  userId     String
-  name       String
-  campaignId String?
-  targetId   String
-  targetType String
-  trigger    String
-  condition  String
-  value      Float
-  window     Int
-  action     String
-  alertEmail String?
-  active     Boolean   @default(true)
+  id          String    @id @default(cuid())
+  userId      String
+  name        String
+  campaignId  String?
+  targetId    String
+  targetType  String
+  trigger     String
+  condition   String
+  value       Float
+  window      Int
+  action      String
+  alertEmail  String?
+  active      Boolean   @default(true)
   lastChecked DateTime?
-  createdAt  DateTime  @default(now())
+  createdAt   DateTime  @default(now())
 
   logs RuleLog[]
 }
@@ -187,8 +187,8 @@ model Copy {
   body       String
   cta        String
   score      Int?
-  favorite   Boolean  @default(false)
-  createdAt  DateTime @default(now())
+  favorite   Boolean   @default(false)
+  createdAt  DateTime  @default(now())
 }
 
 // Criativo arquivado no Estúdio de Criativos (copy + arte gerada + briefing)
@@ -201,7 +201,7 @@ model StudioCreative {
   cta           String
   visualConcept String?
   imagePrompt   String?
-  imageUrl      String?  // URL durável (Supabase Storage) ou do fal como fallback
+  imageUrl      String? // URL durável (Supabase Storage) ou do fal como fallback
   aspect        String   @default("1:1")
   product       String?
   niche         String?
@@ -263,25 +263,25 @@ model ABTest {
 }
 
 model AuditLog {
-  id        String   @id @default(cuid())
-  userId    String
-  action    String
-  resource  String
+  id         String   @id @default(cuid())
+  userId     String
+  action     String
+  resource   String
   resourceId String?
-  details   String?
-  ip        String?
-  createdAt DateTime @default(now())
+  details    String?
+  ip         String?
+  createdAt  DateTime @default(now())
 }
 
 model CampaignInsight {
-  id              String   @id @default(cuid())
-  userId          String
-  type            String   // 'full_analysis' | 'suggestion'
-  title           String
-  summary         String
-  content         String   // JSON completo da análise
-  campaignsCount  Int      @default(0)
-  createdAt       DateTime @default(now())
+  id             String   @id @default(cuid())
+  userId         String
+  type           String // 'full_analysis' | 'suggestion'
+  title          String
+  summary        String
+  content        String // JSON completo da análise
+  campaignsCount Int      @default(0)
+  createdAt      DateTime @default(now())
 }
 
 model CreativeAnalysis {
@@ -320,7 +320,7 @@ model CreativeAnalysis {
 model ChatMessage {
   id        String   @id @default(cuid())
   userId    String
-  role      String   // 'user' | 'assistant'
+  role      String // 'user' | 'assistant'
   content   String
   createdAt DateTime @default(now())
 
@@ -335,7 +335,7 @@ model AgentProposal {
   type             String
   title            String
   description      String
-  payload          String    // JSON
+  payload          String // JSON
   estimatedSavings Float     @default(0)
   status           String    @default("pending") // pending | approved | rejected | executed | failed
   result           String?
@@ -351,7 +351,7 @@ model AgentProposal {
 model DailyMetric {
   id              String   @id @default(cuid())
   userId          String
-  date            String   // YYYY-MM-DD
+  date            String // YYYY-MM-DD
   spend           Float    @default(0)
   impressions     Int      @default(0)
   clicks          Int      @default(0)
@@ -366,55 +366,89 @@ model DailyMetric {
 // Config por cliente do bot de qualificação. Maior parte pode ser auto-preenchida
 // a partir da análise de site que o AdsGenius já faz.
 model WhatsappConfig {
-  id        String   @id @default(cuid())
-  userId    String   @unique
+  id     String @id @default(cuid())
+  userId String @unique
 
-  enabled   Boolean  @default(false)
+  enabled Boolean @default(false)
 
   // Contexto do negócio (alimenta o system prompt do bot)
-  businessName String
-  product      String
+  businessName  String
+  product       String
   differentials String?
-  region       String?
-  tone         String  @default("amigável e profissional")
+  region        String?
+  tone          String  @default("amigável e profissional")
 
   // Perguntas de qualificação (JSON: array de strings) e critério de "qualificado"
-  questions          Json    @default("[]")
-  qualifiedCriteria  String  @default("Respondeu às perguntas de qualificação")
-  maxQuestions       Int     @default(4)
-  maxBotMessages     Int     @default(8)
+  questions         Json   @default("[]")
+  qualifiedCriteria String @default("Respondeu às perguntas de qualificação")
+  maxQuestions      Int    @default(4)
+  maxBotMessages    Int    @default(8)
 
   // Handoff e atendimento
-  handoffContact     String?  // número/identificador do vendedor humano
-  businessHours      String?  // ex: "Seg-Sex 8-18h"
+  handoffContact String? // número/identificador do vendedor humano
+  businessHours  String? // ex: "Seg-Sex 8-18h"
 
   // Transporte (agnóstico): "evolution" | "meta" | "none"
-  transport          String  @default("none")
-  transportConfig    Json    @default("{}") // chaves específicas do transporte (instanceName, phoneId, etc.)
+  transport       String @default("none")
+  transportConfig Json   @default("{}") // chaves específicas do transporte (instanceName, phoneId, etc.)
 
   // Vínculo com a conversão do Google Ads / Meta (para disparar ao iniciar conversa)
-  conversionId       String?  // AW-XXXXX
-  conversionLabel    String?
+  conversionId    String? // AW-XXXXX
+  conversionLabel String?
+
+  // ── Limite diário e cobrança de excedente ──────────────────────────────────
+  // As primeiras N conversas NOVAS de cada dia são grátis; a partir da (N+1)ª,
+  // cada mensagem do bot custa dailyOverageCentsPerMsg centavos, acumulados em
+  // pendingOverageCents. Ao atingir overageChargeThresholdCents, dispara uma
+  // cobrança Asaas (PIX/boleto/cartão via link) e zera o acumulado.
+  dailyFreeConversations      Int @default(12)
+  dailyOverageCentsPerMsg     Int @default(15)
+  overageChargeThresholdCents Int @default(2000) // R$20,00
+  pendingOverageCents         Int @default(0)
+
+  // Dados de faturamento (Asaas exige CPF/CNPJ para criar o cliente) e o id do
+  // cliente já criado no Asaas (criado sob demanda, na 1ª cobrança).
+  billingCpfCnpj  String?
+  asaasCustomerId String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
 
+// Cobranças de excedente geradas no Asaas — histórico para o cliente ver o que
+// já foi cobrado/pago, e para não gerar cobrança duplicada por corrida de mensagens.
+model WhatsappCharge {
+  id             String   @id @default(cuid())
+  userId         String
+  amountCents    Int
+  asaasPaymentId String   @unique
+  invoiceUrl     String
+  status         String   @default("PENDING") // PENDING | PAID | FAILED
+  createdAt      DateTime @default(now())
+
+  @@index([userId, status])
+}
+
 // Estado de cada conversa de lead (uma por número de telefone, por usuário).
 model WhatsappConversation {
-  id        String   @id @default(cuid())
+  id        String @id @default(cuid())
   userId    String
-  leadPhone String   // número do lead (E.164 ou id do WhatsApp)
+  leadPhone String // número do lead (E.164 ou id do WhatsApp)
 
-  state     String   @default("greeting") // greeting | qualifying | qualified | cold | handoff | closed
-  label     String?  // QUENTE | FRIO | SEM_RESPOSTA
-  questionsAsked Int  @default(0)
-  botMessages    Int  @default(0)
+  state          String  @default("greeting") // greeting | qualifying | qualified | cold | handoff | closed
+  label          String? // QUENTE | FRIO | SEM_RESPOSTA
+  questionsAsked Int     @default(0)
+  botMessages    Int     @default(0)
 
-  history   Json     @default("[]") // [{role:'user'|'assistant', text, at}]
-  summary   String?  // resumo de 1 linha gerado para o vendedor
+  history         Json    @default("[]") // [{role:'user'|'assistant', text, at}]
+  summary         String? // resumo de 1 linha gerado para o vendedor
   conversionFired Boolean @default(false)
   capiLeadFired   Boolean @default(false) // evento Lead (Meta CAPI) já enviado p/ este lead
+
+  // Marcada na criação: true se esta conversa nasceu depois de já ter batido o
+  // limite diário de conversas grátis do usuário — cada mensagem do bot aqui
+  // dentro conta no acumulado de excedente (ver WhatsappConfig).
+  billable Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

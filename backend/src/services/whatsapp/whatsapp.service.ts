@@ -6,6 +6,8 @@ import prisma from '../../lib/prisma.js';
 import { resolveTransport, type InboundMessage } from './transport.js';
 import { nextReply, type QualConfig, type QualTurn } from './qualification.service.js';
 import { CapiService } from '../capi.service.js';
+import { sendMail } from '../email.service.js';
+import { asaasConfigured, ensureAsaasCustomer, createOverageCharge } from '../asaas.service.js';
 
 interface HistoryItem { role: 'user' | 'assistant'; text: string; at: string }
 
@@ -36,12 +38,32 @@ export class WhatsappService {
       conversionId: data.conversionId ?? null,
       conversionLabel: data.conversionLabel ?? null,
       enabled: data.enabled ?? false,
+      billingCpfCnpj: data.billingCpfCnpj ?? null,
     };
     return prisma.whatsappConfig.upsert({
       where: { userId: this.userId },
       create: { userId: this.userId, ...base },
       update: base,
     });
+  }
+
+  // ── Uso/cobrança (para o painel do cliente) ─────────────────────────────────
+  async getUsageStatus() {
+    const config = await this.getConfig();
+    const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
+    const [todayCount, lastCharges] = await Promise.all([
+      prisma.whatsappConversation.count({ where: { userId: this.userId, createdAt: { gte: startOfToday } } }),
+      prisma.whatsappCharge.findMany({ where: { userId: this.userId }, orderBy: { createdAt: 'desc' }, take: 5 }),
+    ]);
+    return {
+      dailyFreeConversations: config?.dailyFreeConversations ?? 12,
+      dailyOverageCentsPerMsg: config?.dailyOverageCentsPerMsg ?? 15,
+      overageChargeThresholdCents: config?.overageChargeThresholdCents ?? 2000,
+      pendingOverageCents: config?.pendingOverageCents ?? 0,
+      todayConversations: todayCount,
+      billingCpfCnpj: config?.billingCpfCnpj ?? null,
+      charges: lastCharges,
+    };
   }
 
   // ── Processamento de mensagem recebida ──────────────────────────────────────
@@ -55,8 +77,15 @@ export class WhatsappService {
       where: { userId_leadPhone: { userId: this.userId, leadPhone: msg.from } },
     });
     if (!conv) {
+      // Limite diário: as primeiras N conversas NOVAS do dia são grátis; a
+      // partir da (N+1)ª, toda mensagem do bot nesta conversa é cobrada.
+      const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
+      const todayCount = await prisma.whatsappConversation.count({
+        where: { userId: this.userId, createdAt: { gte: startOfToday } },
+      });
+      const billable = todayCount >= config.dailyFreeConversations;
       conv = await prisma.whatsappConversation.create({
-        data: { userId: this.userId, leadPhone: msg.from, state: 'greeting' },
+        data: { userId: this.userId, leadPhone: msg.from, state: 'greeting', billable },
       });
     }
     if (conv.state === 'closed' || conv.state === 'handoff') {
@@ -88,6 +117,14 @@ export class WhatsappService {
     await transport.sendText(msg.from, result.reply);
 
     history.push({ role: 'assistant', text: result.reply, at: new Date().toISOString() });
+
+    // Conversa além do limite diário grátis: acumula o custo desta mensagem e,
+    // ao atingir o mínimo configurado, dispara a cobrança automática (Asaas).
+    // Não-fatal: falha aqui nunca pode impedir o bot de responder o lead.
+    if (conv.billable) {
+      await this.accrueOverage(config.dailyOverageCentsPerMsg, config.overageChargeThresholdCents)
+        .catch((e) => console.error('[whatsapp:billing] erro ao acumular/cobrar excedente:', e));
+    }
 
     // Dispara conversão na PRIMEIRA resposta (clique→conversa = lead via WhatsApp)
     const shouldFireConversion = !conv.conversionFired;
@@ -127,6 +164,90 @@ export class WhatsappService {
     });
 
     return { reply: result.reply, state: result.state };
+  }
+
+  // ── Cobrança de excedente ────────────────────────────────────────────────────
+  // Acumula o custo desta mensagem e, ao atingir o mínimo configurado, dispara
+  // uma cobrança Asaas (PIX/boleto/cartão via link) pelo valor acumulado.
+  //
+  // Concorrência: usa compare-and-swap (zera só se o valor não mudou desde a
+  // leitura) para nunca gerar duas cobranças pro mesmo acumulado, mesmo se
+  // duas conversas do mesmo usuário cruzarem o limite quase ao mesmo tempo.
+  // Se a chamada ao Asaas falhar depois de já ter zerado, devolve o valor
+  // reclamado ao acumulado — nenhum centavo do cliente final pode se perder.
+  private async accrueOverage(centsPerMsg: number, thresholdCents: number): Promise<void> {
+    const updated = await prisma.whatsappConfig.update({
+      where: { userId: this.userId },
+      data: { pendingOverageCents: { increment: centsPerMsg } },
+    });
+    if (updated.pendingOverageCents < thresholdCents) return;
+
+    const claimAmount = updated.pendingOverageCents;
+    const claim = await prisma.whatsappConfig.updateMany({
+      where: { userId: this.userId, pendingOverageCents: claimAmount },
+      data: { pendingOverageCents: 0 },
+    });
+    if (claim.count !== 1) return; // outra chamada concorrente já reclamou este acumulado
+
+    try {
+      if (!asaasConfigured()) {
+        console.warn(`[whatsapp:billing] excedente de ${claimAmount} centavos (userId ${this.userId}) acumulado, mas ASAAS_API_KEY não configurada — cobrança pulada`);
+        return;
+      }
+      if (!updated.billingCpfCnpj) {
+        console.warn(`[whatsapp:billing] excedente de ${claimAmount} centavos (userId ${this.userId}) acumulado, mas falta CPF/CNPJ de faturamento — configure em WhatsApp (Leads IA)`);
+        return;
+      }
+
+      const user = await prisma.user.findUnique({ where: { id: this.userId }, select: { name: true, email: true } });
+      if (!user) return;
+
+      const customerId = updated.asaasCustomerId ?? await ensureAsaasCustomer({
+        name: user.name,
+        email: user.email,
+        cpfCnpj: updated.billingCpfCnpj,
+        externalReference: this.userId,
+      });
+      if (!updated.asaasCustomerId) {
+        await prisma.whatsappConfig.update({ where: { userId: this.userId }, data: { asaasCustomerId: customerId } });
+      }
+
+      const charge = await createOverageCharge(
+        customerId,
+        claimAmount,
+        'AdsGenius — excedente de conversas WhatsApp (Leads IA)',
+      );
+
+      await prisma.whatsappCharge.create({
+        data: {
+          userId: this.userId,
+          amountCents: claimAmount,
+          asaasPaymentId: charge.asaasPaymentId,
+          invoiceUrl: charge.invoiceUrl,
+          status: 'PENDING',
+        },
+      });
+
+      await sendMail({
+        to: user.email,
+        subject: 'AdsGenius — cobrança do excedente de conversas WhatsApp',
+        html: `<p>Olá, ${user.name}!</p>
+<p>Seu WhatsApp (Leads IA) passou do limite diário de conversas grátis e acumulou
+R$ ${(claimAmount / 100).toFixed(2)} em mensagens excedentes (R$ ${(centsPerMsg / 100).toFixed(2)} por mensagem).</p>
+<p><a href="${charge.invoiceUrl}">Pagar agora (PIX, boleto ou cartão)</a></p>
+<p>O bot continua funcionando normalmente enquanto isso.</p>`,
+        text: `Seu WhatsApp (Leads IA) acumulou R$ ${(claimAmount / 100).toFixed(2)} em excedente. Pague em: ${charge.invoiceUrl}`,
+      });
+    } catch (e) {
+      // Falhou ao cobrar (Asaas fora do ar, CPF inválido, etc.) — devolve o
+      // valor reclamado para não perder o registro do excedente, e tenta de
+      // novo quando o acumulado voltar a cruzar o limite.
+      await prisma.whatsappConfig.update({
+        where: { userId: this.userId },
+        data: { pendingOverageCents: { increment: claimAmount } },
+      });
+      throw e;
+    }
   }
 
   // Dispara a conversão. Por enquanto registra; o envio real ao Google Ads

@@ -27,6 +27,12 @@ router.post('/config', authMiddleware, async (req: AuthRequest, res: Response) =
   res.json(await svc.upsertConfig(req.body ?? {}));
 });
 
+// Limite diário, excedente acumulado e histórico de cobranças (Asaas)
+router.get('/usage', authMiddleware, async (req: AuthRequest, res: Response) => {
+  const svc = new WhatsappService(req.userId!);
+  res.json(await svc.getUsageStatus());
+});
+
 // Lista conversas do usuário (para acompanhamento no painel)
 router.get('/conversations', authMiddleware, async (req: AuthRequest, res: Response) => {
   const list = await prisma.whatsappConversation.findMany({
