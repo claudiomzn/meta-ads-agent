@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
-import { WhatsappService } from '../services/whatsapp/whatsapp.service.js';
+import { WhatsappService, creditPaidRecharge } from '../services/whatsapp/whatsapp.service.js';
 import { resolveTransport } from '../services/whatsapp/transport.js';
 import {
   evolutionConfigured,
@@ -129,6 +129,30 @@ router.post('/webhook/:userId', async (req: Request, res: Response) => {
   } catch (e) {
     console.error('[whatsapp:webhook] falha:', e);
     res.json({ ok: true }); // 200 mesmo em erro p/ não gerar reentrega em loop
+  }
+});
+
+// ── Webhook do Asaas (público) — confirma pagamento das recargas ─────────────
+// Configurar no painel do Asaas: Integrações → Webhooks → esta URL, eventos
+// PAYMENT_RECEIVED e PAYMENT_CONFIRMED, com o "Token de acesso" = ASAAS_WEBHOOK_TOKEN
+// (o Asaas devolve esse token no header abaixo em toda chamada).
+router.post('/webhook/asaas', async (req: Request, res: Response) => {
+  const expected = process.env.ASAAS_WEBHOOK_TOKEN;
+  const received = req.headers['asaas-access-token'];
+  if (!expected || received !== expected) {
+    console.warn('[whatsapp:webhook:asaas] token inválido/ausente — evento descartado');
+    return res.json({ ok: true }); // 200 pra não gerar reentrega em loop
+  }
+
+  try {
+    const { event, payment } = req.body ?? {};
+    if ((event === 'PAYMENT_RECEIVED' || event === 'PAYMENT_CONFIRMED') && payment?.id) {
+      await creditPaidRecharge(payment.id);
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[whatsapp:webhook:asaas] falha:', e);
+    res.json({ ok: true });
   }
 });
 

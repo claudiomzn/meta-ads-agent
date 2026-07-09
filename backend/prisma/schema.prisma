@@ -396,15 +396,16 @@ model WhatsappConfig {
   conversionId    String? // AW-XXXXX
   conversionLabel String?
 
-  // ── Limite diário e cobrança de excedente ──────────────────────────────────
-  // As primeiras N conversas NOVAS de cada dia são grátis; a partir da (N+1)ª,
-  // cada mensagem do bot custa dailyOverageCentsPerMsg centavos, acumulados em
-  // pendingOverageCents. Ao atingir overageChargeThresholdCents, dispara uma
-  // cobrança Asaas (PIX/boleto/cartão via link) e zera o acumulado.
-  dailyFreeConversations      Int @default(12)
-  dailyOverageCentsPerMsg     Int @default(15)
-  overageChargeThresholdCents Int @default(2000) // R$20,00
-  pendingOverageCents         Int @default(0)
+  // ── Limite diário e saldo pré-pago (modelo sem dívida) ──────────────────────
+  // As primeiras N conversas NOVAS de cada dia são grátis. Esgotada a franquia,
+  // o bot consome de prepaidMessagesRemaining (1 mensagem = dailyOverageCentsPerMsg
+  // centavos já PAGOS). Se o saldo chegar a zero, o bot FICA MUDO (não responde)
+  // até uma recarga de rechargeAmountCents ser efetivamente paga no Asaas — nunca
+  // responde "fiado". O saldo só é creditado pelo webhook de pagamento confirmado.
+  dailyFreeConversations   Int @default(12)
+  dailyOverageCentsPerMsg  Int @default(15)
+  rechargeAmountCents      Int @default(2000) // R$20,00 por recarga
+  prepaidMessagesRemaining Int @default(0)
 
   // Dados de faturamento (Asaas exige CPF/CNPJ para criar o cliente) e o id do
   // cliente já criado no Asaas (criado sob demanda, na 1ª cobrança).
@@ -415,16 +416,18 @@ model WhatsappConfig {
   updatedAt DateTime @updatedAt
 }
 
-// Cobranças de excedente geradas no Asaas — histórico para o cliente ver o que
-// já foi cobrado/pago, e para não gerar cobrança duplicada por corrida de mensagens.
+// Cobranças de recarga geradas no Asaas — histórico + controle para nunca
+// gerar duas cobranças em aberto ao mesmo tempo, e para o webhook saber
+// quantas mensagens creditar quando o pagamento for confirmado.
 model WhatsappCharge {
-  id             String   @id @default(cuid())
-  userId         String
-  amountCents    Int
-  asaasPaymentId String   @unique
-  invoiceUrl     String
-  status         String   @default("PENDING") // PENDING | PAID | FAILED
-  createdAt      DateTime @default(now())
+  id              String   @id @default(cuid())
+  userId          String
+  amountCents     Int
+  messagesGranted Int // quantas mensagens esta recarga libera quando PAGA
+  asaasPaymentId  String   @unique
+  invoiceUrl      String
+  status          String   @default("PENDING") // PENDING | PAID | FAILED
+  createdAt       DateTime @default(now())
 
   @@index([userId, status])
 }

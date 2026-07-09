@@ -59,6 +59,8 @@ services:
         sync: false
       - key: ASAAS_SANDBOX
         value: "false"
+      - key: ASAAS_WEBHOOK_TOKEN
+        generateValue: true
 
 databases:
   - name: meta-ads-db
