@@ -202,10 +202,12 @@ export class WhatsappService {
     billingCpfCnpj: string | null;
     asaasCustomerId: string | null;
   }): Promise<void> {
+    // Checagem rápida (não é a garantia de corretude — só evita trabalho
+    // desnecessário no caminho comum, quando já existe cobrança aberta).
     const openCharge = await prisma.whatsappCharge.findFirst({
       where: { userId: this.userId, status: 'PENDING' },
     });
-    if (openCharge) return; // já existe cobrança aguardando pagamento
+    if (openCharge) return;
 
     if (!asaasConfigured()) {
       console.warn(`[whatsapp:billing] saldo zerado (userId ${this.userId}) — ASAAS_API_KEY não configurada, bot seguirá mudo`);
@@ -219,47 +221,71 @@ export class WhatsappService {
     const user = await prisma.user.findUnique({ where: { id: this.userId }, select: { name: true, email: true } });
     if (!user) return;
 
-    const customerId = config.asaasCustomerId ?? await ensureAsaasCustomer({
-      name: user.name,
-      email: user.email,
-      cpfCnpj: config.billingCpfCnpj,
-      externalReference: this.userId,
-    });
-    if (!config.asaasCustomerId) {
-      await prisma.whatsappConfig.update({ where: { userId: this.userId }, data: { asaasCustomerId: customerId } });
+    const messagesGranted = Math.floor(config.rechargeAmountCents / config.dailyOverageCentsPerMsg);
+
+    // Reclama o "direito" de criar a cobrança ANTES de chamar o Asaas — o
+    // índice único parcial em pendingUserId garante, no próprio banco, que só
+    // uma chamada concorrente consegue este insert; as demais caem no catch e
+    // desistem (evita criar duas cobranças reais se dois leads baterem o
+    // limite quase ao mesmo tempo).
+    let placeholder;
+    try {
+      placeholder = await prisma.whatsappCharge.create({
+        data: {
+          userId: this.userId,
+          amountCents: config.rechargeAmountCents,
+          messagesGranted,
+          asaasPaymentId: `pending:${this.userId}:${Date.now()}`,
+          invoiceUrl: '',
+          status: 'PENDING',
+          pendingUserId: this.userId,
+        },
+      });
+    } catch {
+      return; // outra chamada concorrente já reclamou o slot
     }
 
-    const messagesGranted = Math.floor(config.rechargeAmountCents / config.dailyOverageCentsPerMsg);
-    const charge = await createRechargeCharge(
-      customerId,
-      config.rechargeAmountCents,
-      'AdsGenius — recarga de mensagens WhatsApp (Leads IA)',
-    );
+    try {
+      const customerId = config.asaasCustomerId ?? await ensureAsaasCustomer({
+        name: user.name,
+        email: user.email,
+        cpfCnpj: config.billingCpfCnpj,
+        externalReference: this.userId,
+      });
+      if (!config.asaasCustomerId) {
+        await prisma.whatsappConfig.update({ where: { userId: this.userId }, data: { asaasCustomerId: customerId } });
+      }
 
-    // O saldo só é creditado quando o webhook do Asaas confirmar o pagamento
-    // (ver whatsapp.routes.ts /webhook/asaas) — nunca aqui, para nunca responder fiado.
-    await prisma.whatsappCharge.create({
-      data: {
-        userId: this.userId,
-        amountCents: config.rechargeAmountCents,
-        messagesGranted,
-        asaasPaymentId: charge.asaasPaymentId,
-        invoiceUrl: charge.invoiceUrl,
-        status: 'PENDING',
-      },
-    });
+      const charge = await createRechargeCharge(
+        customerId,
+        config.rechargeAmountCents,
+        'AdsGenius — recarga de mensagens WhatsApp (Leads IA)',
+      );
 
-    await sendMail({
-      to: user.email,
-      subject: 'AdsGenius — seu WhatsApp (Leads IA) está pausado, pague para reativar',
-      html: `<p>Olá, ${user.name}!</p>
+      // O saldo só é creditado quando o webhook do Asaas confirmar o pagamento
+      // (ver whatsapp.routes.ts /webhook/asaas) — nunca aqui, para nunca responder fiado.
+      await prisma.whatsappCharge.update({
+        where: { id: placeholder.id },
+        data: { asaasPaymentId: charge.asaasPaymentId, invoiceUrl: charge.invoiceUrl },
+      });
+
+      await sendMail({
+        to: user.email,
+        subject: 'AdsGenius — seu WhatsApp (Leads IA) está pausado, pague para reativar',
+        html: `<p>Olá, ${user.name}!</p>
 <p>Seu WhatsApp (Leads IA) atingiu o limite de ${config.dailyFreeConversations} conversas grátis de hoje e o
 saldo pago acabou. O bot está <strong>pausado</strong> e não vai responder novos leads até você recarregar —
 ou esperar a virada do dia, quando as conversas grátis renovam sozinhas.</p>
 <p><a href="${charge.invoiceUrl}">Pagar R$ ${(config.rechargeAmountCents / 100).toFixed(2)} e reativar agora (PIX, boleto ou cartão)</a></p>
 <p>Essa recarga libera mais ${messagesGranted} mensagens do bot.</p>`,
-      text: `Seu bot está pausado. Pague R$ ${(config.rechargeAmountCents / 100).toFixed(2)} para reativar: ${charge.invoiceUrl}`,
-    });
+        text: `Seu bot está pausado. Pague R$ ${(config.rechargeAmountCents / 100).toFixed(2)} para reativar: ${charge.invoiceUrl}`,
+      });
+    } catch (e) {
+      // Falhou ao criar a cobrança no Asaas (fora do ar, CPF inválido, etc.) —
+      // libera o slot apagando o placeholder, pra próxima mensagem tentar de novo.
+      await prisma.whatsappCharge.delete({ where: { id: placeholder.id } }).catch(() => {});
+      throw e;
+    }
   }
 
   // Dispara a conversão. Por enquanto registra; o envio real ao Google Ads
@@ -351,9 +377,11 @@ export async function creditPaidRecharge(asaasPaymentId: string): Promise<void> 
 
   // updateMany com status atual no WHERE — evita creditar 2x se o Asaas
   // reenviar o evento quase ao mesmo tempo (só uma chamada "ganha" o PENDING).
+  // pendingUserId: null libera o slot do índice único parcial — sem isso, o
+  // usuário nunca mais conseguiria gerar outra recarga depois da primeira.
   const claimed = await prisma.whatsappCharge.updateMany({
     where: { asaasPaymentId, status: 'PENDING' },
-    data: { status: 'PAID' },
+    data: { status: 'PAID', pendingUserId: null },
   });
   if (claimed.count !== 1) return;
 

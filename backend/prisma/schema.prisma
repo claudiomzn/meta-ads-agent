@@ -427,6 +427,13 @@ model WhatsappCharge {
   asaasPaymentId  String   @unique
   invoiceUrl      String
   status          String   @default("PENDING") // PENDING | PAID | FAILED
+  // Truque de índice único parcial: só recebe o userId enquanto status=PENDING
+  // (zera pra null em qualquer outra transição). Postgres permite múltiplos
+  // NULLs num índice único, então isso garante "no máximo 1 PENDING por
+  // usuário" garantido pelo PRÓPRIO BANCO — fecha a corrida em que duas
+  // mensagens concorrentes viam "sem cobrança aberta" ao mesmo tempo e cada
+  // uma criava a sua.
+  pendingUserId   String?  @unique
   createdAt       DateTime @default(now())
 
   @@index([userId, status])
