@@ -16,13 +16,27 @@ export function evolutionConfigured(): boolean {
   return !!(process.env.EVOLUTION_URL && process.env.EVOLUTION_API_KEY);
 }
 
-// Segredo por usuário embutido na URL do webhook. Sem ele, qualquer pessoa que
-// descobrisse um userId poderia injetar mensagens falsas no bot (gastando
-// créditos de IA e disparando conversões falsas). Derivado do JWT_SECRET do
-// servidor — não precisa de env nova nem de armazenar nada por usuário.
-export function webhookSecret(userId: string): string {
+// "default" é o negócio legado/padrão — mesmo sentinela usado no schema
+// (ver prisma/schema.prisma WhatsappConfig.businessId).
+const DEFAULT_BUSINESS = 'default';
+
+function isDefaultBusiness(businessId?: string | null): boolean {
+  return !businessId || businessId === DEFAULT_BUSINESS;
+}
+
+// Segredo por usuário (+ negócio) embutido na URL do webhook. Sem ele, qualquer
+// pessoa que descobrisse um userId poderia injetar mensagens falsas no bot
+// (gastando créditos de IA e disparando conversões falsas). Derivado do
+// JWT_SECRET do servidor — não precisa de env nova nem de armazenar nada por
+// usuário. Para o negócio "default" o segredo é IDÊNTICO ao de antes da
+// introdução de multi-negócio — instâncias/webhooks já configurados na
+// Evolution continuam batendo sem precisar reconectar.
+export function webhookSecret(userId: string, businessId?: string | null): string {
+  const key = isDefaultBusiness(businessId)
+    ? `whatsapp-webhook:${userId}`
+    : `whatsapp-webhook:${userId}:${businessId}`;
   return createHmac('sha256', process.env.JWT_SECRET ?? '')
-    .update(`whatsapp-webhook:${userId}`)
+    .update(key)
     .digest('hex')
     .slice(0, 32);
 }
@@ -35,14 +49,22 @@ function headers(): Record<string, string> {
   return { 'Content-Type': 'application/json', apikey: process.env.EVOLUTION_API_KEY ?? '' };
 }
 
-// Nome determinístico da instância do usuário (cuid é alfanumérico, seguro em URL)
-export function instanceName(userId: string): string {
-  return `adsgenius_${userId}`;
+// Nome determinístico da instância (cuid é alfanumérico, seguro em URL).
+// O negócio "default" preserva o nome de instância de antes de multi-negócio
+// (adsgenius_{userId}) — conexões já ativas não podem cair; negócios extras
+// ganham um sufixo (adsgenius_{userId}_{businessId}).
+export function instanceName(userId: string, businessId?: string | null): string {
+  return isDefaultBusiness(businessId) ? `adsgenius_${userId}` : `adsgenius_${userId}_${businessId}`;
 }
 
-export function webhookUrl(userId: string): string {
+export function webhookUrl(userId: string, businessId?: string | null): string {
   const pub = (process.env.PUBLIC_URL ?? PUBLIC_URL_DEFAULT).replace(/\/$/, '');
-  return `${pub}/api/whatsapp/webhook/${userId}?key=${webhookSecret(userId)}`;
+  // Rota antiga /webhook/:userId (sem businessId) continua roteando pro
+  // negócio padrão — retrocompatível com instâncias já configuradas.
+  const path = isDefaultBusiness(businessId)
+    ? `/api/whatsapp/webhook/${userId}`
+    : `/api/whatsapp/webhook/${userId}/${businessId}`;
+  return `${pub}${path}?key=${webhookSecret(userId, businessId)}`;
 }
 
 export interface ConnectResult {
@@ -55,8 +77,8 @@ export interface ConnectResult {
 }
 
 // Estado da conexão: "open" (conectado) | "connecting" | "close" | "not_found"
-export async function getConnectionState(userId: string): Promise<string> {
-  const resp = await fetch(`${baseUrl()}/instance/connectionState/${instanceName(userId)}`, {
+export async function getConnectionState(userId: string, businessId?: string | null): Promise<string> {
+  const resp = await fetch(`${baseUrl()}/instance/connectionState/${instanceName(userId, businessId)}`, {
     headers: headers(),
   });
   if (resp.status === 404) return 'not_found';
@@ -65,14 +87,15 @@ export async function getConnectionState(userId: string): Promise<string> {
   return data.instance?.state ?? 'close';
 }
 
-// Garante que a instância do usuário existe com o webhook certo e retorna o QR
-// para parear. Idempotente: pode ser chamada de novo p/ renovar o QR expirado.
-export async function connectInstance(userId: string): Promise<ConnectResult> {
+// Garante que a instância do usuário (+ negócio) existe com o webhook certo e
+// retorna o QR para parear. Idempotente: pode ser chamada de novo p/ renovar
+// o QR expirado.
+export async function connectInstance(userId: string, businessId?: string | null): Promise<ConnectResult> {
   if (!evolutionConfigured()) {
     throw new Error('Evolution não configurada no servidor (EVOLUTION_URL/EVOLUTION_API_KEY)');
   }
-  const name = instanceName(userId);
-  const hook = webhookUrl(userId);
+  const name = instanceName(userId, businessId);
+  const hook = webhookUrl(userId, businessId);
 
   // 1. Cria a instância (409/403 = já existe, segue em frente)
   const createResp = await fetch(`${baseUrl()}/instance/create`, {
@@ -110,7 +133,7 @@ export async function connectInstance(userId: string): Promise<ConnectResult> {
   }
 
   // 3. Estado atual; se já conectado, não precisa de QR
-  const state = await getConnectionState(userId);
+  const state = await getConnectionState(userId, businessId);
   if (state === 'open') return { qrBase64: null, pairingCode: null, state };
 
   if (createdQr) return { qrBase64: createdQr, pairingCode: createdPairing, state };
@@ -135,36 +158,50 @@ export async function ensureManagedWebhooks(): Promise<void> {
 
   const configs = await prisma.whatsappConfig.findMany({
     where: { transport: 'evolution' },
-    select: { userId: true, transportConfig: true },
+    select: { userId: true, businessId: true, transportConfig: true },
   });
 
   for (const cfg of configs) {
     const tc = cfg.transportConfig as Record<string, unknown> | null;
     // Só instâncias gerenciadas (criadas por nós) — self-hosted é do usuário
-    if (tc?.instance !== instanceName(cfg.userId)) continue;
+    if (tc?.instance !== instanceName(cfg.userId, cfg.businessId)) continue;
 
-    const hook = webhookUrl(cfg.userId);
+    const hook = webhookUrl(cfg.userId, cfg.businessId);
+    const name = instanceName(cfg.userId, cfg.businessId);
     const body = { webhook: { enabled: true, url: hook, webhookByEvents: false, webhookBase64: false, events: ['MESSAGES_UPSERT'] } };
     try {
-      const resp = await fetch(`${baseUrl()}/webhook/set/${instanceName(cfg.userId)}`, {
+      const resp = await fetch(`${baseUrl()}/webhook/set/${name}`, {
         method: 'POST', headers: headers(), body: JSON.stringify(body),
       });
       if (!resp.ok && resp.status !== 404) {
-        console.warn(`[evolution] self-heal webhook falhou p/ ${cfg.userId} (${resp.status})`);
+        console.warn(`[evolution] self-heal webhook falhou p/ ${cfg.userId}/${cfg.businessId} (${resp.status})`);
       }
     } catch (err) {
-      console.warn(`[evolution] self-heal webhook erro p/ ${cfg.userId}:`, err);
+      console.warn(`[evolution] self-heal webhook erro p/ ${cfg.userId}/${cfg.businessId}:`, err);
     }
   }
 }
 
 // Desconecta o WhatsApp do usuário (logout da sessão; a instância permanece).
-export async function disconnectInstance(userId: string): Promise<void> {
-  const resp = await fetch(`${baseUrl()}/instance/logout/${instanceName(userId)}`, {
+export async function disconnectInstance(userId: string, businessId?: string | null): Promise<void> {
+  const resp = await fetch(`${baseUrl()}/instance/logout/${instanceName(userId, businessId)}`, {
     method: 'DELETE',
     headers: headers(),
   });
   if (!resp.ok && resp.status !== 404) {
     throw new Error(`Evolution logout ${resp.status}: ${await resp.text()}`);
+  }
+}
+
+// Apaga a instância por completo na Evolution (usado ao remover um negócio —
+// diferente de disconnectInstance, que só faz logout preservando a instância
+// para reconectar depois). 404 é sucesso (já não existia).
+export async function deleteInstance(userId: string, businessId?: string | null): Promise<void> {
+  const resp = await fetch(`${baseUrl()}/instance/delete/${instanceName(userId, businessId)}`, {
+    method: 'DELETE',
+    headers: headers(),
+  });
+  if (!resp.ok && resp.status !== 404) {
+    throw new Error(`Evolution delete ${resp.status}: ${await resp.text()}`);
   }
 }

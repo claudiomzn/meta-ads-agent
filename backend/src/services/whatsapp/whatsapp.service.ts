@@ -11,12 +11,63 @@ import { asaasConfigured, ensureAsaasCustomer, createOverageCharge as createRech
 
 interface HistoryItem { role: 'user' | 'assistant'; text: string; at: string }
 
+// Normaliza texto para comparação de palavra-gatilho: minúsculas, sem
+// diacríticos (NFD + remoção dos combining marks) e sem espaços nas pontas —
+// "Cotação" vira "cotacao", casando com "quero uma cotacao".
+function normalizeForTrigger(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+// Negócio "default" — mesmo sentinela do schema (WhatsappConfig.businessId) e
+// do evolution.manager (DEFAULT_BUSINESS). Contas de hoje (1 config por
+// usuário) continuam funcionando: businessId ausente = "default".
+export const DEFAULT_BUSINESS = 'default';
+
 export class WhatsappService {
-  constructor(private userId: string) {}
+  private businessId: string;
+
+  constructor(private userId: string, businessId?: string | null) {
+    this.businessId = businessId && businessId.trim() ? businessId : DEFAULT_BUSINESS;
+  }
 
   // ── Config ────────────────────────────────────────────────────────────────
   async getConfig() {
-    return prisma.whatsappConfig.findUnique({ where: { userId: this.userId } });
+    return prisma.whatsappConfig.findUnique({
+      where: { userId_businessId: { userId: this.userId, businessId: this.businessId } },
+    });
+  }
+
+  // Lista os negócios (configs) da conta — para o seletor no painel.
+  async listBusinesses() {
+    return prisma.whatsappConfig.findMany({
+      where: { userId: this.userId },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        businessId: true,
+        businessName: true,
+        enabled: true,
+        transport: true,
+        transportConfig: true,
+        createdAt: true,
+      },
+    });
+  }
+
+  // Remove um negócio não-padrão: desativa a config (não apaga conversas —
+  // histórico fica). O negócio "default" nunca pode ser removido por aqui
+  // (é o fallback das rotas/webhook legados).
+  async removeBusiness() {
+    if (this.businessId === DEFAULT_BUSINESS) {
+      throw new Error('O negócio padrão não pode ser removido');
+    }
+    await prisma.whatsappConfig.updateMany({
+      where: { userId: this.userId, businessId: this.businessId },
+      data: { enabled: false, transport: 'none' },
+    });
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -33,6 +84,7 @@ export class WhatsappService {
       maxBotMessages: data.maxBotMessages ?? 8,
       handoffContact: data.handoffContact ?? null,
       businessHours: data.businessHours ?? null,
+      triggerKeyword: data.triggerKeyword ?? null,
       transport: data.transport ?? 'none',
       transportConfig: data.transportConfig ?? {},
       conversionId: data.conversionId ?? null,
@@ -41,8 +93,8 @@ export class WhatsappService {
       billingCpfCnpj: data.billingCpfCnpj ?? null,
     };
     return prisma.whatsappConfig.upsert({
-      where: { userId: this.userId },
-      create: { userId: this.userId, ...base },
+      where: { userId_businessId: { userId: this.userId, businessId: this.businessId } },
+      create: { userId: this.userId, businessId: this.businessId, ...base },
       update: base,
     });
   }
@@ -52,8 +104,14 @@ export class WhatsappService {
     const config = await this.getConfig();
     const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
     const [todayCount, lastCharges] = await Promise.all([
-      prisma.whatsappConversation.count({ where: { userId: this.userId, createdAt: { gte: startOfToday } } }),
-      prisma.whatsappCharge.findMany({ where: { userId: this.userId }, orderBy: { createdAt: 'desc' }, take: 5 }),
+      prisma.whatsappConversation.count({
+        where: { userId: this.userId, businessId: this.businessId, createdAt: { gte: startOfToday } },
+      }),
+      prisma.whatsappCharge.findMany({
+        where: { userId: this.userId, businessId: this.businessId },
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+      }),
     ]);
     const dailyFreeConversations = config?.dailyFreeConversations ?? 12;
     const prepaidMessagesRemaining = config?.prepaidMessagesRemaining ?? 0;
@@ -76,20 +134,38 @@ export class WhatsappService {
     const config = await this.getConfig();
     if (!config || !config.enabled) return null;
 
-    // Carrega ou cria a conversa deste lead
+    // Carrega ou cria a conversa deste lead. Escopada por (userId, businessId,
+    // leadPhone): o mesmo número pode falar com dois negócios da mesma conta,
+    // e cada um vê uma conversa independente.
     let conv = await prisma.whatsappConversation.findUnique({
-      where: { userId_leadPhone: { userId: this.userId, leadPhone: msg.from } },
+      where: {
+        userId_businessId_leadPhone: { userId: this.userId, businessId: this.businessId, leadPhone: msg.from },
+      },
     });
     if (!conv) {
+      // Palavra-gatilho: com triggerKeyword configurado, uma conversa NOVA só
+      // nasce se a 1ª mensagem contiver o gatilho (sem caixa/acentos). Sem o
+      // gatilho, ignora em silêncio — ANTES de contar franquia/billable e de
+      // chamar a IA: mensagem ignorada não pode consumir nada nem criar
+      // conversa. Conversa já existente (ramo de baixo) nunca reavalia isto.
+      if (config.triggerKeyword && config.triggerKeyword.trim()) {
+        const keyword = normalizeForTrigger(config.triggerKeyword);
+        if (keyword && !normalizeForTrigger(msg.text).includes(keyword)) {
+          console.log(`[whatsapp:trigger] msg sem gatilho "${config.triggerKeyword}" ignorada (userId ${this.userId}, negócio ${this.businessId}, lead ${msg.from})`);
+          return null;
+        }
+      }
+
       // Limite diário: as primeiras N conversas NOVAS do dia são grátis; a
       // partir da (N+1)ª, toda mensagem do bot nesta conversa é cobrada.
+      // Franquia é por negócio — cada negócio tem sua própria cota diária.
       const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
       const todayCount = await prisma.whatsappConversation.count({
-        where: { userId: this.userId, createdAt: { gte: startOfToday } },
+        where: { userId: this.userId, businessId: this.businessId, createdAt: { gte: startOfToday } },
       });
       const billable = todayCount >= config.dailyFreeConversations;
       conv = await prisma.whatsappConversation.create({
-        data: { userId: this.userId, leadPhone: msg.from, state: 'greeting', billable },
+        data: { userId: this.userId, businessId: this.businessId, leadPhone: msg.from, state: 'greeting', billable },
       });
     }
     if (conv.state === 'closed' || conv.state === 'handoff') {
@@ -186,7 +262,7 @@ export class WhatsappService {
   // saldo (bot deve ficar mudo).
   private async tryConsumePrepaidMessage(): Promise<boolean> {
     const claim = await prisma.whatsappConfig.updateMany({
-      where: { userId: this.userId, prepaidMessagesRemaining: { gt: 0 } },
+      where: { userId: this.userId, businessId: this.businessId, prepaidMessagesRemaining: { gt: 0 } },
       data: { prepaidMessagesRemaining: { decrement: 1 } },
     });
     return claim.count === 1;
@@ -204,8 +280,9 @@ export class WhatsappService {
   }): Promise<void> {
     // Checagem rápida (não é a garantia de corretude — só evita trabalho
     // desnecessário no caminho comum, quando já existe cobrança aberta).
+    // Escopada por negócio: cada negócio tem seu próprio saldo/cobrança.
     const openCharge = await prisma.whatsappCharge.findFirst({
-      where: { userId: this.userId, status: 'PENDING' },
+      where: { userId: this.userId, businessId: this.businessId, status: 'PENDING' },
     });
     if (openCharge) return;
 
@@ -224,21 +301,23 @@ export class WhatsappService {
     const messagesGranted = Math.floor(config.rechargeAmountCents / config.dailyOverageCentsPerMsg);
 
     // Reclama o "direito" de criar a cobrança ANTES de chamar o Asaas — o
-    // índice único parcial em pendingUserId garante, no próprio banco, que só
-    // uma chamada concorrente consegue este insert; as demais caem no catch e
-    // desistem (evita criar duas cobranças reais se dois leads baterem o
-    // limite quase ao mesmo tempo).
+    // índice único parcial em pendingKey (`${userId}:${businessId}`) garante,
+    // no próprio banco, que só uma chamada concorrente consegue este insert;
+    // as demais caem no catch e desistem (evita criar duas cobranças reais se
+    // dois leads do MESMO negócio baterem o limite quase ao mesmo tempo — o
+    // negócio B pode gerar a sua própria cobrança em paralelo, sem conflito).
     let placeholder;
     try {
       placeholder = await prisma.whatsappCharge.create({
         data: {
           userId: this.userId,
+          businessId: this.businessId,
           amountCents: config.rechargeAmountCents,
           messagesGranted,
-          asaasPaymentId: `pending:${this.userId}:${Date.now()}`,
+          asaasPaymentId: `pending:${this.userId}:${this.businessId}:${Date.now()}`,
           invoiceUrl: '',
           status: 'PENDING',
-          pendingUserId: this.userId,
+          pendingKey: `${this.userId}:${this.businessId}`,
         },
       });
     } catch {
@@ -246,14 +325,27 @@ export class WhatsappService {
     }
 
     try {
+      // externalReference: mantém EXATAMENTE o formato legado (só userId)
+      // para o negócio "default" — clientes que já têm asaasCustomerId salvo
+      // nunca chamam ensureAsaasCustomer de novo (cacheado em config), mas
+      // preservar o formato evita duplicar cliente Asaas caso essa chamada
+      // precise rodar de novo (ex: charge anterior falhou antes de salvar o
+      // id). Negócios extras usam "userId:businessId" — cliente Asaas
+      // separado por negócio, como pedido (CPF/CNPJ pode ser diferente).
+      const externalReference = this.businessId === DEFAULT_BUSINESS
+        ? this.userId
+        : `${this.userId}:${this.businessId}`;
       const customerId = config.asaasCustomerId ?? await ensureAsaasCustomer({
         name: user.name,
         email: user.email,
         cpfCnpj: config.billingCpfCnpj,
-        externalReference: this.userId,
+        externalReference,
       });
       if (!config.asaasCustomerId) {
-        await prisma.whatsappConfig.update({ where: { userId: this.userId }, data: { asaasCustomerId: customerId } });
+        await prisma.whatsappConfig.update({
+          where: { userId_businessId: { userId: this.userId, businessId: this.businessId } },
+          data: { asaasCustomerId: customerId },
+        });
       }
 
       const charge = await createRechargeCharge(
@@ -377,17 +469,21 @@ export async function creditPaidRecharge(asaasPaymentId: string): Promise<void> 
 
   // updateMany com status atual no WHERE — evita creditar 2x se o Asaas
   // reenviar o evento quase ao mesmo tempo (só uma chamada "ganha" o PENDING).
-  // pendingUserId: null libera o slot do índice único parcial — sem isso, o
-  // usuário nunca mais conseguiria gerar outra recarga depois da primeira.
+  // pendingKey: null libera o slot do índice único parcial — sem isso, o
+  // usuário+negócio nunca mais conseguiria gerar outra recarga depois da primeira.
   const claimed = await prisma.whatsappCharge.updateMany({
     where: { asaasPaymentId, status: 'PENDING' },
-    data: { status: 'PAID', pendingUserId: null },
+    data: { status: 'PAID', pendingKey: null },
   });
   if (claimed.count !== 1) return;
 
+  // Credita o saldo do NEGÓCIO certo — a cobrança já carrega o businessId
+  // gravado no momento em que foi criada (ver ensureRechargeCharge), então o
+  // webhook credita sempre o negócio que efetivamente gerou a cobrança,
+  // mesmo que a conta tenha vários negócios em paralelo.
   await prisma.whatsappConfig.update({
-    where: { userId: charge.userId },
+    where: { userId_businessId: { userId: charge.userId, businessId: charge.businessId } },
     data: { prepaidMessagesRemaining: { increment: charge.messagesGranted } },
   });
-  console.log(`[whatsapp:billing] recarga confirmada: +${charge.messagesGranted} mensagens (userId ${charge.userId}, pagamento ${asaasPaymentId})`);
+  console.log(`[whatsapp:billing] recarga confirmada: +${charge.messagesGranted} mensagens (userId ${charge.userId}, negócio ${charge.businessId}, pagamento ${asaasPaymentId})`);
 }
