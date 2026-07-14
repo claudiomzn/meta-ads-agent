@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { createMetaMCPService } from '../services/meta.mcp.service.js';
 import { auditLog } from '../services/audit.service.js';
+import { targetBelongsToUser } from '../lib/ownership.js';
 
 const router = Router();
 
@@ -38,6 +39,19 @@ router.post('/', async (req: AuthRequest, res: Response) => {
   const parsed = RuleSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+
+  // Modelo pipeboard/zapier: token de servidor compartilhado entre todos os
+  // clientes — sem essa checagem, qualquer usuário poderia criar uma regra
+  // apontando pro targetId (ID do Meta) de campanha/adset/ad de OUTRO cliente.
+  const owns = await targetBelongsToUser(
+    parsed.data.targetType,
+    parsed.data.targetId,
+    req.userId!,
+  );
+  if (!owns) {
+    res.status(403).json({ error: 'Você não tem acesso a esse item.' });
     return;
   }
 

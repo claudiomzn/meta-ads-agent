@@ -66,10 +66,25 @@ beforeAll(async () => {
     .send({ name: 'Auto Test', email: 'auto@test.com', password: 'senha123' });
   token = res.body.token;
   userId = res.body.user.id;
+
+  // Regras de automação agora exigem ownership do targetId (proteção IDOR) —
+  // cria uma campanha local pertencente a este usuário cujo metaCampaignId
+  // é o mesmo usado em `validRule.targetId` ('act_123').
+  await prisma.campaign.create({
+    data: {
+      userId,
+      name: 'Campanha de teste',
+      product: 'produto',
+      objective: 'LEADS',
+      budget: 100,
+      metaCampaignId: 'act_123',
+    },
+  });
 });
 
 afterAll(async () => {
   await prisma.automationRule.deleteMany({ where: { userId } });
+  await prisma.campaign.deleteMany({ where: { userId } });
   await prisma.user.deleteMany({ where: { email: 'auto@test.com' } });
   await prisma.$disconnect();
 });
@@ -152,6 +167,15 @@ describe('POST /api/automations', () => {
       .send({ ...validRule, window: 91 });
 
     expect(res.status).toBe(400);
+  });
+
+  it('rejeita targetId que não pertence ao usuário (IDOR)', async () => {
+    const res = await request(app)
+      .post('/api/automations')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ ...validRule, targetId: 'act_de_outro_cliente' });
+
+    expect(res.status).toBe(403);
   });
 });
 

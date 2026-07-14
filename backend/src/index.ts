@@ -39,6 +39,7 @@ import creativeStudioRoutes from './routes/creative-studio.routes.js';
 import pixelRoutes from './routes/pixel.routes.js';
 import capiRoutes from './routes/capi.routes.js';
 import whatsappRoutes from './routes/whatsapp.routes.js';
+import { targetBelongsToUser } from './lib/ownership.js';
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -133,6 +134,22 @@ cron.schedule('*/15 * * * *', async () => {
 
     for (const rule of rules) {
       try {
+        // Defesa em profundidade: revalida ownership do targetId mesmo pra
+        // regras já criadas (ex.: item pode ter mudado de dono desde então).
+        // Token de servidor compartilhado (pipeboard/zapier) — sem isso o
+        // cron executaria ação numa campanha/adset/ad de outro cliente.
+        const owns = await targetBelongsToUser(
+          rule.targetType as 'campaign' | 'adset' | 'ad',
+          rule.targetId,
+          rule.userId,
+        );
+        if (!owns) {
+          console.warn(
+            `[Automação] Regra "${rule.name}" (${rule.id}) pulada — targetId ${rule.targetId} não pertence ao usuário ${rule.userId}`,
+          );
+          continue;
+        }
+
         const since = new Date(Date.now() - rule.window * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
         const range = { since, until: today };
 

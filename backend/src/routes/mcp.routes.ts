@@ -117,7 +117,10 @@ router.use(authMiddleware);
 const ConnectSchema = z.object({
   // Para Pipeboard/Zapier o token Meta é opcional — a autenticação já está na URL
   accessToken: z.string().optional().default(''),
-  mcpUrl: z.string().url(),
+  // Opcional: para provedor 'pipeboard'/'zapier' este campo é IGNORADO (ver
+  // abaixo) — o servidor sempre usa META_MCP_URL, nunca o valor do cliente
+  // (que expunha o token Pipeboard hardcoded no bundle do frontend).
+  mcpUrl: z.string().url().optional(),
   mcpProvider: z.enum(['meta', 'pipeboard', 'zapier']),
   adAccountIds: z.array(z.string()).min(1),
 });
@@ -133,13 +136,29 @@ router.post('/connect', async (req: AuthRequest, res: Response) => {
     return;
   }
 
-  const { accessToken, mcpUrl, mcpProvider, adAccountIds } = parsed.data;
+  const { accessToken, mcpProvider, adAccountIds } = parsed.data;
 
   // Para Meta direto, valida o token fazendo uma chamada de teste
   // Para Pipeboard/Zapier, a auth já está embutida na URL — não precisa de token Meta
   if (mcpProvider === 'meta' && !accessToken) {
     res.status(400).json({ error: 'Token de acesso Meta é obrigatório para o provedor Meta Oficial.' });
     return;
+  }
+
+  // O mcpUrl do provedor Pipeboard/Zapier NUNCA vem do cliente: o frontend
+  // não deve (e não pode ser confiável para) carregar o token Pipeboard —
+  // isso o expunha no bundle JS. Usa sempre a mesma fonte segura de
+  // '/auto-connect': META_MCP_URL do servidor. Para 'meta' o mcpUrl segue
+  // vindo do body (é a URL pessoal do usuário, sem token de servidor).
+  let mcpUrl: string | undefined;
+  if (mcpProvider === 'pipeboard' || mcpProvider === 'zapier') {
+    mcpUrl = process.env.META_MCP_URL ?? '';
+  } else {
+    mcpUrl = parsed.data.mcpUrl;
+    if (!mcpUrl) {
+      res.status(400).json({ error: 'mcpUrl é obrigatório para o provedor Meta Oficial.' });
+      return;
+    }
   }
 
   if (mcpProvider === 'meta') {
@@ -330,7 +349,12 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
 
     const plan = {
       localId: campaign.id,
-      adAccountId: req.body.adAccountId ?? campaign.metaAdAccountId ?? '',
+      // NUNCA usar adAccountId do body — a campanha local já é validada por
+      // userId acima, mas o adAccountId de destino não era; um cliente
+      // malicioso podia publicar na conta de outro cliente (token de
+      // servidor compartilhado no modelo pipeboard/zapier). Usa sempre a
+      // conta já associada à campanha local.
+      adAccountId: campaign.metaAdAccountId ?? '',
       name: campaign.name,
       objective: campaign.objective,
       adSets: campaign.adSets.map((as) => ({
@@ -597,6 +621,28 @@ router.post('/import', async (req: AuthRequest, res: Response) => {
   const { adAccountId } = req.body;
   if (!adAccountId) {
     res.status(400).json({ error: 'adAccountId é obrigatório' });
+    return;
+  }
+
+  // Modelo pipeboard/zapier: token de servidor compartilhado — sem essa
+  // checagem, importExternalCampaigns(adAccountId) importaria pro dashboard
+  // do requisitante campanhas de QUALQUER conta acessível pelo token,
+  // inclusive contas de outros clientes.
+  const conn = await prisma.mCPConnection.findUnique({ where: { userId: req.userId! } });
+  if (!conn) {
+    res.status(403).json({ error: 'Você não tem acesso a essa conta.' });
+    return;
+  }
+  let allowedAccountIds: string[] = [];
+  try {
+    allowedAccountIds = JSON.parse(conn.adAccountIds);
+  } catch {
+    allowedAccountIds = [];
+  }
+  const normalize = (id: string) => id.replace(/^act_/, '');
+  const isAllowed = allowedAccountIds.some((id) => normalize(id) === normalize(adAccountId));
+  if (!isAllowed) {
+    res.status(403).json({ error: 'Você não tem acesso a essa conta.' });
     return;
   }
 
