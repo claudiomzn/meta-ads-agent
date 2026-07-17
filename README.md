@@ -43,7 +43,7 @@ cp .env.example .env
 #   JWT_SECRET        → string aleatória com 32+ caracteres
 #   ENCRYPTION_KEY    → string aleatória com exatamente 32 caracteres
 #   ANTHROPIC_API_KEY → chave da API Anthropic (opcional para testar)
-#   PIPEBOARD_API_KEY → chave do Pipeboard (necessária para publicar no Meta)
+#   META_MCP_URL      → URL do servidor MCP (Pipeboard/Zapier/Meta Oficial) com o token já embutido — necessária para publicar no Meta
 
 # Instale as dependências
 npm install
@@ -78,7 +78,7 @@ Frontend disponível em: **http://localhost:5173**
 1. Acesse **http://localhost:5173**
 2. Crie uma conta ou use `demo@metaads.com` / `demo1234`
 3. Preencha o perfil no onboarding
-4. Vá em **Configurações** e conecte o MCP com seu token Meta e chave Pipeboard
+4. Vá em **Configurações** e conecte o MCP (Pipeboard/Zapier já configurado via `META_MCP_URL` do servidor, ou informe seu token Meta para o provedor Meta Oficial)
 
 ---
 
