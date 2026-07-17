@@ -122,44 +122,55 @@ router.post('/:id/run', async (req: AuthRequest, res: Response) => {
       (rule.condition === 'lte' && metricValue <= rule.value);
 
     let executed = false;
+    let scaleError: string | undefined;
     if (conditionMet) {
-      switch (rule.action) {
-        case 'PAUSE':
-          if (rule.targetType === 'adset') await svc.updateAdSetStatus(rule.targetId, 'PAUSED');
-          else if (rule.targetType === 'ad') await svc.updateAdStatus(rule.targetId, 'PAUSED');
-          else await svc.updateCampaignStatus(rule.targetId, 'PAUSED');
-          break;
-        case 'ACTIVATE':
-          if (rule.targetType === 'adset') await svc.updateAdSetStatus(rule.targetId, 'ACTIVE');
-          else if (rule.targetType === 'ad') await svc.updateAdStatus(rule.targetId, 'ACTIVE');
-          else await svc.updateCampaignStatus(rule.targetId, 'ACTIVE');
-          break;
-        // Escala a partir do orçamento ATUAL (fator 1.2/0.8) — nunca do valor
-        // da métrica/gasto, que não tem relação com orçamento diário.
-        case 'SCALE_UP':
-          await svc.scaleCampaignBudget(rule.targetId, 1.2);
-          break;
-        case 'SCALE_DOWN':
-          await svc.scaleCampaignBudget(rule.targetId, 0.8);
-          break;
+      // scaleCampaignBudget espera um metaCampaignId — se a regra aponta pra
+      // um adset/ad, rule.targetId é o ID errado de entidade pra essa chamada.
+      // Escala de orçamento só é suportada para targetType === 'campaign'.
+      const isUnsupportedScale =
+        (rule.action === 'SCALE_UP' || rule.action === 'SCALE_DOWN') && rule.targetType !== 'campaign';
+
+      if (isUnsupportedScale) {
+        scaleError = 'Escala de orçamento só é suportada em campanhas.';
+      } else {
+        switch (rule.action) {
+          case 'PAUSE':
+            if (rule.targetType === 'adset') await svc.updateAdSetStatus(rule.targetId, 'PAUSED');
+            else if (rule.targetType === 'ad') await svc.updateAdStatus(rule.targetId, 'PAUSED');
+            else await svc.updateCampaignStatus(rule.targetId, 'PAUSED');
+            break;
+          case 'ACTIVATE':
+            if (rule.targetType === 'adset') await svc.updateAdSetStatus(rule.targetId, 'ACTIVE');
+            else if (rule.targetType === 'ad') await svc.updateAdStatus(rule.targetId, 'ACTIVE');
+            else await svc.updateCampaignStatus(rule.targetId, 'ACTIVE');
+            break;
+          // Escala a partir do orçamento ATUAL (fator 1.2/0.8) — nunca do valor
+          // da métrica/gasto, que não tem relação com orçamento diário.
+          case 'SCALE_UP':
+            await svc.scaleCampaignBudget(rule.targetId, 1.2);
+            break;
+          case 'SCALE_DOWN':
+            await svc.scaleCampaignBudget(rule.targetId, 0.8);
+            break;
+        }
+        executed = true;
+
+        await prisma.ruleLog.create({
+          data: {
+            ruleId: rule.id,
+            action: rule.action,
+            metrics: JSON.stringify({ ...insights, conditionValue: rule.value, actualValue: metricValue }),
+          },
+        });
+
+        await auditLog({
+          userId: req.userId!,
+          action: 'AUTOMATION_EXECUTED',
+          resource: 'automation_rule',
+          resourceId: rule.id,
+          details: { action: rule.action, metricValue, threshold: rule.value },
+        });
       }
-      executed = true;
-
-      await prisma.ruleLog.create({
-        data: {
-          ruleId: rule.id,
-          action: rule.action,
-          metrics: JSON.stringify({ ...insights, conditionValue: rule.value, actualValue: metricValue }),
-        },
-      });
-
-      await auditLog({
-        userId: req.userId!,
-        action: 'AUTOMATION_EXECUTED',
-        resource: 'automation_rule',
-        resourceId: rule.id,
-        details: { action: rule.action, metricValue, threshold: rule.value },
-      });
     }
 
     await svc.disconnect();
@@ -175,6 +186,7 @@ router.post('/:id/run', async (req: AuthRequest, res: Response) => {
       metricValue,
       threshold: rule.value,
       condition: rule.condition,
+      ...(scaleError && { error: scaleError }),
     });
   } catch (err) {
     res.status(500).json({ error: String(err) });

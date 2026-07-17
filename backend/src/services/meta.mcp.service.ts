@@ -459,6 +459,15 @@ export class MetaMCPService {
       adSetIds.push(adSet.id);
       log(`✅ Conjunto criado (ID: ${adSet.id})`);
 
+      // Persiste o metaAdSetId no AdSet local — sem isso, sync/automações/
+      // métricas que dependem desse campo perdem o vínculo com o Meta.
+      if (adSetPlan.localId) {
+        await prisma.adSet.updateMany({
+          where: { id: adSetPlan.localId },
+          data: { metaAdSetId: adSet.id, metaStatus: 'PAUSED' },
+        });
+      }
+
       for (const adPlan of adSetPlan.ads) {
         log(`Criando anúncio "${adPlan.name}"...`);
 
@@ -483,6 +492,14 @@ export class MetaMCPService {
 
         adIds.push(ad.id);
         log(`✅ Anúncio criado (ID: ${ad.id})`);
+
+        // Persiste o metaAdId no Ad local — mesmo motivo do metaAdSetId acima.
+        if (adPlan.localId) {
+          await prisma.ad.updateMany({
+            where: { id: adPlan.localId },
+            data: { metaAdId: ad.id, metaStatus: 'PAUSED' },
+          });
+        }
       }
     }
 

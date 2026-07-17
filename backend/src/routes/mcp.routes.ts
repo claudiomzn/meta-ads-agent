@@ -15,6 +15,21 @@ import { auditLog } from '../services/audit.service.js';
 
 const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
 
+// Resolve com segurança um filename derivado de ad.imageUrl/ad.videoUrl (que
+// vêm de campos livres em Campaign/AdSet/Ad — o usuário pode setar
+// imageUrl/videoUrl arbitrário via /api/campaigns) pra dentro de UPLOAD_DIR.
+// path.basename() descarta qualquer "../", e a checagem final garante que o
+// path resolvido não escapa da pasta de uploads. Retorna null se inválido.
+function safeUploadFilePath(filename: string): string | null {
+  const safeFilename = path.basename(filename);
+  const filePath = path.resolve(UPLOAD_DIR, safeFilename);
+  const resolvedUploadDir = path.resolve(UPLOAD_DIR);
+  if (filePath !== resolvedUploadDir && !filePath.startsWith(resolvedUploadDir + path.sep)) {
+    return null;
+  }
+  return filePath;
+}
+
 const router = Router();
 
 // Remove interesses com ID inválido (ex: "PLACEHOLDER" gerado pela IA no fluxo
@@ -82,14 +97,27 @@ router.post('/webhook', async (req: AuthRequest, res: Response) => {
       res.status(401).json({ error: 'Assinatura ausente' });
       return;
     }
+
+    // Usa o corpo BRUTO (rawBody, capturado no verify do express.json em
+    // index.ts) — re-serializar req.body com JSON.stringify pode divergir do
+    // payload original (ordem de chaves, espaçamento) e rejeitar assinaturas
+    // legítimas, ou em tese permitir manipulação. timingSafeEqual evita
+    // vazar o valor do HMAC esperado por diferença de tempo de comparação.
+    const rawBody = (req as AuthRequest & { rawBody?: Buffer }).rawBody;
     const expected =
       'sha256=' +
       crypto
         .createHmac('sha256', appSecret)
-        .update(JSON.stringify(req.body))
+        .update(rawBody ?? Buffer.from(JSON.stringify(req.body)))
         .digest('hex');
 
-    if (signature !== expected) {
+    const expectedBuf = Buffer.from(expected);
+    const signatureBuf = Buffer.from(signature);
+    const valid =
+      expectedBuf.length === signatureBuf.length &&
+      crypto.timingSafeEqual(expectedBuf, signatureBuf);
+
+    if (!valid) {
       res.status(401).json({ error: 'Assinatura inválida' });
       return;
     }
@@ -147,9 +175,9 @@ router.post('/connect', async (req: AuthRequest, res: Response) => {
 
   // O mcpUrl do provedor Pipeboard/Zapier NUNCA vem do cliente: o frontend
   // não deve (e não pode ser confiável para) carregar o token Pipeboard —
-  // isso o expunha no bundle JS. Usa sempre a mesma fonte segura de
-  // '/auto-connect': META_MCP_URL do servidor. Para 'meta' o mcpUrl segue
-  // vindo do body (é a URL pessoal do usuário, sem token de servidor).
+  // isso o expunha no bundle JS. Usa sempre META_MCP_URL do servidor. Para
+  // 'meta' o mcpUrl segue vindo do body (é a URL pessoal do usuário, sem
+  // token de servidor).
   let mcpUrl: string | undefined;
   if (mcpProvider === 'pipeboard' || mcpProvider === 'zapier') {
     mcpUrl = process.env.META_MCP_URL ?? '';
@@ -219,50 +247,6 @@ router.get('/status', async (req: AuthRequest, res: Response) => {
   res.json(status);
 });
 
-// ─── Auto-connect usando token do servidor ────────────────────────────────────
-router.post('/auto-connect', async (req: AuthRequest, res: Response) => {
-  // O bearer do MCP do Pipeboard é o PIPEBOARD_API_KEY (autenticação própria
-  // do Pipeboard, que já tem o Meta conectado via OAuth no dashboard dele) —
-  // não o META_ACCESS_TOKEN (esse é usado só para chamadas diretas à Graph API).
-  const accessToken = process.env.PIPEBOARD_API_KEY;
-  const mcpUrl = process.env.META_MCP_URL ?? '';
-
-  if (!accessToken) {
-    res.status(400).json({ error: 'PIPEBOARD_API_KEY não configurado no servidor' });
-    return;
-  }
-
-  // Usa configuração que funcionava localmente:
-  // adAccountIds = nome da conta Pipeboard + MCP URL com token
-  const adAccountIds = ['amazon seguros'];
-  const accountsFound = [{ id: 'amazon seguros', name: 'Amazon Planos de Saúde' }];
-
-  await prisma.mCPConnection.upsert({
-    where: { userId: req.userId! },
-    update: {
-      metaAccessToken: encrypt(accessToken),
-      mcpUrl,
-      mcpProvider: 'pipeboard',
-      adAccountIds: JSON.stringify(adAccountIds),
-      connected: true,
-      lastConnectedAt: new Date(),
-    },
-    create: {
-      userId: req.userId!,
-      metaAccessToken: encrypt(accessToken),
-      mcpUrl,
-      mcpProvider: 'pipeboard',
-      adAccountIds: JSON.stringify(adAccountIds),
-      connected: true,
-      lastConnectedAt: new Date(),
-    },
-  });
-
-  await auditLog({ userId: req.userId!, action: 'MCP_AUTO_CONNECT', resource: 'mcp_connection' });
-
-  res.json({ success: true, accounts: accountsFound, adAccountIds });
-});
-
 // ─── Contas ───────────────────────────────────────────────────────────────────
 
 router.get('/accounts', async (req: AuthRequest, res: Response) => {
@@ -293,6 +277,37 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
     return;
   }
 
+  // Conta de destino: se o frontend mandar adAccountId no body, valida que
+  // ela pertence ao usuário (está entre as contas da MCPConnection) antes de
+  // usar — no modelo pipeboard/zapier o token é compartilhado entre todos os
+  // clientes, então sem essa checagem um adAccountId arbitrário publicaria
+  // na conta de outro cliente. Se não vier no body, usa a conta já associada
+  // à campanha local (comportamento anterior).
+  const bodyAdAccountId = typeof req.body?.adAccountId === 'string' ? req.body.adAccountId.trim() : '';
+  let adAccountId = campaign.metaAdAccountId ?? '';
+
+  if (bodyAdAccountId) {
+    const conn = await prisma.mCPConnection.findUnique({ where: { userId: req.userId! } });
+    let allowedAccountIds: string[] = [];
+    try {
+      allowedAccountIds = conn ? JSON.parse(conn.adAccountIds) : [];
+    } catch {
+      allowedAccountIds = [];
+    }
+    const normalize = (id: string) => id.replace(/^act_/, '');
+    const isAllowed = allowedAccountIds.some((id) => normalize(id) === normalize(bodyAdAccountId));
+    if (!isAllowed) {
+      res.status(403).json({ error: 'Você não tem acesso a essa conta de anúncios.' });
+      return;
+    }
+    adAccountId = bodyAdAccountId;
+  }
+
+  if (!adAccountId) {
+    res.status(400).json({ error: 'Nenhuma conta de anúncios selecionada.' });
+    return;
+  }
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -312,8 +327,8 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
         // Imagens
         if (ad.imageUrl?.startsWith('/api/media/file/') && !imageHashMap.has(ad.imageUrl)) {
           const filename = ad.imageUrl.replace('/api/media/file/', '');
-          const filePath = path.join(UPLOAD_DIR, filename);
-          if (fs.existsSync(filePath)) {
+          const filePath = safeUploadFilePath(filename);
+          if (filePath && fs.existsSync(filePath)) {
             try {
               send({ type: 'progress', message: `Enviando imagem "${filename}" para o Meta...` });
               const uploaded = await mediaSvc.uploadImage(filePath, filename);
@@ -329,8 +344,8 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
         // Vídeos
         if (ad.videoUrl?.startsWith('/api/media/file/') && !videoIdMap.has(ad.videoUrl)) {
           const filename = ad.videoUrl.replace('/api/media/file/', '');
-          const filePath = path.join(UPLOAD_DIR, filename);
-          if (fs.existsSync(filePath)) {
+          const filePath = safeUploadFilePath(filename);
+          if (filePath && fs.existsSync(filePath)) {
             try {
               send({ type: 'progress', message: `Enviando vídeo "${filename}" para o Meta...` });
               const uploaded = await mediaSvc.uploadVideo(filePath, filename);
@@ -349,15 +364,13 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
 
     const plan = {
       localId: campaign.id,
-      // NUNCA usar adAccountId do body — a campanha local já é validada por
-      // userId acima, mas o adAccountId de destino não era; um cliente
-      // malicioso podia publicar na conta de outro cliente (token de
-      // servidor compartilhado no modelo pipeboard/zapier). Usa sempre a
-      // conta já associada à campanha local.
-      adAccountId: campaign.metaAdAccountId ?? '',
+      // adAccountId já validado acima (body, se veio e pertence ao usuário;
+      // senão o já associado à campanha local).
+      adAccountId,
       name: campaign.name,
       objective: campaign.objective,
       adSets: campaign.adSets.map((as) => ({
+        localId: as.id,
         name: as.name,
         dailyBudget: as.dailyBudget,
         targeting: sanitizeTargeting(JSON.parse(as.targeting)),
@@ -367,6 +380,7 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
           const imageHash = ad.imageUrl ? imageHashMap.get(ad.imageUrl) : undefined;
           const videoId   = ad.videoUrl ? videoIdMap.get(ad.videoUrl) : undefined;
           return {
+            localId: ad.id,
             name: ad.name,
             headline: ad.headline,
             bodyText: ad.bodyText,
@@ -510,6 +524,22 @@ router.get('/insights/:campaignId', async (req: AuthRequest, res: Response) => {
   const { campaignId } = req.params;
   const { since, until } = req.query as { since?: string; until?: string };
 
+  // Ownership: campaignId vem do param sem checagem — no modelo de token
+  // compartilhado (pipeboard/zapier) isso permitia buscar insights de uma
+  // campanha de OUTRO cliente só sabendo o metaCampaignId dela. Busca a
+  // campanha local do usuário (aceita id local ou metaCampaignId) e usa
+  // sempre o metaCampaignId encontrado — nunca o param cru.
+  const campaign = await prisma.campaign.findFirst({
+    where: {
+      userId: req.userId!,
+      OR: [{ id: campaignId }, { metaCampaignId: campaignId }],
+    },
+  });
+  if (!campaign?.metaCampaignId) {
+    res.status(404).json({ error: 'Campanha não encontrada' });
+    return;
+  }
+
   const today = new Date().toISOString().split('T')[0];
   const dateRange = {
     since: since ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
@@ -517,7 +547,7 @@ router.get('/insights/:campaignId', async (req: AuthRequest, res: Response) => {
   };
 
   const svc = await createMetaMCPService(req.userId!);
-  const insights = await svc.getCampaignInsights(campaignId, dateRange);
+  const insights = await svc.getCampaignInsights(campaign.metaCampaignId, dateRange);
   await svc.disconnect();
 
   res.json(insights);

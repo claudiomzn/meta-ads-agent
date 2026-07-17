@@ -31,11 +31,25 @@ function isDefaultBusiness(businessId?: string | null): boolean {
 // usuário. Para o negócio "default" o segredo é IDÊNTICO ao de antes da
 // introdução de multi-negócio — instâncias/webhooks já configurados na
 // Evolution continuam batendo sem precisar reconectar.
+// JWT_SECRET ausente/vazio não pode virar silenciosamente uma string vazia
+// como chave HMAC — isso tornaria webhookSecret() previsível (mesmo valor
+// pra qualquer instalação sem a env configurada), permitindo forjar
+// mensagens de webhook do WhatsApp. Em produção o startup (index.ts) já
+// falha cedo se faltar; aqui é a defesa em profundidade caso essa função
+// seja chamada antes/fora desse guard (ex.: em dev sem a env).
+function requireJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error('JWT_SECRET não configurado — não é possível derivar o segredo do webhook do WhatsApp.');
+  }
+  return secret;
+}
+
 export function webhookSecret(userId: string, businessId?: string | null): string {
   const key = isDefaultBusiness(businessId)
     ? `whatsapp-webhook:${userId}`
     : `whatsapp-webhook:${userId}:${businessId}`;
-  return createHmac('sha256', process.env.JWT_SECRET ?? '')
+  return createHmac('sha256', requireJwtSecret())
     .update(key)
     .digest('hex')
     .slice(0, 32);

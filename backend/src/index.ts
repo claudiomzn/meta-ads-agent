@@ -21,6 +21,16 @@ for (const key of REQUIRED_ENV) {
   }
 }
 
+// Em produção, JWT_SECRET vazio/ausente não pode passar batido: além de
+// autenticação (não coberta aqui), evolution.manager.ts deriva dele o
+// segredo do webhook do WhatsApp (webhookSecret) — com JWT_SECRET vazio esse
+// segredo vira previsível/igual pra qualquer instalação, permitindo forjar
+// mensagens de webhook. Falha cedo no startup em vez de deixar rodar
+// silenciosamente inseguro.
+if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
+  throw new Error('[STARTUP] JWT_SECRET ausente em produção — abortando inicialização.');
+}
+
 import authRoutes from './routes/auth.routes.js';
 import campaignRoutes from './routes/campaigns.routes.js';
 import copiesRoutes from './routes/copies.routes.js';
@@ -60,7 +70,16 @@ app.use(cors({
   },
   credentials: true,
 }));
-app.use(express.json());
+// Guarda o corpo bruto da requisição (buf) em req.rawBody — necessário pro
+// webhook do Meta (mcp.routes.ts) validar o HMAC de x-hub-signature-256
+// sobre os bytes EXATOS recebidos. Re-serializar req.body com JSON.stringify
+// depois do parse pode divergir do payload original (ordem de chaves,
+// espaçamento) e derrubar a validação de assinaturas legítimas.
+app.use(express.json({
+  verify: (req, _res, buf) => {
+    (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+  },
+}));
 
 // ─── Rotas ────────────────────────────────────────────────────────────────────
 
@@ -174,11 +193,19 @@ cron.schedule('*/15 * * * *', async () => {
             if (rule.targetType === 'adset') await svc.updateAdSetStatus(rule.targetId, 'ACTIVE');
             else if (rule.targetType === 'ad') await svc.updateAdStatus(rule.targetId, 'ACTIVE');
             else await svc.updateCampaignStatus(rule.targetId, 'ACTIVE');
-          } else if (rule.action === 'SCALE_UP') {
-            // Escala a partir do orçamento ATUAL — nunca do valor da métrica
-            await svc.scaleCampaignBudget(rule.targetId, 1.2);
-          } else if (rule.action === 'SCALE_DOWN') {
-            await svc.scaleCampaignBudget(rule.targetId, 0.8);
+          } else if (rule.action === 'SCALE_UP' || rule.action === 'SCALE_DOWN') {
+            // scaleCampaignBudget espera um metaCampaignId — se a regra aponta
+            // pra um adset/ad, rule.targetId é o ID errado de entidade e a
+            // chamada acabaria escalando (ou falhando silenciosamente contra)
+            // algo que não é a campanha pretendida. Escala de orçamento só é
+            // suportada para targetType === 'campaign'.
+            if (rule.targetType !== 'campaign') {
+              console.warn(
+                `[Automação] Regra "${rule.name}" (${rule.id}): escala de orçamento só é suportada em campanhas (targetType=${rule.targetType}) — pulando`,
+              );
+            } else {
+              await svc.scaleCampaignBudget(rule.targetId, rule.action === 'SCALE_UP' ? 1.2 : 0.8);
+            }
           }
 
           await prisma.ruleLog.create({

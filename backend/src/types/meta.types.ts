@@ -136,6 +136,10 @@ export interface CreateAudienceParams {
 }
 
 export interface AdPlan {
+  // ID local (Prisma) do Ad correspondente — usado para persistir o metaAdId
+  // retornado pelo Meta após a criação. Opcional pra não quebrar chamadores
+  // que montam planos sem passar pelo fluxo de publicação a partir do banco.
+  localId?: string;
   name: string;
   headline: string;
   bodyText: string;
@@ -145,6 +149,9 @@ export interface AdPlan {
 }
 
 export interface AdSetPlan {
+  // ID local (Prisma) do AdSet correspondente — usado para persistir o
+  // metaAdSetId retornado pelo Meta após a criação.
+  localId?: string;
   name: string;
   dailyBudget: number;
   targeting: Record<string, unknown>;

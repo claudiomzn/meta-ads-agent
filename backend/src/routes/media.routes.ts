@@ -56,7 +56,19 @@ router.post('/upload', upload.single('file'), async (req: AuthRequest, res: Resp
 
 // GET /api/media/file/:filename — serve o arquivo localmente
 router.get('/file/:filename', (req, res) => {
-  const filePath = path.join(UPLOAD_DIR, req.params.filename);
+  // path.basename() descarta qualquer componente de diretório (ex: "../../etc/passwd"
+  // vira só "passwd"), e a checagem de path.resolve() garante que o resultado
+  // final continua dentro de UPLOAD_DIR mesmo em cenários mais exóticos — sem
+  // isso, um filename como "../../.env" escaparia da pasta de uploads.
+  const safeFilename = path.basename(req.params.filename);
+  const filePath = path.resolve(UPLOAD_DIR, safeFilename);
+  const resolvedUploadDir = path.resolve(UPLOAD_DIR);
+
+  if (filePath !== resolvedUploadDir && !filePath.startsWith(resolvedUploadDir + path.sep)) {
+    res.status(400).json({ error: 'Nome de arquivo inválido.' });
+    return;
+  }
+
   if (!fs.existsSync(filePath)) {
     res.status(404).json({ error: 'Arquivo não encontrado.' });
     return;
