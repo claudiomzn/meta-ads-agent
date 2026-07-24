@@ -4,7 +4,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { AIService } from '../services/ai.service.js';
 import { generateImages, isImageGenEnabled, type CreativeAspect } from '../services/image.service.js';
 import { rehostImage } from '../services/storage.service.js';
-import { getUserPlan, isPaidPlan, isLifetimeUser } from '../services/plan.service.js';
+import { getUserPlan, isPaidPlan, isLifetimeUser, type PlanTier } from '../services/plan.service.js';
 
 const router = Router();
 const ai = new AIService();
@@ -22,7 +22,7 @@ function currentMonthKey(): string {
 
 type QuotaUser = { email: string; creativeGenerationsUsed: number; creativeGenerationsMonth: string | null };
 
-function getQuota(plan: string | null, user: QuotaUser) {
+function getQuota(plan: PlanTier, user: QuotaUser) {
   const month = currentMonthKey();
 
   // Acesso vitalício/interno: sem limites de cota
@@ -36,7 +36,9 @@ function getQuota(plan: string | null, user: QuotaUser) {
     return { isTrial, limit: TRIAL_GENERATION_LIMIT, used: user.creativeGenerationsUsed, resetMonth: false, month };
   }
 
-  const limit = plan === 'agency' ? AGENCY_MONTHLY_LIMIT : PRO_MONTHLY_LIMIT;
+  // Pro+ (e o legado 'agencia', já normalizado para 'pro_plus' em plan.service)
+  // recebe a cota mensal maior; Pro recebe a cota Pro.
+  const limit = plan === 'pro_plus' ? AGENCY_MONTHLY_LIMIT : PRO_MONTHLY_LIMIT;
   const resetMonth = user.creativeGenerationsMonth !== month;
   const used = resetMonth ? 0 : user.creativeGenerationsUsed;
   return { isTrial, limit, used, resetMonth, month };
