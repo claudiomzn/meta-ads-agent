@@ -103,38 +103,6 @@ app.use('/api/whatsapp', whatsappRoutes);
 
 app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date() }));
 
-// ─── DIAGNÓSTICO TEMPORÁRIO — REMOVER após a validação ─────────────────────────
-// Retorna SÓ booleanos: se as envs do Supabase estão presentes e se uma consulta
-// autenticada a subscriptions/user_profiles funciona. Nunca devolve o valor de
-// nenhum secret nem dado de cliente. Protegido por token descartável.
-app.get('/api/_diag/plan-config', async (req, res) => {
-  const DIAG_TOKEN = 'dc18ba8ee1293b3b8182d96ea222a9eb';
-  if (req.headers['x-diag-token'] !== DIAG_TOKEN) {
-    res.status(404).json({ error: 'Not found' });
-    return;
-  }
-  const base = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const out: Record<string, unknown> = {
-    supabase_url_set: !!base,
-    service_role_key_set: !!key,
-  };
-  if (base && key) {
-    const headers = { Authorization: `Bearer ${key}`, apikey: key };
-    try {
-      const r = await fetch(`${base}/rest/v1/subscriptions?select=user_id&limit=1`, { headers });
-      out.subscriptions_query_status = r.status;
-      out.subscriptions_query_ok = r.ok;
-    } catch { out.subscriptions_query_ok = false; }
-    try {
-      const r = await fetch(`${base}/rest/v1/user_profiles?select=user_id&limit=1`, { headers });
-      out.user_profiles_query_ok = r.ok;
-    } catch { out.user_profiles_query_ok = false; }
-  }
-  res.json(out);
-});
-// ─── FIM DIAGNÓSTICO TEMPORÁRIO ────────────────────────────────────────────────
-
 // ─── Middleware global de erros ────────────────────────────────────────────────
 // Captura qualquer erro não tratado em rotas async e retorna JSON limpo
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
