@@ -153,6 +153,20 @@ cron.schedule('*/15 * * * *', async () => {
 
     for (const rule of rules) {
       try {
+        // Cooldown de 24h — MESMA regra do Google (google-ads-agent,
+        // check-automation-rules). Este cron roda a cada 15 min, mas a janela
+        // de métricas da regra é de dias: a condição continua verdadeira muito
+        // depois da ação. Sem cooldown, SCALE_UP/SCALE_DOWN RECOMPÕEM a cada
+        // execução (1.2^96 num único dia) — o orçamento do cliente explode ou
+        // vai a zero sozinho. Vale para toda ação, pra manter o comportamento
+        // igual ao do Google.
+        if (
+          rule.lastTriggeredAt &&
+          Date.now() - rule.lastTriggeredAt.getTime() < 24 * 60 * 60 * 1000
+        ) {
+          continue;
+        }
+
         // Defesa em profundidade: revalida ownership do targetId mesmo pra
         // regras já criadas (ex.: item pode ter mudado de dono desde então).
         // Token de servidor compartilhado (pipeboard/zapier) — sem isso o
@@ -210,6 +224,11 @@ cron.schedule('*/15 * * * *', async () => {
 
           await prisma.ruleLog.create({
             data: { ruleId: rule.id, action: rule.action, metrics: JSON.stringify(insights) },
+          });
+          // Abre o cooldown de 24h — só quando a ação DE FATO executou.
+          await prisma.automationRule.update({
+            where: { id: rule.id },
+            data: { lastTriggeredAt: new Date(), triggerCount: { increment: 1 } },
           });
           console.log(`[Automação] Regra "${rule.name}" executada — ${rule.action} (${rule.trigger}=${val})`);
         }

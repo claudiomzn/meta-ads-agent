@@ -2,6 +2,7 @@ import prisma from '../lib/prisma.js';
 import axios from 'axios';
 
 import { decrypt } from './crypto.service.js';
+import { resolveUserAdAccountId } from '../lib/adAccount.js';
 
 const GRAPH = 'https://graph.facebook.com/v20.0';
 
@@ -32,23 +33,20 @@ export class PixelService {
     return decrypt(conn.metaAccessToken);
   }
 
-  // Resolve o act_XXX real da conta — adAccountIds salvo no banco é só um label.
-  // IMPORTANTE: usa this.getToken() (já trata pipeboard/zapier corretamente)
-  // direto na Graph API — NÃO usar o MCP aqui. O MCP autentica com
-  // conn.metaAccessToken, que para contas pipeboard/zapier não é um token
-  // Meta válido (causava "invalid_token" ao criar o Pixel).
+  // Resolve o act_XXX da conta DESTE usuário.
+  //
+  // Antes esta função pegava `accounts[0]` de `me/adaccounts`: com o token
+  // compartilhado de pipeboard/zapier (META_ACCESS_TOKEN do servidor), isso
+  // devolvia uma conta arbitrária entre TODAS as que o token enxerga — ou seja,
+  // podia criar/ler o Pixel na conta de outro cliente. A resolução correta vive
+  // em lib/adAccount.ts, que parte das contas vinculadas ao próprio usuário.
+  //
+  // Continua usando this.getToken() (trata pipeboard/zapier) direto na Graph
+  // API — NÃO usar o MCP aqui: ele autentica com conn.metaAccessToken, que para
+  // pipeboard/zapier não é um token Meta válido (dava "invalid_token").
   private async getAdAccountId(): Promise<string> {
     const token = await this.getToken();
-    const res = await axios.get(`${GRAPH}/me/adaccounts`, {
-      params: { fields: 'id,name', access_token: token },
-    });
-    const accounts = res.data?.data ?? [];
-    if (!accounts.length) throw new Error('Nenhuma conta de anúncio vinculada.');
-    // TODO multi-tenant: se o token for compartilhado entre vários clientes
-    // (System User), accounts[0] pode não ser a conta certa deste usuário —
-    // hoje só há uma conta Meta real conectada, então é seguro. Revisar
-    // quando houver múltiplos clientes pipeboard/zapier simultâneos.
-    return accounts[0].id;
+    return resolveUserAdAccountId(this.userId, token);
   }
 
   // Retorna o status atual do Pixel (conectado ou não)

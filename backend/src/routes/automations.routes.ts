@@ -163,6 +163,14 @@ router.post('/:id/run', async (req: AuthRequest, res: Response) => {
           },
         });
 
+        // Execução manual NÃO é bloqueada pelo cooldown (é uma ação deliberada
+        // do usuário), mas ABRE o cooldown: sem isso o cron de 15 min voltaria
+        // a aplicar a mesma ação logo depois, compondo o efeito no orçamento.
+        await prisma.automationRule.update({
+          where: { id: rule.id },
+          data: { lastTriggeredAt: new Date(), triggerCount: { increment: 1 } },
+        });
+
         await auditLog({
           userId: req.userId!,
           action: 'AUTOMATION_EXECUTED',

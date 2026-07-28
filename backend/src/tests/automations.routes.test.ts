@@ -274,6 +274,43 @@ describe('POST /api/automations/:id/run', () => {
     expect(mockUpdateCampaignStatus).toHaveBeenCalledWith('act_123', 'PAUSED');
   });
 
+  // Cooldown: o cron de 15 min pula regras disparadas nas últimas 24h. Sem
+  // isso, SCALE_UP/SCALE_DOWN recompõem o orçamento a cada execução.
+  it('execução manual grava lastTriggeredAt (abre o cooldown do cron)', async () => {
+    await prisma.automationRule.update({
+      where: { id: ruleId },
+      data: { lastTriggeredAt: null, triggerCount: 0 },
+    });
+
+    mockGetCampaignInsights.mockResolvedValueOnce({ spend: 200, roas: 0.5 });
+    const res = await request(app)
+      .post(`/api/automations/${ruleId}/run`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.body.executed).toBe(true);
+
+    const rule = await prisma.automationRule.findUnique({ where: { id: ruleId } });
+    expect(rule?.lastTriggeredAt).toBeInstanceOf(Date);
+    expect(rule?.triggerCount).toBe(1);
+  });
+
+  it('não grava lastTriggeredAt quando a condição não é atendida', async () => {
+    await prisma.automationRule.update({
+      where: { id: ruleId },
+      data: { lastTriggeredAt: null, triggerCount: 0 },
+    });
+
+    // roas = 1.5, condição: roas < 1.0 → não atendida
+    mockGetCampaignInsights.mockResolvedValueOnce({ spend: 200, roas: 1.5 });
+    const res = await request(app)
+      .post(`/api/automations/${ruleId}/run`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.body.executed).toBe(false);
+
+    const rule = await prisma.automationRule.findUnique({ where: { id: ruleId } });
+    expect(rule?.lastTriggeredAt).toBeNull();
+    expect(rule?.triggerCount).toBe(0);
+  });
+
   it('retorna 400 quando MCP não está conectado', async () => {
     await prisma.mCPConnection.updateMany({
       where: { userId },

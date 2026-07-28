@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { decrypt } from './crypto.service.js';
+import { resolveUserAdAccountId } from '../lib/adAccount.js';
 
 const GRAPH = 'https://graph.facebook.com/v20.0';
 
@@ -36,13 +37,14 @@ export class MediaService {
     return decrypt(conn.metaAccessToken);
   }
 
+  // Antes lia conn.adAccountIds e devolvia ids[0] CRU. O frontend grava o id
+  // sem o prefixo (MetaConnect faz `.replace("act_", "")`), então a URL saía
+  // como `/1234567890/adimages` — os endpoints de ad account da Graph API
+  // exigem `act_<id>`, e o upload falhava. lib/adAccount.ts normaliza o
+  // prefixo e confirma a conta contra as que o token realmente acessa.
   private async getAdAccountId(): Promise<string> {
-    const conn = await prisma.mCPConnection.findUnique({ where: { userId: this.userId } });
-    if (!conn || !conn.adAccountIds?.length) throw new Error('Nenhuma conta de anúncio vinculada.');
-    // adAccountIds é armazenado como JSON string — ex: '["act_123","act_456"]'
-    const ids: string[] = JSON.parse(conn.adAccountIds);
-    if (!ids.length) throw new Error('Nenhuma conta de anúncio vinculada.');
-    return ids[0];
+    const token = await this.getToken();
+    return resolveUserAdAccountId(this.userId, token);
   }
 
   // Upload de imagem para Meta Ad Images API

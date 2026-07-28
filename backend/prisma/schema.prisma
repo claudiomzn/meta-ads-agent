@@ -162,6 +162,11 @@ model AutomationRule {
   alertEmail  String?
   active      Boolean   @default(true)
   lastChecked DateTime?
+  // Última vez que a regra DISPAROU (executou a ação) — diferente de
+  // lastChecked, que marca toda avaliação. Base do cooldown de 24h no cron:
+  // sem ele, SCALE_UP/SCALE_DOWN recompõem a cada 15 min (ver src/index.ts).
+  lastTriggeredAt DateTime?
+  triggerCount    Int      @default(0)
   createdAt   DateTime  @default(now())
 
   logs RuleLog[]

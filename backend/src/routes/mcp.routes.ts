@@ -127,12 +127,28 @@ router.post('/webhook', async (req: AuthRequest, res: Response) => {
 
   const adAccountId = req.body?.entry?.[0]?.id;
   if (adAccountId) {
-    const conn = await prisma.mCPConnection.findFirst({
-      where: { adAccountIds: { contains: adAccountId } },
+    // adAccountIds é uma JSON string ('["123","456"]'), então não dá pra
+    // comparar no banco. `contains` era SUBSTRING: o id "123" casava dentro de
+    // '["1234567"]' e o evento ia parar na conta de outro cliente. Aqui a
+    // conferência é feita item a item, com igualdade e ignorando o prefixo
+    // act_ (o frontend grava sem ele, o Meta manda com).
+    const target = String(adAccountId).replace(/^act_/, '');
+    const candidates = await prisma.mCPConnection.findMany({
+      where: { adAccountIds: { contains: target } },
+    });
+    const conn = candidates.find((c) => {
+      try {
+        const ids: string[] = JSON.parse(c.adAccountIds ?? '[]');
+        return ids.some((id) => String(id).replace(/^act_/, '') === target);
+      } catch {
+        return false;
+      }
     });
     if (conn) {
       const syncSvc = new SyncService(conn.userId);
       syncSvc.handleMetaWebhook(req.body).catch(console.error);
+    } else {
+      console.warn('[mcp:webhook] evento sem conexão correspondente — descartado');
     }
   }
 });
