@@ -12,6 +12,13 @@ import { MediaService } from '../services/media.service.js';
 import { SyncService, alertOnConsecutiveFailures } from '../services/sync.service.js';
 import { encrypt } from '../services/crypto.service.js';
 import { auditLog } from '../services/audit.service.js';
+import jwt from 'jsonwebtoken';
+import { accountsBelongToToken, listTokenAdAccountIds } from '../lib/metaAdAccounts.js';
+import {
+  getMetaConnectOptions,
+  isManualConnectEnabled,
+  isMetaOAuthEnabled,
+} from '../lib/metaConnectOptions.js';
 
 const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
 
@@ -153,23 +160,144 @@ router.post('/webhook', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Callback público do OAuth Meta. A identidade fica no state assinado e curto;
+// nenhum userId vindo livremente da URL é aceito.
+router.get('/oauth/callback', async (req: AuthRequest, res: Response) => {
+  const frontend = process.env.FRONTEND_URL ?? 'https://app.adsgenius.net';
+  try {
+    if (!isMetaOAuthEnabled()) throw new Error('OAuth desativado');
+    const state = String(req.query.state ?? '');
+    const code = String(req.query.code ?? '');
+    const payload = jwt.verify(state, process.env.JWT_SECRET!) as {
+      purpose?: string;
+      userId?: string;
+    };
+    if (payload.purpose !== 'meta_oauth' || !payload.userId || !code) {
+      throw new Error('OAuth inválido');
+    }
+    const appId = process.env.META_APP_ID;
+    const appSecret = process.env.META_APP_SECRET;
+    const publicUrl = process.env.PUBLIC_URL;
+    if (!appId || !appSecret || !publicUrl) throw new Error('OAuth não configurado');
+    const redirectUri = `${publicUrl.replace(/\/$/, '')}/api/mcp/oauth/callback`;
+
+    const tokenUrl = new URL('https://graph.facebook.com/v23.0/oauth/access_token');
+    tokenUrl.searchParams.set('client_id', appId);
+    tokenUrl.searchParams.set('client_secret', appSecret);
+    tokenUrl.searchParams.set('redirect_uri', redirectUri);
+    tokenUrl.searchParams.set('code', code);
+    const shortResponse = await fetch(tokenUrl, { signal: AbortSignal.timeout(10_000) });
+    if (!shortResponse.ok) throw new Error('Falha ao trocar código OAuth');
+    const short = await shortResponse.json() as { access_token?: string };
+    if (!short.access_token) throw new Error('Token OAuth ausente');
+
+    const longUrl = new URL('https://graph.facebook.com/v23.0/oauth/access_token');
+    longUrl.searchParams.set('grant_type', 'fb_exchange_token');
+    longUrl.searchParams.set('client_id', appId);
+    longUrl.searchParams.set('client_secret', appSecret);
+    longUrl.searchParams.set('fb_exchange_token', short.access_token);
+    const longResponse = await fetch(longUrl, { signal: AbortSignal.timeout(10_000) });
+    const long = longResponse.ok
+      ? await longResponse.json() as { access_token?: string }
+      : {};
+    const accessToken = long.access_token ?? short.access_token;
+    const accounts = [...await listTokenAdAccountIds(accessToken)];
+    if (!accounts.length) throw new Error('Nenhuma conta de anúncios encontrada');
+
+    const mcpUrl = process.env.META_MCP_URL;
+    if (!mcpUrl) throw new Error('Integração MCP indisponível');
+    await prisma.mCPConnection.upsert({
+      where: { userId: payload.userId },
+      update: {
+        metaAccessToken: encrypt(accessToken),
+        mcpUrl,
+        mcpProvider: 'pipeboard',
+        adAccountIds: JSON.stringify(accounts),
+        connected: true,
+        lastConnectedAt: new Date(),
+      },
+      create: {
+        userId: payload.userId,
+        metaAccessToken: encrypt(accessToken),
+        mcpUrl,
+        mcpProvider: 'pipeboard',
+        adAccountIds: JSON.stringify(accounts),
+        connected: true,
+        lastConnectedAt: new Date(),
+      },
+    });
+    await auditLog({ userId: payload.userId, action: 'META_OAUTH_CONNECT', resource: 'mcp_connection' });
+    res.redirect(302, `${frontend.replace(/\/$/, '')}/app/meta/connect?connected=1`);
+  } catch (error) {
+    console.error('[meta:oauth:callback]', error);
+    res.redirect(302, `${frontend.replace(/\/$/, '')}/app/meta/connect?oauth_error=1`);
+  }
+});
+
 // Todos os endpoints abaixo exigem autenticação
 router.use(authMiddleware);
 
 // ─── Conexão ──────────────────────────────────────────────────────────────────
 
 const ConnectSchema = z.object({
-  // Para Pipeboard/Zapier o token Meta é opcional — a autenticação já está na URL
   accessToken: z.string().optional().default(''),
-  // Opcional: para provedor 'pipeboard'/'zapier' este campo é IGNORADO (ver
-  // abaixo) — o servidor sempre usa META_MCP_URL, nunca o valor do cliente
-  // (que expunha o token Pipeboard hardcoded no bundle do frontend).
-  mcpUrl: z.string().url().optional(),
-  mcpProvider: z.enum(['meta', 'pipeboard', 'zapier']),
-  adAccountIds: z.array(z.string()).min(1),
+  // A URL MCP é exclusivamente do servidor. Aceitar URL do cliente permitiria
+  // SSRF e enviaria o token Meta como Bearer para um host controlado.
+  mcpProvider: z.enum(['pipeboard', 'zapier']),
+  adAccountIds: z.array(z.string().regex(/^(?:act_)?\d+$/)).min(1).max(20),
+});
+
+// Diz ao frontend quais caminhos de conexão oferecer, em vez de deixá-lo tentar
+// e descobrir pelo erro.
+router.get('/connect-options', (_req: AuthRequest, res: Response) => {
+  res.json(getMetaConnectOptions());
+});
+
+router.get('/oauth/url', (req: AuthRequest, res: Response) => {
+  if (!isMetaOAuthEnabled()) {
+    res.status(503).json({ error: 'Conexão automática Meta ainda não está disponível.' });
+    return;
+  }
+  const appId = process.env.META_APP_ID;
+  const publicUrl = process.env.PUBLIC_URL;
+  if (!appId || !publicUrl) {
+    res.status(503).json({ error: 'Conexão automática Meta ainda não está configurada.' });
+    return;
+  }
+  const redirectUri = `${publicUrl.replace(/\/$/, '')}/api/mcp/oauth/callback`;
+  const state = jwt.sign(
+    { purpose: 'meta_oauth', userId: req.userId! },
+    process.env.JWT_SECRET!,
+    { expiresIn: '10m' },
+  );
+  const url = new URL('https://www.facebook.com/v23.0/dialog/oauth');
+  url.searchParams.set('client_id', appId);
+  url.searchParams.set('redirect_uri', redirectUri);
+  url.searchParams.set('state', state);
+  url.searchParams.set(
+    'scope',
+    [
+      'ads_read',
+      'ads_management',
+      'business_management',
+      'pages_show_list',
+      'pages_read_engagement',
+      'instagram_basic',
+      'instagram_manage_insights',
+    ].join(','),
+  );
+  res.json({ url: url.toString() });
 });
 
 router.post('/connect', async (req: AuthRequest, res: Response) => {
+  if (!isManualConnectEnabled()) {
+    res.status(410).json({
+      error: 'A conexão manual foi desativada. Conecte pelo Facebook.',
+      code: 'MANUAL_CONNECT_DISABLED',
+    });
+    return;
+  }
+
   const parsed = ConnectSchema.safeParse(req.body);
   if (!parsed.success) {
     const fieldErrors = parsed.error.flatten().fieldErrors;
@@ -182,48 +310,37 @@ router.post('/connect', async (req: AuthRequest, res: Response) => {
 
   const { accessToken, mcpProvider, adAccountIds } = parsed.data;
 
-  // Para Meta direto, valida o token fazendo uma chamada de teste
-  // Para Pipeboard/Zapier, a auth já está embutida na URL — não precisa de token Meta
-  if (mcpProvider === 'meta' && !accessToken) {
-    res.status(400).json({ error: 'Token de acesso Meta é obrigatório para o provedor Meta Oficial.' });
+  // O token pessoal é obrigatório em todos os provedores: ele é a prova de
+  // que as contas declaradas realmente pertencem ao usuário. O segredo MCP
+  // compartilhado nunca é usado como prova de ownership.
+  if (!accessToken) {
+    res.status(400).json({ error: 'Token de acesso Meta é obrigatório.' });
     return;
   }
 
-  // O mcpUrl do provedor Pipeboard/Zapier NUNCA vem do cliente: o frontend
-  // não deve (e não pode ser confiável para) carregar o token Pipeboard —
-  // isso o expunha no bundle JS. Usa sempre META_MCP_URL do servidor. Para
-  // 'meta' o mcpUrl segue vindo do body (é a URL pessoal do usuário, sem
-  // token de servidor).
-  let mcpUrl: string | undefined;
-  if (mcpProvider === 'pipeboard' || mcpProvider === 'zapier') {
-    mcpUrl = process.env.META_MCP_URL ?? '';
-  } else {
-    mcpUrl = parsed.data.mcpUrl;
-    if (!mcpUrl) {
-      res.status(400).json({ error: 'mcpUrl é obrigatório para o provedor Meta Oficial.' });
-      return;
-    }
+  const mcpUrl = process.env.META_MCP_URL ?? '';
+  if (!mcpUrl) {
+    res.status(503).json({ error: 'Integração Meta temporariamente indisponível.' });
+    return;
   }
 
-  if (mcpProvider === 'meta') {
-    const svc = new MetaMCPService(req.userId!);
-    try {
-      await svc.connect(encrypt(accessToken), mcpUrl);
-      await svc.listAdAccounts();
-      await svc.disconnect();
-    } catch (err) {
-      res.status(400).json({ error: `Falha ao conectar ao MCP: ${String(err)}` });
+  try {
+    const tokenAccounts = await listTokenAdAccountIds(accessToken);
+    if (!accountsBelongToToken(adAccountIds, tokenAccounts)) {
+      res.status(403).json({ error: 'Uma ou mais contas informadas não pertencem ao token Meta.' });
       return;
     }
+  } catch (err) {
+    res.status(400).json({
+      error: err instanceof Error ? err.message : 'Não foi possível validar o token Meta.',
+    });
+    return;
   }
-
-  // Token armazenado: Meta token para provedor 'meta', ou placeholder para Pipeboard/Zapier
-  const tokenToStore = accessToken || `pipeboard:${mcpProvider}`;
 
   await prisma.mCPConnection.upsert({
     where: { userId: req.userId! },
     update: {
-      metaAccessToken: encrypt(tokenToStore),
+      metaAccessToken: encrypt(accessToken),
       mcpUrl,
       mcpProvider,
       adAccountIds: JSON.stringify(adAccountIds),
@@ -232,7 +349,7 @@ router.post('/connect', async (req: AuthRequest, res: Response) => {
     },
     create: {
       userId: req.userId!,
-      metaAccessToken: encrypt(tokenToStore),
+      metaAccessToken: encrypt(accessToken),
       mcpUrl,
       mcpProvider,
       adAccountIds: JSON.stringify(adAccountIds),
@@ -357,6 +474,15 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
             }
           }
         }
+        if (ad.imageUrl?.startsWith('https://') && !imageHashMap.has(ad.imageUrl)) {
+          try {
+            send({ type: 'progress', message: 'Enviando imagem armazenada para o Meta...' });
+            const uploaded = await svc.uploadCreativeImage(ad.imageUrl, adAccountId);
+            if (uploaded.hash) imageHashMap.set(ad.imageUrl, uploaded.hash);
+          } catch {
+            send({ type: 'progress', message: 'Aviso: falha ao enviar a imagem armazenada.' });
+          }
+        }
         // Vídeos
         if (ad.videoUrl?.startsWith('/api/media/file/') && !videoIdMap.has(ad.videoUrl)) {
           const filename = ad.videoUrl.replace('/api/media/file/', '');
@@ -372,6 +498,15 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
             } catch {
               send({ type: 'progress', message: `Aviso: falha no upload do vídeo "${filename}" — continuando sem ele` });
             }
+          }
+        }
+        if (ad.videoUrl?.startsWith('https://') && !videoIdMap.has(ad.videoUrl)) {
+          try {
+            send({ type: 'progress', message: 'Enviando vídeo armazenado para o Meta...' });
+            const uploaded = await svc.uploadCreativeVideo(ad.videoUrl, adAccountId);
+            if (uploaded.id) videoIdMap.set(ad.videoUrl, uploaded.id);
+          } catch {
+            send({ type: 'progress', message: 'Aviso: falha ao enviar o vídeo armazenado.' });
           }
         }
       }
@@ -435,7 +570,7 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
     if (err instanceof PublishValidationError) {
       send({ type: 'error', errors: err.errors, warnings: err.warnings });
     } else {
-      send({ type: 'error', message: String(err) });
+      send({ type: 'error', message: 'Não foi possível publicar a campanha no Meta.' });
     }
     res.end();
   }

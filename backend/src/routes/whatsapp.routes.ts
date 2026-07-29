@@ -107,7 +107,7 @@ router.delete('/businesses/:businessId', authMiddleware, async (req: AuthRequest
   try {
     await svc.removeBusiness();
   } catch (e) {
-    return res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+    return res.status(400).json({ error: 'Não foi possível remover o negócio.' });
   }
   if (evolutionConfigured()) {
     await deleteInstance(req.userId!, businessId).catch((e) =>

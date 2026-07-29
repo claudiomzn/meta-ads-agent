@@ -4,6 +4,7 @@ import { AIService } from '../services/ai.service.js';
 import { executeProposal } from '../services/agentProposals.service.js';
 import { auditLog } from '../services/audit.service.js';
 import prisma from '../lib/prisma.js';
+import { aiBudget } from '../middleware/aiBudget.middleware.js';
 
 const router = Router();
 const ai = new AIService();
@@ -70,7 +71,7 @@ router.post('/proposals/:id/decide', async (req: AuthRequest, res: Response) => 
     });
     res.json({ ok: true, status: 'executed', result });
   } catch (err) {
-    const reason = String(err);
+    const reason = 'Não foi possível executar a proposta no Meta.';
     await prisma.agentProposal.update({ where: { id }, data: { status: 'failed', result: reason } });
     res.status(500).json({ ok: false, status: 'failed', error: reason });
   }
@@ -78,7 +79,7 @@ router.post('/proposals/:id/decide', async (req: AuthRequest, res: Response) => 
 
 // ─── POST /api/agent/chat ─────────────────────────────────────────────────────
 // Conversa com IA usando streaming SSE — contexto real das campanhas do usuário
-router.post('/chat', async (req: AuthRequest, res: Response) => {
+router.post('/chat', aiBudget('agent_chat'), async (req: AuthRequest, res: Response) => {
   const { message, history = [] } = req.body as {
     message: string;
     history: { role: 'user' | 'assistant'; content: string }[];
@@ -247,7 +248,7 @@ Total: **${campaigns.length} campanha(s)** · **${audiences.length} público(s)*
     sendDone();
   } catch (err) {
     console.error('[Agent] Erro no streaming:', err);
-    sendError('Erro ao chamar o modelo de IA. Verifique a chave ANTHROPIC_API_KEY.');
+    sendError('Não foi possível concluir a resposta do agente. Tente novamente.');
   }
 });
 
@@ -340,7 +341,7 @@ router.get('/health-score', async (req: AuthRequest, res: Response) => {
 
 // ─── GET /api/agent/daily-actions ─────────────────────────────────────────────
 // Gera 3-5 ações práticas do dia com base nas métricas reais — usa Claude
-router.get('/daily-actions', async (req: AuthRequest, res: Response) => {
+router.get('/daily-actions', aiBudget('agent_quick'), async (req: AuthRequest, res: Response) => {
   const campaigns = await prisma.campaign.findMany({
     where: { userId: req.userId! },
     include: { adSets: { include: { ads: true } } },
@@ -379,7 +380,7 @@ router.get('/daily-actions', async (req: AuthRequest, res: Response) => {
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
     const response = await client.messages.create({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-haiku-4-5',
       max_tokens: 800,
       messages: [{
         role: 'user',
@@ -432,7 +433,7 @@ Links válidos: /campaigns, /copies, /audiences, /ab-tests, /automations, /agent
 
 // ─── GET /api/agent/proactive-alerts ─────────────────────────────────────────
 // Analisa campanhas com IA e retorna 1-3 alertas com ações executáveis de 1 clique
-router.get('/proactive-alerts', async (req: AuthRequest, res: Response) => {
+router.get('/proactive-alerts', aiBudget('agent_quick'), async (req: AuthRequest, res: Response) => {
   const campaigns = await prisma.campaign.findMany({
     where: { userId: req.userId! },
     include: { adSets: true },
@@ -491,7 +492,7 @@ router.get('/proactive-alerts', async (req: AuthRequest, res: Response) => {
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
     const response = await client.messages.create({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-haiku-4-5',
       max_tokens: 1000,
       messages: [{
         role: 'user',
@@ -593,4 +594,3 @@ router.delete('/chat-history', async (req: AuthRequest, res: Response) => {
 });
 
 export default router;
-

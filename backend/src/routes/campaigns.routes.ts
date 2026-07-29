@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { AIService } from '../services/ai.service.js';
 import { buildTargeting, type AdPlatform } from '../services/targeting.service.js';
+import { aiBudget } from '../middleware/aiBudget.middleware.js';
 
 const router = Router();
 const ai = new AIService();
@@ -12,7 +13,7 @@ const ai = new AIService();
 router.use(authMiddleware);
 
 // Gera plano de campanha via IA (sem salvar)
-router.post('/generate-plan', async (req: AuthRequest, res: Response) => {
+router.post('/generate-plan', aiBudget('campaign_create'), async (req: AuthRequest, res: Response) => {
   const { product, objective, budget, audience, differentials, ticketMedio, regiao, concorrentes, niche, businessName } = req.body;
   if (!product || !objective || !budget) {
     res.status(400).json({ error: 'product, objective e budget são obrigatórios' });
@@ -28,7 +29,7 @@ router.post('/generate-plan', async (req: AuthRequest, res: Response) => {
 // Monta o público-alvo automaticamente a partir do briefing (idade, gênero,
 // localização e interesses reais do Meta). Usado pelo Estúdio de Criativos
 // antes de criar a campanha.
-router.post('/build-targeting', async (req: AuthRequest, res: Response) => {
+router.post('/build-targeting', aiBudget('agent_quick'), async (req: AuthRequest, res: Response) => {
   const { product, audience, niche, objective, businessName, regiao, platform } = req.body as {
     product?: string; audience?: string; niche?: string; objective?: string;
     businessName?: string; regiao?: string; platform?: AdPlatform;
@@ -48,8 +49,7 @@ router.post('/build-targeting', async (req: AuthRequest, res: Response) => {
     res.json(result);
   } catch (err) {
     console.error('[campaigns] Falha ao montar targeting:', err);
-    const reason = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ error: `Não foi possível montar o público-alvo automaticamente: ${reason}` });
+    res.status(500).json({ error: 'Não foi possível montar o público-alvo automaticamente.' });
   }
 });
 
@@ -80,6 +80,16 @@ const CampaignSchema = z.object({
   budget: z.number().positive(),
   adSets: z.array(AdSetSchema).optional(),
 });
+
+async function audiencesBelongToUser(
+  userId: string,
+  adSets: Array<z.infer<typeof AdSetSchema>> | undefined,
+): Promise<boolean> {
+  const ids = [...new Set((adSets ?? []).map((item) => item.audienceId).filter(Boolean) as string[])];
+  if (!ids.length) return true;
+  const count = await prisma.audience.count({ where: { id: { in: ids }, userId } });
+  return count === ids.length;
+}
 
 router.get('/', async (req: AuthRequest, res: Response) => {
   const campaigns = await prisma.campaign.findMany({
@@ -118,6 +128,10 @@ router.post('/', async (req: AuthRequest, res: Response) => {
   }
 
   const { adSets, ...campaignData } = parsed.data;
+  if (!await audiencesBelongToUser(req.userId!, adSets)) {
+    res.status(403).json({ error: 'Um dos públicos selecionados não pertence a esta conta.' });
+    return;
+  }
 
   const campaign = await prisma.campaign.create({
     data: {
@@ -166,6 +180,10 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
   }
 
   const { adSets, ...campaignData } = parsed.data;
+  if (!await audiencesBelongToUser(req.userId!, adSets)) {
+    res.status(403).json({ error: 'Um dos públicos selecionados não pertence a esta conta.' });
+    return;
+  }
 
   const updated = await prisma.campaign.update({
     where: { id: req.params.id },

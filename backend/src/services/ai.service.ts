@@ -305,7 +305,7 @@ Retorne APENAS este JSON (sem markdown):
 }`;
 
     const response = await getClient().messages.create({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-haiku-4-5',
       max_tokens: 1024,
       system: [{ type: 'text', text: this.systemPrompt, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: userPrompt }],
@@ -418,7 +418,7 @@ JSON (máx 2 itens por array, cada item máx 120 chars):
 {"score":0.0,"strengths":["s1","s2"],"issues":["i1","i2"],"suggestion":"s"}`;
 
     const response = await getClient().messages.create({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-haiku-4-5',
       max_tokens: 800,
       system: [
         {

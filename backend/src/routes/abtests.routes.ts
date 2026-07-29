@@ -34,6 +34,16 @@ router.post('/', async (req: AuthRequest, res: Response) => {
     res.status(400).json({ error: parsed.error.flatten() });
     return;
   }
+  if (parsed.data.campaignId) {
+    const campaign = await prisma.campaign.findFirst({
+      where: { id: parsed.data.campaignId, userId: req.userId! },
+      select: { id: true },
+    });
+    if (!campaign) {
+      res.status(403).json({ error: 'Campanha não pertence a esta conta.' });
+      return;
+    }
+  }
 
   const test = await prisma.aBTest.create({
     data: { ...parsed.data, userId: req.userId!, status: 'running' },

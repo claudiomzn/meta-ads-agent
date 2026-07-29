@@ -7,65 +7,65 @@ import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import { authRateLimit } from '../middleware/rateLimit.middleware.js';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
-import { sendMail, resetPasswordEmail, welcomeEmail } from '../services/email.service.js';
+import { sendMail, resetPasswordEmail } from '../services/email.service.js';
+import { getSubscriptionAccess } from '../services/plan.service.js';
 
 const router = Router();
 
-const RegisterSchema = z.object({
-  name: z.string().min(2),
-  email: z.string().email(),
-  password: z.string().min(6),
-});
-
-const LoginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(1),
-});
-
 router.post('/register', authRateLimit, async (req: Request, res: Response) => {
-  const parsed = RegisterSchema.safeParse(req.body);
+  if (process.env.NODE_ENV !== 'test') {
+    res.status(410).json({
+      error: 'Cadastro separado desativado. Entre com sua conta do AdsGenius.',
+      code: 'SSO_REQUIRED',
+    });
+    return;
+  }
+  const parsed = z.object({
+    name: z.string().min(2),
+    email: z.string().email().transform((value) => value.trim().toLowerCase()),
+    password: z.string().min(8),
+  }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.flatten() });
     return;
   }
-
-  const { name, email, password } = parsed.data;
-
-  const existing = await prisma.user.findUnique({ where: { email } });
+  const existing = await prisma.user.findUnique({ where: { email: parsed.data.email } });
   if (existing) {
     res.status(409).json({ error: 'E-mail já cadastrado' });
     return;
   }
-
-  const hash = await bcrypt.hash(password, 10);
-  const user = await prisma.user.create({ data: { name, email, password: hash } });
-
+  const user = await prisma.user.create({
+    data: {
+      name: parsed.data.name,
+      email: parsed.data.email,
+      password: await bcrypt.hash(parsed.data.password, 10),
+    },
+  });
   const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET!, { expiresIn: '7d' });
-
-  // E-mail de boas-vindas — dispara em background, não bloqueia resposta
-  const { html, text } = welcomeEmail(user.name);
-  sendMail({ to: user.email, subject: 'Bem-vindo ao Meta Ads Agent 🚀', html, text }).catch(
-    (err) => console.error('[Email] Falha ao enviar boas-vindas:', err),
-  );
-
   res.status(201).json({ token, user: { id: user.id, name: user.name, email: user.email } });
 });
 
 router.post('/login', authRateLimit, async (req: Request, res: Response) => {
-  const parsed = LoginSchema.safeParse(req.body);
+  if (process.env.NODE_ENV !== 'test') {
+    res.status(410).json({
+      error: 'Login separado desativado. Entre com sua conta do AdsGenius.',
+      code: 'SSO_REQUIRED',
+    });
+    return;
+  }
+  const parsed = z.object({
+    email: z.string().email().transform((value) => value.trim().toLowerCase()),
+    password: z.string().min(1),
+  }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.flatten() });
     return;
   }
-
-  const { email, password } = parsed.data;
-
-  const user = await prisma.user.findUnique({ where: { email } });
-  if (!user || !(await bcrypt.compare(password, user.password))) {
+  const user = await prisma.user.findUnique({ where: { email: parsed.data.email } });
+  if (!user || !(await bcrypt.compare(parsed.data.password, user.password))) {
     res.status(401).json({ error: 'Credenciais inválidas' });
     return;
   }
-
   const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET!, { expiresIn: '7d' });
   res.json({ token, user: { id: user.id, name: user.name, email: user.email } });
 });
@@ -109,10 +109,24 @@ router.post('/sso', authRateLimit, async (req: Request, res: Response) => {
     return;
   }
 
+  const access = await getSubscriptionAccess(supaUser.id, supaUser.email);
+  if (!access.allowed) {
+    const unavailable = access.reason === 'unavailable';
+    res.status(unavailable ? 503 : 403).json({
+      error: unavailable
+        ? 'Não foi possível confirmar sua assinatura. Tente novamente.'
+        : 'Seu trial terminou ou sua assinatura não está ativa.',
+      code: unavailable ? 'SUBSCRIPTION_UNAVAILABLE' : 'SUBSCRIPTION_REQUIRED',
+    });
+    return;
+  }
+
   let user = await prisma.user.findUnique({ where: { supabaseUserId: supaUser.id } });
   if (!user) {
     // Vincula pelo email se já existia uma conta separada deste backend
-    user = await prisma.user.findUnique({ where: { email: supaUser.email.toLowerCase() } });
+    user = await prisma.user.findFirst({
+      where: { email: { equals: supaUser.email.trim(), mode: 'insensitive' } },
+    });
     if (user) {
       user = await prisma.user.update({ where: { id: user.id }, data: { supabaseUserId: supaUser.id } });
     } else {
@@ -163,7 +177,7 @@ router.post('/refresh', authMiddleware, async (req: AuthRequest, res: Response) 
 
 const ChangePasswordSchema = z.object({
   currentPassword: z.string().min(1),
-  newPassword: z.string().min(6, 'Nova senha deve ter pelo menos 6 caracteres'),
+  newPassword: z.string().min(8, 'Nova senha deve ter pelo menos 8 caracteres'),
 });
 
 router.put('/password', authMiddleware, async (req: AuthRequest, res: Response) => {
@@ -250,7 +264,7 @@ router.post('/forgot-password', authRateLimit, async (req: Request, res: Respons
 
 const ResetPasswordSchema = z.object({
   token: z.string().min(1),
-  newPassword: z.string().min(6, 'Nova senha deve ter pelo menos 6 caracteres'),
+  newPassword: z.string().min(8, 'Nova senha deve ter pelo menos 8 caracteres'),
 });
 
 router.post('/reset-password', authRateLimit, async (req: Request, res: Response) => {

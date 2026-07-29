@@ -4,7 +4,8 @@ services:
     runtime: node
     rootDir: backend
     buildCommand: npm ci && npx prisma generate && npx tsc
-    startCommand: npx prisma db push --accept-data-loss && node dist/index.js
+    preDeployCommand: npx prisma migrate deploy
+    startCommand: node dist/index.js
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
@@ -21,10 +22,24 @@ services:
         sync: false
       - key: META_MCP_URL
         sync: false
-      - key: META_ACCESS_TOKEN
-        sync: false
       - key: META_WEBHOOK_VERIFY_TOKEN
         generateValue: true
+      - key: META_APP_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: PUBLIC_URL
+        sync: false
+      # OAuth do Meta. Só funciona depois do App Review dos escopos
+      # ads_management/business_management. Sem as três variáveis acima ele fica
+      # desligado de qualquer forma; esta serve para desligar mesmo tendo-as.
+      - key: META_OAUTH_ENABLED
+        value: "false"
+      # Conexão manual (cliente cola o próprio token). É o único caminho que
+      # funciona antes da aprovação da Meta. Vire para "false" só depois de
+      # confirmar que o OAuth conecta uma conta de cliente de verdade.
+      - key: META_MANUAL_CONNECT_ENABLED
+        value: "true"
       - key: FRONTEND_URL
         sync: false
       - key: SUPABASE_URL
@@ -39,7 +54,14 @@ services:
         sync: false
       - key: FAL_RENDERING_SPEED
         sync: false
+      # Cota infinita no Estúdio de Criativos (pergunta de FEATURE).
       - key: CREATIVE_STUDIO_LIFETIME_EMAILS
+        value: claudio_mir@yahoo.com.br
+      # Dispensa a checagem de assinatura (pergunta de IDENTIDADE). Separada da
+      # de cima de propósito: são decisões diferentes e misturá-las já causou
+      # bug de acesso vitalício indevido. Sem esta variável, o código cai na
+      # lista acima como fallback.
+      - key: FOUNDER_EMAILS
         value: claudio_mir@yahoo.com.br
       - key: SMTP_HOST
         sync: false
@@ -52,6 +74,8 @@ services:
       - key: SMTP_FROM
         sync: false
       - key: ADMIN_ALERT_EMAIL
+        sync: false
+      - key: AI_BUDGET_ALERT_EMAIL
         sync: false
       - key: ASAAS_API_KEY
         sync: false

@@ -5,6 +5,7 @@ import { AIService } from '../services/ai.service.js';
 import { generateImages, isImageGenEnabled, type CreativeAspect } from '../services/image.service.js';
 import { rehostImage } from '../services/storage.service.js';
 import { getUserPlan, isPaidPlan, isLifetimeUser, type PlanTier } from '../services/plan.service.js';
+import { aiBudget } from '../middleware/aiBudget.middleware.js';
 
 const router = Router();
 const ai = new AIService();
@@ -44,6 +45,46 @@ function getQuota(plan: PlanTier, user: QuotaUser) {
   return { isTrial, limit, used, resetMonth, month };
 }
 
+async function reserveImageQuota(
+  userId: string,
+  plan: PlanTier,
+  requested: number,
+): Promise<{ reserved: number; quota: ReturnType<typeof getQuota> }> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`creative:${userId}`}))`;
+    const current = await tx.user.findUnique({ where: { id: userId } });
+    if (!current) throw new Error('Usuário não encontrado');
+    const quota = getQuota(plan, current);
+    const available = quota.limit === Infinity ? requested : Math.max(0, quota.limit - quota.used);
+    const reserved = Math.min(requested, available);
+    if (reserved > 0 && quota.limit !== Infinity) {
+      await tx.user.update({
+        where: { id: userId },
+        data: quota.isTrial
+          ? { creativeGenerationsUsed: quota.used + reserved }
+          : {
+              creativeGenerationsUsed: quota.used + reserved,
+              creativeGenerationsMonth: quota.month,
+            },
+      });
+    }
+    return { reserved, quota };
+  });
+}
+
+async function refundImageQuota(userId: string, amount: number): Promise<void> {
+  if (amount <= 0) return;
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`creative:${userId}`}))`;
+    const current = await tx.user.findUnique({ where: { id: userId } });
+    if (!current) return;
+    await tx.user.update({
+      where: { id: userId },
+      data: { creativeGenerationsUsed: Math.max(0, current.creativeGenerationsUsed - amount) },
+    });
+  });
+}
+
 router.use(authMiddleware);
 
 // Informa ao frontend se a geração de arte real está ativa (FAL_KEY configurada)
@@ -70,7 +111,7 @@ router.get('/status', async (req: AuthRequest, res: Response) => {
 });
 
 // Gera um conjunto de criativos (copy + conceito + arte) a partir do briefing
-router.post('/generate', async (req: AuthRequest, res: Response) => {
+router.post('/generate', aiBudget('creative_generate'), async (req: AuthRequest, res: Response) => {
   const {
     product, audience, objective, differentials, tone, niche, businessName,
     count, aspect,
@@ -112,15 +153,22 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
   // 2. Arte real (em paralelo) — só para as primeiras `imagesToGenerate`
   // variações, limitado pelo que resta da cota do usuário
   const aspectRatio: CreativeAspect = aspect ?? '1:1';
-  const imagesToGenerate = isImageGenEnabled() ? Math.min(generationsLeft, aiCount) : 0;
+  const requestedImages = isImageGenEnabled() ? Math.min(generationsLeft, aiCount) : 0;
+  const reservation = await reserveImageQuota(req.userId!, plan, requestedImages);
+  const imagesToGenerate = reservation.reserved;
 
   let imageUrls: (string | null)[];
   if (imagesToGenerate > 0) {
-    const generated = await generateImages(
-      variations.slice(0, imagesToGenerate).map((v) => v.imagePrompt),
-      aspectRatio,
-    );
-    imageUrls = [...generated, ...variations.slice(imagesToGenerate).map(() => null)];
+    try {
+      const generated = await generateImages(
+        variations.slice(0, imagesToGenerate).map((v) => v.imagePrompt),
+        aspectRatio,
+      );
+      imageUrls = [...generated, ...variations.slice(imagesToGenerate).map(() => null)];
+    } catch (error) {
+      await refundImageQuota(req.userId!, imagesToGenerate);
+      throw error;
+    }
   } else {
     imageUrls = variations.map(() => null);
   }
@@ -130,22 +178,7 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
   // descontar a cota do usuário sem entregar nada em troca.
   const imagesGenerated = imageUrls.filter((u) => u !== null).length;
 
-  if (imagesGenerated > 0) {
-    if (quota.isTrial) {
-      await prisma.user.update({
-        where: { id: req.userId! },
-        data: { creativeGenerationsUsed: { increment: imagesGenerated } },
-      });
-    } else {
-      await prisma.user.update({
-        where: { id: req.userId! },
-        data: {
-          creativeGenerationsUsed: quota.resetMonth ? imagesGenerated : { increment: imagesGenerated },
-          creativeGenerationsMonth: quota.month,
-        },
-      });
-    }
-  }
+  await refundImageQuota(req.userId!, imagesToGenerate - imagesGenerated);
 
   const creatives = variations.map((v, i) => ({
     id: `cr_${Date.now()}_${i}`,
@@ -162,7 +195,7 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
   res.json({
     creatives,
     imageGenEnabled: imagesGenerated > 0,
-    generationsLeft: Math.max(0, generationsLeft - imagesGenerated),
+    generationsLeft: Math.max(0, reservation.quota.limit - reservation.quota.used - imagesGenerated),
     monthlyLimit: quota.isTrial ? null : quota.limit,
   });
 });
@@ -183,7 +216,15 @@ router.post('/save', async (req: AuthRequest, res: Response) => {
     return;
   }
 
-  const durableUrl = c.imageUrl ? await rehostImage(c.imageUrl, req.userId!) : null;
+  let durableUrl: string | null = null;
+  if (c.imageUrl) {
+    try {
+      durableUrl = await rehostImage(c.imageUrl, req.userId!);
+    } catch {
+      res.status(400).json({ error: 'URL de imagem inválida ou origem não permitida.' });
+      return;
+    }
+  }
 
   const saved = await prisma.studioCreative.create({
     data: {

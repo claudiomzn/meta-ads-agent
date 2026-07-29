@@ -3,6 +3,7 @@ import { Router, Response } from 'express';
 
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { AIService } from '../services/ai.service.js';
+import { aiBudget } from '../middleware/aiBudget.middleware.js';
 
 const router = Router();
 const ai = new AIService();
@@ -17,12 +18,22 @@ router.get('/', async (req: AuthRequest, res: Response) => {
   res.json(copies);
 });
 
-router.post('/generate', async (req: AuthRequest, res: Response) => {
+router.post('/generate', aiBudget('creative_generate'), async (req: AuthRequest, res: Response) => {
   const { campaignId, product, audience, framework, format, tone } = req.body;
 
   if (!product || !framework || !format) {
     res.status(400).json({ error: 'product, framework e format são obrigatórios' });
     return;
+  }
+  if (campaignId) {
+    const campaign = await prisma.campaign.findFirst({
+      where: { id: campaignId, userId: req.userId! },
+      select: { id: true },
+    });
+    if (!campaign) {
+      res.status(403).json({ error: 'Campanha não pertence a esta conta.' });
+      return;
+    }
   }
 
   const generated = await ai.generateCopy({ product, audience, framework, format, tone });
@@ -43,7 +54,7 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
 });
 
 // Score de copy com IA — não salva, só analisa
-router.post('/score', async (req: AuthRequest, res: Response) => {
+router.post('/score', aiBudget('agent_quick'), async (req: AuthRequest, res: Response) => {
   const { headline, body, cta, objective, product } = req.body as {
     headline?: string; body?: string; cta?: string; objective?: string; product?: string;
   };
@@ -69,7 +80,7 @@ router.post('/score', async (req: AuthRequest, res: Response) => {
 });
 
 // Melhora uma copy baseado nos problemas da análise
-router.post('/improve', async (req: AuthRequest, res: Response) => {
+router.post('/improve', aiBudget('ad_improve'), async (req: AuthRequest, res: Response) => {
   const { headline, body, cta, objective, product, issues, suggestion } = req.body as {
     headline?: string; body?: string; cta?: string;
     objective?: string; product?: string;

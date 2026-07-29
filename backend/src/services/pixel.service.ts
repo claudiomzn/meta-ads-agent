@@ -23,13 +23,6 @@ export class PixelService {
     const conn = await prisma.mCPConnection.findUnique({ where: { userId: this.userId } });
     if (!conn) throw new Error('Conta Meta não conectada.');
 
-    // Pipeboard/Zapier não têm token Meta direto — usa o META_ACCESS_TOKEN do .env
-    if (conn.mcpProvider === 'pipeboard' || conn.mcpProvider === 'zapier') {
-      const envToken = process.env.META_ACCESS_TOKEN;
-      if (!envToken) throw new Error('META_ACCESS_TOKEN não configurado.');
-      return envToken;
-    }
-
     return decrypt(conn.metaAccessToken);
   }
 

@@ -92,7 +92,6 @@ export class MetaMCPService {
     return {
       connected: !!conn?.connected,
       provider: conn?.mcpProvider ?? undefined,
-      mcpUrl: conn?.mcpUrl ?? undefined,
       adAccountIds: conn ? JSON.parse(conn.adAccountIds) : [],
       lastConnectedAt: conn?.lastConnectedAt ?? undefined,
     };

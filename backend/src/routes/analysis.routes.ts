@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { AnalysisService } from '../services/analysis.service.js';
+import { aiBudget } from '../middleware/aiBudget.middleware.js';
 
 const router = Router();
 const svc = new AnalysisService();
@@ -27,7 +28,7 @@ router.get('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
 });
 
 // POST /api/analysis/run — executa análise completa com IA
-router.post('/run', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/run', authMiddleware, aiBudget('agent_chat'), async (req: AuthRequest, res: Response) => {
   try {
     if (!process.env.ANTHROPIC_API_KEY) {
       res.status(503).json({
@@ -38,8 +39,7 @@ router.post('/run', authMiddleware, async (req: AuthRequest, res: Response) => {
     const analysis = await svc.runFullAnalysis(req.userId!);
     res.json(analysis);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Erro desconhecido';
-    res.status(500).json({ error: `Erro na análise: ${msg}` });
+    res.status(500).json({ error: 'Não foi possível concluir a análise.' });
   }
 });
 

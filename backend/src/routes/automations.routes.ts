@@ -197,7 +197,7 @@ router.post('/:id/run', async (req: AuthRequest, res: Response) => {
       ...(scaleError && { error: scaleError }),
     });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: 'Não foi possível executar a automação.' });
   }
 });
 

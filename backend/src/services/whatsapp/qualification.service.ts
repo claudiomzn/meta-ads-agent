@@ -3,6 +3,7 @@
 // mensagem do bot, o novo estado e (quando encerra) o rótulo + resumo.
 
 import Anthropic from '@anthropic-ai/sdk';
+import { runWithAiBudget } from '../../middleware/aiBudget.middleware.js';
 
 // Modelo barato e rápido — qualificação é tarefa simples. ~R$0,07/conversa.
 const MODEL = 'claude-haiku-4-5';
@@ -97,6 +98,7 @@ function extractJson(text: string): string {
  * do lead como último item (role:'user').
  */
 export async function nextReply(
+  backendUserId: string,
   cfg: QualConfig,
   history: QualTurn[],
   questionsAsked: number,
@@ -118,14 +120,15 @@ export async function nextReply(
     content: h.text,
   }));
 
-  const resp = await getClient().messages.create({
-    model: MODEL,
-    max_tokens: 500,
-    system: [
-      { type: 'text', text: buildSystemPrompt(cfg), cache_control: { type: 'ephemeral' } },
-    ],
-    messages,
-  });
+  const resp = await runWithAiBudget(backendUserId, 'agent_quick', () =>
+    getClient().messages.create({
+      model: MODEL,
+      max_tokens: 500,
+      system: [
+        { type: 'text', text: buildSystemPrompt(cfg), cache_control: { type: 'ephemeral' } },
+      ],
+      messages,
+    }));
 
   const raw = resp.content.find((b) => b.type === 'text');
   const text = raw && raw.type === 'text' ? raw.text : '';

@@ -1,29 +1,17 @@
 import { Router, Response } from 'express';
 import multer from 'multer';
 import path from 'path';
-import fs from 'fs';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { MediaService } from '../services/media.service.js';
+import { storeUploadedMedia } from '../services/storage.service.js';
+import rateLimit from 'express-rate-limit';
 
 const router = Router();
 router.use(authMiddleware);
 
-// Pasta de uploads temporários
-const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
-  filename: (_req, file, cb) => {
-    const unique = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const ext = path.extname(file.originalname);
-    cb(null, `${unique}${ext}`);
-  },
-});
-
 const upload = multer({
-  storage,
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4', 'video/quicktime', 'video/mov'];
     if (allowed.includes(file.mimetype)) {
@@ -33,47 +21,55 @@ const upload = multer({
     }
   },
 });
+const uploadRateLimit = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  keyGenerator: (req: AuthRequest) => req.userId ?? req.ip ?? 'unknown',
+  message: { error: 'Limite de uploads atingido. Tente novamente mais tarde.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+function matchesDeclaredType(buffer: Buffer, mime: string): boolean {
+  if (mime === 'image/jpeg') return buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  if (mime === 'image/png') return buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  if (mime === 'image/gif') return ['GIF87a', 'GIF89a'].includes(buffer.subarray(0, 6).toString('ascii'));
+  if (mime === 'image/webp') return buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    buffer.subarray(8, 12).toString('ascii') === 'WEBP';
+  if (mime.startsWith('video/')) return buffer.subarray(4, 8).toString('ascii') === 'ftyp';
+  return false;
+}
 
 // POST /api/media/upload
-router.post('/upload', upload.single('file'), async (req: AuthRequest, res: Response) => {
+router.post('/upload', uploadRateLimit, upload.single('file'), async (req: AuthRequest, res: Response) => {
   if (!req.file) {
     res.status(400).json({ error: 'Nenhum arquivo enviado.' });
     return;
   }
+  if (!matchesDeclaredType(req.file.buffer, req.file.mimetype)) {
+    res.status(400).json({ error: 'O conteúdo do arquivo não corresponde ao formato informado.' });
+    return;
+  }
 
   const isVideo = req.file.mimetype.startsWith('video/');
-  const localUrl = `/api/media/file/${req.file.filename}`;
+  const durableUrl = await storeUploadedMedia(
+    req.file.buffer,
+    req.file.mimetype,
+    req.file.originalname,
+    req.userId!,
+  );
 
-  // Salva localmente para preview — o upload para o Meta acontece ao publicar a campanha
   res.json({
     type: isVideo ? 'video' : 'image',
-    url: localUrl,
-    localUrl,
-    filename: req.file.filename,
+    url: durableUrl,
+    localUrl: durableUrl,
+    filename: path.basename(new URL(durableUrl).pathname),
     name: req.file.originalname,
   });
 });
 
-// GET /api/media/file/:filename — serve o arquivo localmente
-router.get('/file/:filename', (req, res) => {
-  // path.basename() descarta qualquer componente de diretório (ex: "../../etc/passwd"
-  // vira só "passwd"), e a checagem de path.resolve() garante que o resultado
-  // final continua dentro de UPLOAD_DIR mesmo em cenários mais exóticos — sem
-  // isso, um filename como "../../.env" escaparia da pasta de uploads.
-  const safeFilename = path.basename(req.params.filename);
-  const filePath = path.resolve(UPLOAD_DIR, safeFilename);
-  const resolvedUploadDir = path.resolve(UPLOAD_DIR);
-
-  if (filePath !== resolvedUploadDir && !filePath.startsWith(resolvedUploadDir + path.sep)) {
-    res.status(400).json({ error: 'Nome de arquivo inválido.' });
-    return;
-  }
-
-  if (!fs.existsSync(filePath)) {
-    res.status(404).json({ error: 'Arquivo não encontrado.' });
-    return;
-  }
-  res.sendFile(filePath);
+router.get('/file/:filename', (_req, res) => {
+  res.status(410).json({ error: 'Mídia temporária expirada. Envie o arquivo novamente.' });
 });
 
 export default router;

@@ -208,7 +208,7 @@ export class WhatsappService {
     };
 
     const turns: QualTurn[] = history.map((h) => ({ role: h.role, text: h.text }));
-    const result = await nextReply(cfg, turns, conv.questionsAsked, conv.botMessages);
+    const result = await nextReply(this.userId, cfg, turns, conv.questionsAsked, conv.botMessages);
 
     // Envia a resposta pelo transporte configurado
     const transport = resolveTransport(config.transport, config.transportConfig as Record<string, unknown>);

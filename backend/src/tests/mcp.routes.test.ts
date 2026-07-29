@@ -60,6 +60,20 @@ vi.mock('../services/audit.service.js', () => ({
   auditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Só a ida à Graph API é simulada. `accountsBelongToToken` continua sendo a
+// implementação real, para que a regra de propriedade seja de fato exercitada
+// pelos testes de rota — antes havia um atalho por NODE_ENV dentro do código de
+// produção, e nenhum teste tocava a regra.
+// `vi.hoisted` porque a factory do `vi.mock` é elevada ao topo do arquivo e não
+// veria uma const declarada aqui embaixo.
+const { mockListTokenAdAccountIds } = vi.hoisted(() => ({
+  mockListTokenAdAccountIds: vi.fn(),
+}));
+vi.mock('../lib/metaAdAccounts.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/metaAdAccounts.js')>();
+  return { ...actual, listTokenAdAccountIds: mockListTokenAdAccountIds };
+});
+
 vi.mock('../services/crypto.service.js', () => ({
   encrypt: vi.fn((v: string) => `enc:${v}`),
   decrypt: vi.fn((v: string) => v.replace('enc:', '')),
@@ -110,6 +124,7 @@ beforeEach(() => {
   mockConnect.mockResolvedValue(undefined);
   mockDisconnect.mockResolvedValue(undefined);
   mockListAdAccounts.mockResolvedValue([{ id: 'act_123', name: 'Conta Teste' }]);
+  mockListTokenAdAccountIds.mockResolvedValue(new Set(['123']));
   mockUpdateAdSetStatus.mockResolvedValue(undefined);
   mockUpdateCampaignBudget.mockResolvedValue(undefined);
   mockGetCampaignInsights.mockResolvedValue({ spend: 100, roas: 2.5 });
@@ -118,7 +133,7 @@ beforeEach(() => {
 // ─── Testes ───────────────────────────────────────────────────────────────────
 
 describe('POST /api/mcp/connect', () => {
-  it('conecta com dados válidos (provedor Meta — valida token via MCP)', async () => {
+  it('rejeita provedor e URL MCP controlados pelo cliente', async () => {
     const res = await request(app)
       .post('/api/mcp/connect')
       .set('Authorization', `Bearer ${token}`)
@@ -129,19 +144,16 @@ describe('POST /api/mcp/connect', () => {
         adAccountIds: ['act_123'],
       });
 
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-    expect(res.body.provider).toBe('meta');
-    expect(mockConnect).toHaveBeenCalledOnce();
-    expect(mockListAdAccounts).toHaveBeenCalledOnce();
-    expect(mockDisconnect).toHaveBeenCalledOnce();
+    expect(res.status).toBe(400);
+    expect(mockConnect).not.toHaveBeenCalled();
   });
 
-  it('conecta via Pipeboard sem testar token (auth embutida na URL)', async () => {
+  it('conecta via Pipeboard somente após validar o token pessoal', async () => {
     const res = await request(app)
       .post('/api/mcp/connect')
       .set('Authorization', `Bearer ${token}`)
       .send({
+        accessToken: 'EAA...',
         mcpUrl: 'https://mcp.pipeboard.co/meta-ads',
         mcpProvider: 'pipeboard',
         adAccountIds: ['act_123'],
@@ -154,7 +166,7 @@ describe('POST /api/mcp/connect', () => {
     expect(mockConnect).not.toHaveBeenCalled();
   });
 
-  it('rejeita quando mcpUrl é inválida', async () => {
+  it('ignora mcpUrl enviada pelo cliente e usa somente a configuração do servidor', async () => {
     const res = await request(app)
       .post('/api/mcp/connect')
       .set('Authorization', `Bearer ${token}`)
@@ -165,7 +177,7 @@ describe('POST /api/mcp/connect', () => {
         adAccountIds: ['act_123'],
       });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
   });
 
   it('rejeita quando adAccountIds está vazio', async () => {
@@ -182,7 +194,7 @@ describe('POST /api/mcp/connect', () => {
     expect(res.status).toBe(400);
   });
 
-  it('retorna 400 quando conexão MCP falha (provedor Meta)', async () => {
+  it('não aceita provedor Meta com URL arbitrária', async () => {
     mockConnect.mockRejectedValueOnce(new Error('Token inválido'));
 
     const res = await request(app)
@@ -196,7 +208,7 @@ describe('POST /api/mcp/connect', () => {
       });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toContain('Falha ao conectar');
+    expect(res.body.error).toBeTruthy();
   });
 
   it('rejeita sem autenticação', async () => {
@@ -204,6 +216,56 @@ describe('POST /api/mcp/connect', () => {
       .post('/api/mcp/connect')
       .send({ accessToken: 'x', mcpUrl: 'https://x.com', mcpProvider: 'meta', adAccountIds: ['act_1'] });
     expect(res.status).toBe(401);
+  });
+
+  // O achado central da auditoria: sem esta checagem, um cliente declarava o
+  // id da conta de outro e o token compartilhado do servidor obedecia.
+  it('recusa conta de anúncios que o token do usuário não alcança', async () => {
+    mockListTokenAdAccountIds.mockResolvedValueOnce(new Set(['123']));
+
+    const res = await request(app)
+      .post('/api/mcp/connect')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        accessToken: 'EAA...',
+        mcpProvider: 'pipeboard',
+        adAccountIds: ['act_999'],
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/não pertencem ao token/i);
+  });
+
+  it('recusa quando uma das contas do lote não pertence ao usuário', async () => {
+    mockListTokenAdAccountIds.mockResolvedValueOnce(new Set(['123']));
+
+    const res = await request(app)
+      .post('/api/mcp/connect')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        accessToken: 'EAA...',
+        mcpProvider: 'pipeboard',
+        adAccountIds: ['act_123', 'act_999'],
+      });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('recusa quando não é possível validar o token na Meta', async () => {
+    mockListTokenAdAccountIds.mockRejectedValueOnce(
+      new Error('Token Meta inválido ou sem acesso às contas informadas.'),
+    );
+
+    const res = await request(app)
+      .post('/api/mcp/connect')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        accessToken: 'token-ruim',
+        mcpProvider: 'pipeboard',
+        adAccountIds: ['act_123'],
+      });
+
+    expect(res.status).toBe(400);
   });
 });
 
@@ -232,6 +294,7 @@ describe('GET /api/mcp/status', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('connected');
+    expect(res.body).not.toHaveProperty('mcpUrl');
   });
 });
 

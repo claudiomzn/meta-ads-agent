@@ -123,13 +123,7 @@ export class MetaGraphService {
     const conn = await prisma.mCPConnection.findUnique({ where: { userId: this.userId } });
     if (!conn) throw new Error('Conta Meta não conectada.');
 
-    if (conn.mcpProvider === 'pipeboard' || conn.mcpProvider === 'zapier') {
-      const envToken = process.env.META_ACCESS_TOKEN;
-      if (!envToken) throw new Error('META_ACCESS_TOKEN não configurado.');
-      this.token = envToken;
-    } else {
-      this.token = decrypt(conn.metaAccessToken);
-    }
+    this.token = decrypt(conn.metaAccessToken);
     return this.token;
   }
 
@@ -153,7 +147,6 @@ export class MetaGraphService {
     return {
       connected: !!conn?.connected,
       provider: conn?.mcpProvider ?? undefined,
-      mcpUrl: conn?.mcpUrl ?? undefined,
       adAccountIds: conn ? JSON.parse(conn.adAccountIds) : [],
       lastConnectedAt: conn?.lastConnectedAt ?? undefined,
     };

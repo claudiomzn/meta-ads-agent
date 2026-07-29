@@ -9,6 +9,7 @@ import {
   compareCreatives,
   analyzeHistoricalPatterns,
 } from '../services/creative-analysis.service.js';
+import { aiBudget } from '../middleware/aiBudget.middleware.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -34,7 +35,7 @@ const upload = multer({
 });
 
 // ── POST /analyze ─────────────────────────────────────────────────────────────
-router.post('/analyze', upload.single('file'), async (req: AuthRequest, res: Response) => {
+router.post('/analyze', aiBudget('creative_generate'), upload.single('file'), async (req: AuthRequest, res: Response) => {
   if (!req.file) {
     res.status(400).json({ error: 'Arquivo de imagem obrigatório' });
     return;
@@ -83,7 +84,7 @@ router.post('/analyze', upload.single('file'), async (req: AuthRequest, res: Res
 });
 
 // ── POST /compare ─────────────────────────────────────────────────────────────
-router.post('/compare', upload.fields([
+router.post('/compare', aiBudget('creative_generate'), upload.fields([
   { name: 'fileA', maxCount: 1 },
   { name: 'fileB', maxCount: 1 },
 ]), async (req: AuthRequest, res: Response) => {
@@ -204,7 +205,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 });
 
 // ── GET /patterns/:adAccountId ────────────────────────────────────────────────
-router.get('/patterns/:adAccountId', async (req: AuthRequest, res: Response) => {
+router.get('/patterns/:adAccountId', aiBudget('agent_quick'), async (req: AuthRequest, res: Response) => {
   const { adAccountId } = req.params;
   const result = await analyzeHistoricalPatterns(req.userId!, adAccountId);
   res.json(result);

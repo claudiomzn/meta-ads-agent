@@ -188,7 +188,6 @@ export interface ValidationResult {
 export interface MCPStatus {
   connected: boolean;
   provider?: string;
-  mcpUrl?: string;
   adAccountIds: string[];
   lastConnectedAt?: Date;
 }

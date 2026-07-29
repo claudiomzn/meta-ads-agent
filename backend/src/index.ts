@@ -108,7 +108,9 @@ app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date() }));
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('[Error]', err.message ?? err);
   const status = (err as { status?: number }).status ?? 500;
-  res.status(status).json({ error: err.message ?? 'Internal Server Error' });
+  res.status(status).json({
+    error: status >= 500 ? 'Erro interno. Tente novamente.' : (err.message || 'Requisição inválida.'),
+  });
 });
 
 // ─── Cron Jobs ────────────────────────────────────────────────────────────────
