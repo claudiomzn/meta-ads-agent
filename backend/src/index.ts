@@ -49,6 +49,8 @@ import creativeStudioRoutes from './routes/creative-studio.routes.js';
 import pixelRoutes from './routes/pixel.routes.js';
 import capiRoutes from './routes/capi.routes.js';
 import whatsappRoutes from './routes/whatsapp.routes.js';
+import metaConnectionRoutes from './routes/meta-connection.routes.js';
+import { verifyPendingMetaConnectionRequests } from './services/metaPartnerVerification.service.js';
 import { targetBelongsToUser } from './lib/ownership.js';
 
 const app = express();
@@ -100,6 +102,7 @@ app.use('/api/creative-studio', creativeStudioRoutes);
 app.use('/api/pixel', pixelRoutes);
 app.use('/api/capi', capiRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
+app.use('/api/meta-connection', metaConnectionRoutes);
 
 app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date() }));
 
@@ -134,6 +137,14 @@ async function runSyncForAllConnectedUsers(
 cron.schedule('0 * * * *', () => {
   console.log('[Cron] Sincronizando métricas...');
   runSyncForAllConnectedUsers((svc) => svc.syncPerformanceMetrics()).catch(console.error);
+});
+
+// Enquanto o OAuth aguarda App Review, confirma automaticamente quando a
+// conta pedida aparece entre os ativos compartilhados com o AdsGenius.
+cron.schedule('*/2 * * * *', () => {
+  verifyPendingMetaConnectionRequests().catch((error) =>
+    console.error('[Cron] Falha ao verificar parcerias Meta:', error),
+  );
 });
 
 // A cada 15 minutos — sincroniza status + executa automações

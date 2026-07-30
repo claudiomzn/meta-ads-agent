@@ -144,12 +144,10 @@ export function isLifetimeUser(email: string | null | undefined): boolean {
 // no mesmo `CREATIVE_STUDIO_LIFETIME_EMAILS` foi o que criou o problema de
 // reusar um teste de feature como teste de identidade — mesma armadilha que a
 // `canAccessPreview` já causou no frontend. Por isso a variável própria
-// `FOUNDER_EMAILS`; o fallback para a antiga existe só para não revogar o
-// acesso do fundador num deploy em que a nova variável ainda não foi setada.
+// `FOUNDER_EMAILS`. Não há fallback para uma lista de benefício: misturar as
+// duas novamente poderia transformar um cliente com cota especial em fundador.
 export function isFounderEmail(email: string | null | undefined): boolean {
   if (!email) return false;
-  const allowed = parseEmailList(
-    process.env.FOUNDER_EMAILS ?? process.env.CREATIVE_STUDIO_LIFETIME_EMAILS,
-  );
+  const allowed = parseEmailList(process.env.FOUNDER_EMAILS);
   return allowed.includes(email.trim().toLowerCase());
 }

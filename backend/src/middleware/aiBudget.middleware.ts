@@ -10,6 +10,7 @@ export type AiBudgetFeature =
   | 'campaign_create'
   | 'ad_improve'
   | 'creative_generate'
+  | 'connection_help'
   | 'website_analyze';
 
 const budgets: Record<AiBudgetFeature, {
@@ -22,6 +23,9 @@ const budgets: Record<AiBudgetFeature, {
   campaign_create: { credits: 3, estimatedCostBrlCents: 60, model: 'claude-sonnet-4-6' },
   ad_improve: { credits: 3, estimatedCostBrlCents: 50, model: 'claude-sonnet-4-6' },
   creative_generate: { credits: 3, estimatedCostBrlCents: 50, model: 'claude-sonnet-4-6' },
+  // Onboarding não reduz os créditos de campanha do cliente. O custo continua
+  // no ledger e no teto financeiro global de 7% do MRR.
+  connection_help: { credits: 0, estimatedCostBrlCents: 2, model: 'claude-haiku-4-5' },
   website_analyze: { credits: 1, estimatedCostBrlCents: 10, model: 'claude-haiku-4-5' },
 };
 
@@ -114,8 +118,21 @@ export async function runWithAiBudget<T>(
 ): Promise<T> {
   if (process.env.NODE_ENV === 'test') return action();
   const reservation = await reserveForBackendUser(userId, feature);
+
+  let value: T;
   try {
-    const value = await action();
+    value = await action();
+  } catch (error) {
+    // Só libera a reserva quando a operação de IA realmente falhou. Falhas
+    // posteriores de contabilização não podem apagar um consumo já realizado.
+    await rpc('release_ai_usage', {
+      p_reservation_id: reservation.id,
+      p_reason: error instanceof Error ? error.message.slice(0, 200) : 'AI call failed',
+    }).catch(() => undefined);
+    throw error;
+  }
+
+  try {
     await rpc('settle_ai_usage', {
       p_reservation_id: reservation.id,
       p_actual_cost_brl_cents: reservation.budget.estimatedCostBrlCents,
@@ -129,14 +146,18 @@ export async function runWithAiBudget<T>(
     });
     await notifyBudgetThreshold().catch((error) =>
       console.error('[ai-budget:meta] alerta falhou:', error));
-    return value;
   } catch (error) {
-    await rpc('release_ai_usage', {
-      p_reservation_id: reservation.id,
-      p_reason: error instanceof Error ? error.message.slice(0, 200) : 'AI call failed',
-    }).catch(() => undefined);
-    throw error;
+    // A IA já respondeu: devolver erro agora induziria retry e custo duplicado.
+    // A reserva permanece em `reserved` (e continua contando nos limites) para
+    // reconciliação; nunca é liberada como se a chamada não tivesse ocorrido.
+    console.error(
+      '[ai-budget:meta] liquidação pendente após IA concluída:',
+      reservation.id,
+      error instanceof Error ? error.message : 'erro',
+    );
   }
+
+  return value;
 }
 
 export function aiBudget(feature: AiBudgetFeature) {

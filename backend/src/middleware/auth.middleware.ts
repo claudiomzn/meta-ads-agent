@@ -47,9 +47,25 @@ export async function authMiddleware(req: AuthRequest, res: Response, next: Next
     if (process.env.NODE_ENV !== 'test') {
       const cacheKey = user.supabaseUserId ?? payload.userId;
       const cached = readFreshAccess(cacheKey);
-      const access = cached !== null
-        ? { allowed: cached, reason: cached ? 'paid' : 'expired' }
-        : await getSubscriptionAccess(user.supabaseUserId, user.email);
+
+      // Ler o cache não renova seu prazo. Antes, o fluxo caía em
+      // `rememberAccess` também para valores já armazenados: clientes fazendo
+      // requests a cada menos de 30s nunca eram consultados novamente, e uma
+      // reprovação também podia se perpetuar enquanto o usuário insistisse.
+      if (cached !== null) {
+        if (!cached) {
+          res.status(403).json({
+            error: 'Seu acesso ao AdsGenius expirou. Regularize sua assinatura para continuar.',
+            code: 'SUBSCRIPTION_REQUIRED',
+          });
+          return;
+        }
+        req.userId = payload.userId;
+        next();
+        return;
+      }
+
+      const access = await getSubscriptionAccess(user.supabaseUserId, user.email);
 
       if (access.reason === 'unavailable') {
         // Não deu para confirmar a assinatura. Quem foi aprovado nos últimos 15

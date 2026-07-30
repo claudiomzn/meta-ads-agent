@@ -89,11 +89,24 @@ export class MetaMCPService {
       where: { userId: this.userId },
     });
 
+    let adAccountIds: string[] = [];
+    try {
+      const parsed: unknown = conn ? JSON.parse(conn.adAccountIds) : [];
+      if (Array.isArray(parsed)) {
+        adAccountIds = parsed.filter((id): id is string => typeof id === 'string');
+      }
+    } catch {
+      adAccountIds = [];
+    }
+
     return {
       connected: !!conn?.connected,
       provider: conn?.mcpProvider ?? undefined,
-      adAccountIds: conn ? JSON.parse(conn.adAccountIds) : [],
+      adAccountIds,
       lastConnectedAt: conn?.lastConnectedAt ?? undefined,
+      connectionHealth: (conn?.connectionHealth as MCPStatus['connectionHealth']) ?? undefined,
+      connectionIssue: conn?.connectionIssue ?? undefined,
+      lastVerifiedAt: conn?.lastVerifiedAt ?? undefined,
     };
   }
 

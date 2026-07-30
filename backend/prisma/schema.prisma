@@ -31,7 +31,29 @@ model User {
   creativeGenerationsUsed  Int     @default(0)
   creativeGenerationsMonth String?
 
-  mcpConnection MCPConnection?
+  mcpConnection      MCPConnection?
+  connectionRequests MetaConnectionRequest[]
+}
+
+model MetaConnectionRequest {
+  id                  String    @id @default(cuid())
+  userId              String
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  businessName        String?
+  businessPortfolioId String
+  adAccountId         String
+  status              String    @default("pending") // pending | configuring | needs_adjustment | completed | cancelled
+  adminNotes          String?
+  customerMessage     String?
+  partnerAccessVerifiedAt DateTime?
+  lastVerificationAt  DateTime?
+  verificationAttempts Int      @default(0)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  completedAt         DateTime?
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
 }
 
 model Campaign {
@@ -134,6 +156,9 @@ model MCPConnection {
   mcpUrl          String?
   mcpProvider     String? // meta / pipeboard / zapier
   metaPixelId     String?
+  connectionHealth String   @default("healthy") // healthy | degraded | revoked
+  connectionIssue  String?
+  lastVerifiedAt   DateTime?
   createdAt       DateTime  @default(now())
 }
 

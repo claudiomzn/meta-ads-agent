@@ -6,19 +6,33 @@ import path from 'path';
 import fs from 'fs';
 import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
-import { publishRateLimit } from '../middleware/rateLimit.middleware.js';
+import {
+  connectionAssistantRateLimit,
+  publishRateLimit,
+} from '../middleware/rateLimit.middleware.js';
 import { MetaMCPService, PublishValidationError, createMetaMCPService } from '../services/meta.mcp.service.js';
 import { MediaService } from '../services/media.service.js';
 import { SyncService, alertOnConsecutiveFailures } from '../services/sync.service.js';
 import { encrypt } from '../services/crypto.service.js';
 import { auditLog } from '../services/audit.service.js';
-import jwt from 'jsonwebtoken';
 import { accountsBelongToToken, listTokenAdAccountIds } from '../lib/metaAdAccounts.js';
 import {
   getMetaConnectOptions,
   isManualConnectEnabled,
   isMetaOAuthEnabled,
 } from '../lib/metaConnectOptions.js';
+import {
+  createMetaOAuthState,
+  META_OAUTH_COOKIE,
+  META_OAUTH_MAX_AGE_MS,
+  verifyMetaOAuthState,
+} from '../lib/metaOAuthState.js';
+import {
+  answerMetaConnectionQuestion,
+  containsLikelySecret,
+  META_CONNECTION_STAGES,
+} from '../services/metaConnectionAssistant.service.js';
+import { aiBudget } from '../middleware/aiBudget.middleware.js';
 
 const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
 
@@ -164,17 +178,22 @@ router.post('/webhook', async (req: AuthRequest, res: Response) => {
 // nenhum userId vindo livremente da URL é aceito.
 router.get('/oauth/callback', async (req: AuthRequest, res: Response) => {
   const frontend = process.env.FRONTEND_URL ?? 'https://app.adsgenius.net';
+  const cookieOptions = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' as const : 'lax' as const,
+    path: '/api/mcp/oauth/callback',
+  };
   try {
     if (!isMetaOAuthEnabled()) throw new Error('OAuth desativado');
     const state = String(req.query.state ?? '');
     const code = String(req.query.code ?? '');
-    const payload = jwt.verify(state, process.env.JWT_SECRET!) as {
-      purpose?: string;
-      userId?: string;
-    };
-    if (payload.purpose !== 'meta_oauth' || !payload.userId || !code) {
-      throw new Error('OAuth inválido');
-    }
+    const payload = verifyMetaOAuthState(
+      state,
+      req.headers.cookie,
+      process.env.JWT_SECRET!,
+    );
+    if (!code) throw new Error('OAuth inválido');
     const appId = process.env.META_APP_ID;
     const appSecret = process.env.META_APP_SECRET;
     const publicUrl = process.env.PUBLIC_URL;
@@ -215,6 +234,9 @@ router.get('/oauth/callback', async (req: AuthRequest, res: Response) => {
         adAccountIds: JSON.stringify(accounts),
         connected: true,
         lastConnectedAt: new Date(),
+        connectionHealth: 'healthy',
+        connectionIssue: null,
+        lastVerifiedAt: new Date(),
       },
       create: {
         userId: payload.userId,
@@ -224,12 +246,17 @@ router.get('/oauth/callback', async (req: AuthRequest, res: Response) => {
         adAccountIds: JSON.stringify(accounts),
         connected: true,
         lastConnectedAt: new Date(),
+        connectionHealth: 'healthy',
+        connectionIssue: null,
+        lastVerifiedAt: new Date(),
       },
     });
     await auditLog({ userId: payload.userId, action: 'META_OAUTH_CONNECT', resource: 'mcp_connection' });
+    res.clearCookie(META_OAUTH_COOKIE, cookieOptions);
     res.redirect(302, `${frontend.replace(/\/$/, '')}/app/meta/connect?connected=1`);
   } catch (error) {
     console.error('[meta:oauth:callback]', error);
+    res.clearCookie(META_OAUTH_COOKIE, cookieOptions);
     res.redirect(302, `${frontend.replace(/\/$/, '')}/app/meta/connect?oauth_error=1`);
   }
 });
@@ -253,6 +280,69 @@ router.get('/connect-options', (_req: AuthRequest, res: Response) => {
   res.json(getMetaConnectOptions());
 });
 
+const ConnectionAssistantSchema = z.object({
+  stage: z.enum(META_CONNECTION_STAGES),
+  message: z.string().trim().min(1).max(500),
+  history: z.array(z.object({
+    role: z.enum(['user', 'assistant']),
+    content: z.string().trim().min(1).max(800),
+  })).max(9).default([]),
+});
+
+router.post(
+  '/connection-assistant',
+  connectionAssistantRateLimit,
+  aiBudget('connection_help'),
+  async (req: AuthRequest, res: Response) => {
+    const parsed = ConnectionAssistantSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Pergunta ou histórico inválido.' });
+      return;
+    }
+    const { stage, message, history } = parsed.data;
+    if (containsLikelySecret(message) || history.some((item) => containsLikelySecret(item.content))) {
+      res.status(400).json({
+        error: 'Não envie senhas, tokens ou códigos pelo chat. Informe somente os IDs pedidos na tela.',
+        code: 'SECRET_NOT_ALLOWED',
+      });
+      return;
+    }
+    try {
+      const connectionRequest = await prisma.metaConnectionRequest.findFirst({
+        where: { userId: req.userId! },
+        orderBy: { createdAt: 'desc' },
+        select: { status: true, partnerAccessVerifiedAt: true },
+      });
+      const verificationState =
+        connectionRequest?.partnerAccessVerifiedAt
+          ? 'verified'
+          : connectionRequest?.status === 'needs_adjustment'
+            ? 'needs_adjustment'
+            : connectionRequest
+              ? 'waiting'
+              : 'not_submitted';
+      const answer = await answerMetaConnectionQuestion({
+        stage,
+        message,
+        history,
+        partnerBusinessId: process.env.META_PARTNER_BUSINESS_ID,
+        verificationState,
+      });
+      res.json({ answer });
+    } catch (error) {
+      if (error instanceof Error && error.message === 'SECRET_NOT_ALLOWED') {
+        res.status(400).json({
+          error: 'Não envie senhas, tokens ou códigos pelo chat. Informe somente os IDs pedidos na tela.',
+          code: 'SECRET_NOT_ALLOWED',
+        });
+        return;
+      }
+      console.error('[meta:connection-assistant]', error);
+      res.status(503).json({ error: 'O agente de orientação está temporariamente indisponível.' });
+    }
+  },
+);
+
 router.get('/oauth/url', (req: AuthRequest, res: Response) => {
   if (!isMetaOAuthEnabled()) {
     res.status(503).json({ error: 'Conexão automática Meta ainda não está disponível.' });
@@ -265,11 +355,14 @@ router.get('/oauth/url', (req: AuthRequest, res: Response) => {
     return;
   }
   const redirectUri = `${publicUrl.replace(/\/$/, '')}/api/mcp/oauth/callback`;
-  const state = jwt.sign(
-    { purpose: 'meta_oauth', userId: req.userId! },
-    process.env.JWT_SECRET!,
-    { expiresIn: '10m' },
-  );
+  const { state, nonce } = createMetaOAuthState(req.userId!, process.env.JWT_SECRET!);
+  res.cookie(META_OAUTH_COOKIE, nonce, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    maxAge: META_OAUTH_MAX_AGE_MS,
+    path: '/api/mcp/oauth/callback',
+  });
   const url = new URL('https://www.facebook.com/v23.0/dialog/oauth');
   url.searchParams.set('client_id', appId);
   url.searchParams.set('redirect_uri', redirectUri);
@@ -346,6 +439,9 @@ router.post('/connect', async (req: AuthRequest, res: Response) => {
       adAccountIds: JSON.stringify(adAccountIds),
       connected: true,
       lastConnectedAt: new Date(),
+      connectionHealth: 'healthy',
+      connectionIssue: null,
+      lastVerifiedAt: new Date(),
     },
     create: {
       userId: req.userId!,
@@ -355,6 +451,9 @@ router.post('/connect', async (req: AuthRequest, res: Response) => {
       adAccountIds: JSON.stringify(adAccountIds),
       connected: true,
       lastConnectedAt: new Date(),
+      connectionHealth: 'healthy',
+      connectionIssue: null,
+      lastVerifiedAt: new Date(),
     },
   });
 
@@ -366,7 +465,7 @@ router.post('/connect', async (req: AuthRequest, res: Response) => {
 router.delete('/disconnect', async (req: AuthRequest, res: Response) => {
   await prisma.mCPConnection.updateMany({
     where: { userId: req.userId! },
-    data: { connected: false },
+    data: { connected: false, connectionHealth: 'healthy', connectionIssue: null },
   });
 
   await auditLog({ userId: req.userId!, action: 'MCP_DISCONNECT', resource: 'mcp_connection' });

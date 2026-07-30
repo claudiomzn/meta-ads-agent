@@ -40,6 +40,17 @@ services:
       # confirmar que o OAuth conecta uma conta de cliente de verdade.
       - key: META_MANUAL_CONNECT_ENABLED
         value: "true"
+      # Business ID do AdsGenius que o cliente adiciona como parceiro durante
+      # o onboarding assistido. Não é segredo, mas varia por ambiente.
+      - key: META_PARTNER_BUSINESS_ID
+        sync: false
+      # Credencial central SOMENTE LEITURA para confirmar que a conta exata
+      # informada foi compartilhada com o AdsGenius. Nunca é usada nas
+      # campanhas nem salva como conexão de cliente.
+      - key: META_PARTNER_VERIFY_TOKEN
+        sync: false
+      - key: META_CONNECTION_SLA_HOURS
+        value: "24"
       - key: FRONTEND_URL
         sync: false
       - key: SUPABASE_URL

@@ -190,6 +190,9 @@ export interface MCPStatus {
   provider?: string;
   adAccountIds: string[];
   lastConnectedAt?: Date;
+  connectionHealth?: 'healthy' | 'degraded' | 'revoked';
+  connectionIssue?: string;
+  lastVerifiedAt?: Date;
 }
 
 export type AdStatus = 'ACTIVE' | 'PAUSED' | 'DELETED' | 'ARCHIVED';

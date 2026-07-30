@@ -36,6 +36,15 @@ describe('veredito corrente', () => {
     vi.advanceTimersByTime(ACCESS_CACHE_TTL_MS + 1);
     expect(readFreshAccess('user-1')).toBeNull();
   });
+
+  it('não renova o TTL apenas porque o valor foi lido', () => {
+    rememberAccess('user-1', true);
+    vi.advanceTimersByTime(ACCESS_CACHE_TTL_MS - 5_000);
+    expect(readFreshAccess('user-1')).toBe(true);
+
+    vi.advanceTimersByTime(5_001);
+    expect(readFreshAccess('user-1')).toBeNull();
+  });
 });
 
 describe('tolerância durante falha do Supabase', () => {

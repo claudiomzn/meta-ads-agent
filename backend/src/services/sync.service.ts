@@ -3,6 +3,16 @@ import prisma from '../lib/prisma.js';
 import { createMetaMCPService } from './meta.mcp.service.js';
 import { sendMail, syncFailureAlertEmail } from './email.service.js';
 import type { DateRange } from '../types/meta.types.js';
+import { isExplicitMetaPermissionFailure } from './metaPartnerVerification.service.js';
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
 
 
 function todayRange(): DateRange {
@@ -27,12 +37,70 @@ async function withSyncLog(
     await prisma.syncLog.create({
       data: { userId, type, status: 'success', duration: Date.now() - start },
     });
+    if (type === 'status') {
+      await prisma.mCPConnection.updateMany({
+        where: { userId, connected: true },
+        data: {
+          connectionHealth: 'healthy',
+          connectionIssue: null,
+          lastVerifiedAt: new Date(),
+        },
+      });
+    }
   } catch (err) {
     const details = String(err);
     await prisma.syncLog.create({
       data: { userId, type, status: 'error', details, duration: Date.now() - start },
     });
     console.error(`[SyncService] Erro em "${type}":`, err);
+    if (isExplicitMetaPermissionFailure(err)) {
+      const revoked = await prisma.mCPConnection.updateMany({
+        where: { userId, connectionHealth: { not: 'revoked' } },
+        data: {
+          connected: false,
+          connectionHealth: 'revoked',
+          connectionIssue: 'O acesso do AdsGenius à sua conta Meta foi removido ou expirou.',
+        },
+      });
+      if (revoked.count) {
+        const user = await prisma.user.findUnique({
+          where: { id: userId },
+          select: { email: true, name: true },
+        });
+        if (user?.email) {
+          const connectUrl = `${(process.env.FRONTEND_URL ?? 'https://app.adsgenius.net').replace(/\/$/, '')}/app/meta/connect`;
+          await sendMail({
+            to: user.email,
+            subject: 'Sua conexão com a Meta precisa ser renovada',
+            html: `<div style="font-family:Arial,sans-serif">
+              <h2>A conexão do AdsGenius com a Meta foi interrompida</h2>
+              <p>Olá, ${escapeHtml(user.name || 'tudo bem')}.</p>
+              <p>A Meta informou que o acesso à sua conta foi removido ou expirou. Seus dados estão seguros, mas novas sincronizações ficaram pausadas.</p>
+              <p><a href="${connectUrl}">Renovar conexão com a Meta</a></p>
+            </div>`,
+            text: `A conexão do AdsGenius com a Meta foi removida ou expirou. Renove em: ${connectUrl}`,
+          }).catch((mailError) =>
+            console.error('[SyncService] Falha ao avisar cliente sobre revogação:', mailError),
+          );
+        }
+      }
+    } else {
+      const recent = await prisma.syncLog.findMany({
+        where: { userId, type },
+        orderBy: { createdAt: 'desc' },
+        take: 2,
+        select: { status: true },
+      });
+      if (recent.length === 2 && recent.every((log) => log.status === 'error')) {
+        await prisma.mCPConnection.updateMany({
+          where: { userId, connected: true },
+          data: {
+            connectionHealth: 'degraded',
+            connectionIssue: 'A conexão com a Meta está instável. Seus dados podem estar desatualizados.',
+          },
+        });
+      }
+    }
     await alertOnConsecutiveFailures(userId, type, details);
   }
 }
