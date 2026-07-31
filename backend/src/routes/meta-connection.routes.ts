@@ -17,7 +17,9 @@ router.use(authMiddleware);
 const idSchema = z.string().trim().regex(/^(?:act_)?\d{5,30}$/);
 const createSchema = z.object({
   businessName: z.string().trim().max(120).optional(),
-  businessPortfolioId: z.string().trim().regex(/^\d{5,30}$/),
+  // Opcional: o cliente informa apenas o id da conta de anúncios. Continua
+  // aceito para solicitações vindas da versão anterior da tela.
+  businessPortfolioId: z.string().trim().regex(/^\d{5,30}$/).optional(),
   adAccountId: idSchema,
 });
 const statusSchema = z.object({
@@ -33,7 +35,7 @@ const completeSchema = z.object({
 function publicRequest<T extends {
   id: string;
   businessName: string | null;
-  businessPortfolioId: string;
+  businessPortfolioId: string | null;
   adAccountId: string;
   status: string;
   customerMessage: string | null;
@@ -84,11 +86,15 @@ async function notifyAdminOfNewRequest(requestId: string): Promise<void> {
     html: `<div style="font-family:Arial,sans-serif">
       <h2>Nova conexão Meta aguardando configuração</h2>
       <p><strong>Cliente:</strong> ${client} (${email})</p>
-      <p><strong>Portfólio:</strong> ${escapeHtml(request.businessPortfolioId)}</p>
+      ${request.businessPortfolioId
+        ? `<p><strong>Portfólio:</strong> ${escapeHtml(request.businessPortfolioId)}</p>`
+        : ''}
       <p><strong>Conta de anúncios:</strong> ${escapeHtml(request.adAccountId)}</p>
       <p><a href="${adminUrl}">Abrir fila administrativa</a></p>
     </div>`,
-    text: `Nova conexão Meta\nCliente: ${request.user.email}\nPortfólio: ${request.businessPortfolioId}\nConta: ${request.adAccountId}\n${adminUrl}`,
+    text: `Nova conexão Meta\nCliente: ${request.user.email}\n`
+      + (request.businessPortfolioId ? `Portfólio: ${request.businessPortfolioId}\n` : '')
+      + `Conta: ${request.adAccountId}\n${adminUrl}`,
   });
 }
 

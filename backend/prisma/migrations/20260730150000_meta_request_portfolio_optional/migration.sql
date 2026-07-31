@@ -1,0 +1,11 @@
+-- O cliente não informa mais o ID do portfólio empresarial.
+--
+-- Quem pede o acesso agora é o AdsGenius ("Pedir acesso a uma conta de anúncios
+-- em outro portfólio"), e o cliente apenas aceita a solicitação. Para isso basta
+-- o ID da conta de anúncios, que ele lê no topo do Gerenciador de Anúncios sem
+-- entrar em Configurações do negócio. Exigir também o ID do portfólio obrigava
+-- a percorrer um painel que a maioria dos clientes não conhece.
+--
+-- A coluna continua existindo: solicitações antigas mantêm o valor, e o campo
+-- segue útil como informação opcional no atendimento.
+ALTER TABLE "MetaConnectionRequest" ALTER COLUMN "businessPortfolioId" DROP NOT NULL;

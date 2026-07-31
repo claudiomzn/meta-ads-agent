@@ -80,6 +80,26 @@ describe('fluxo de conexão Meta assistida', () => {
     expect(invalid.status).toBe(400);
   });
 
+  it('cria a solicitação com apenas o id da conta de anúncios', async () => {
+    // O cliente não informa mais o id do portfólio: quem pede o acesso é o
+    // AdsGenius, e ele só aceita. Exigir o portfólio obrigava a percorrer as
+    // Configurações do negócio, que é onde o cliente leigo desistia.
+    const response = await request(app)
+      .post('/api/meta-connection/request')
+      .set('Authorization', `Bearer ${clientToken}`)
+      .send({ adAccountId: 'act_5551234567' });
+
+    expect(response.status).toBe(201);
+    expect(response.body.request.adAccountId).toBe('5551234567');
+    expect(response.body.request.businessPortfolioId).toBeNull();
+
+    // Libera o índice parcial de "uma solicitação aberta por cliente" para os
+    // casos seguintes.
+    await request(app)
+      .post(`/api/meta-connection/request/${response.body.request.id}/cancel`)
+      .set('Authorization', `Bearer ${clientToken}`);
+  });
+
   it('cria uma solicitação sem aceitar ou devolver credenciais', async () => {
     const response = await request(app)
       .post('/api/meta-connection/request')

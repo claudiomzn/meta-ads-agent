@@ -40,7 +40,7 @@ model MetaConnectionRequest {
   userId              String
   user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   businessName        String?
-  businessPortfolioId String
+  businessPortfolioId String?
   adAccountId         String
   status              String    @default("pending") // pending | configuring | needs_adjustment | completed | cancelled
   adminNotes          String?

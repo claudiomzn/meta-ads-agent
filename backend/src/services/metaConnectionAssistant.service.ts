@@ -1,12 +1,21 @@
 import Anthropic from '@anthropic-ai/sdk';
 
+// O fluxo do cliente tem dois passos: informar o id da conta e aceitar a
+// solicitação de acesso que a Meta envia. Quem pede o acesso é o AdsGenius —
+// pedir que o cliente navegue até Parceiros e adicione um parceiro era o que
+// travava quem não conhece o Gerenciador de Negócios.
+//
+// Os estágios antigos (portfolio_id, partner_access, prerequisites, review)
+// continuam aceitos porque uma aba deixada aberta com a versão anterior da tela
+// ainda os envia; sem isso, a pergunta ao assistente voltaria 400.
 export const META_CONNECTION_STAGES = [
+  'account_id',
+  'approve_request',
+  'submitted',
   'prerequisites',
   'portfolio_id',
-  'account_id',
   'partner_access',
   'review',
-  'submitted',
 ] as const;
 
 export type MetaConnectionStage = typeof META_CONNECTION_STAGES[number];
@@ -17,18 +26,29 @@ export interface ConnectionAssistantMessage {
 }
 
 const STAGE_CONTEXT: Record<MetaConnectionStage, string> = {
-  prerequisites:
-    'Confirmar que a pessoa é administradora do Portfólio Empresarial e tem acesso à conta de anúncios.',
-  portfolio_id:
-    'Encontrar o ID do Portfólio empresarial nas informações do negócio.',
   account_id:
-    'Encontrar o ID da conta em Configurações do negócio > Contas > Contas de anúncios.',
-  partner_access:
-    'Adicionar o AdsGenius como parceiro pelo ID empresarial informado na tela e compartilhar somente a conta escolhida.',
-  review:
-    'Revisar o Portfólio, a conta e confirmar que o acesso do parceiro foi concedido.',
+    'Encontrar o ID da conta de anúncios. O caminho mais simples é o Gerenciador de Anúncios '
+    + '(adsmanager.facebook.com): o id aparece junto do nome da conta no seletor do topo. '
+    + 'É só o número, sem o prefixo act_. Não é preciso entrar em Configurações do negócio.',
+  approve_request:
+    'Aceitar a solicitação de acesso que o AdsGenius enviou. Ela chega como notificação da Meta '
+    + 'para quem administra a conta de anúncios, e também aparece em Configurações do negócio > '
+    + 'Solicitações. O AdsGenius pede apenas permissão para gerenciar campanhas — nunca finanças '
+    + 'nem controle da conta.',
   submitted:
     'Explicar o status da solicitação e o que acontece enquanto a equipe conclui a conexão.',
+
+  // Estágios da versão anterior da tela, mantidos para abas antigas.
+  prerequisites:
+    'Confirmar que a pessoa administra a conta de anúncios que quer conectar.',
+  portfolio_id:
+    'Encontrar o ID do Portfólio empresarial nas informações do negócio. Hoje esse dado não é '
+    + 'mais necessário: basta o id da conta de anúncios.',
+  partner_access:
+    'No fluxo atual o cliente não precisa adicionar parceiro: o AdsGenius envia a solicitação de '
+    + 'acesso e ele apenas aceita.',
+  review:
+    'Revisar o id da conta informado e aguardar a solicitação de acesso da Meta.',
 };
 
 // Tokens Meta normalmente começam com EAA. A segunda regra bloqueia sequências
