@@ -34,6 +34,16 @@ import {
 } from '../services/metaConnectionAssistant.service.js';
 import { aiBudget } from '../middleware/aiBudget.middleware.js';
 
+// Escopos pedidos no diálogo de OAuth da Meta. Tem que ser exatamente o que
+// está submetido no App Review: o revisor assiste ao fluxo de conexão, e um
+// escopo pedido fora do envio aparece na tela dele como incoerência.
+export const META_OAUTH_SCOPES = [
+  'ads_read',
+  'ads_management',
+  'pages_read_engagement',
+  'pages_show_list',
+] as const;
+
 const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
 
 // Resolve com segurança um filename derivado de ad.imageUrl/ad.videoUrl (que
@@ -367,18 +377,13 @@ router.get('/oauth/url', (req: AuthRequest, res: Response) => {
   url.searchParams.set('client_id', appId);
   url.searchParams.set('redirect_uri', redirectUri);
   url.searchParams.set('state', state);
-  url.searchParams.set(
-    'scope',
-    [
-      'ads_read',
-      'ads_management',
-      'business_management',
-      'pages_show_list',
-      'pages_read_engagement',
-      'instagram_basic',
-      'instagram_manage_insights',
-    ].join(','),
-  );
+  // Pedimos exatamente o que está submetido no App Review, nada além. Escopo
+  // pedido e não aprovado a Meta já não concede para quem não tem papel no app,
+  // então pedir a mais só cria incoerência entre a tela que o cliente vê e o
+  // que a revisão aprovou. `business_management` saiu porque não é chamado em
+  // lugar nenhum; as de Instagram ficam para uma submissão futura, junto com a
+  // liberação daquela parte do produto.
+  url.searchParams.set('scope', META_OAUTH_SCOPES.join(','));
   res.json({ url: url.toString() });
 });
 
