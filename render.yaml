@@ -30,11 +30,14 @@ services:
         sync: false
       - key: PUBLIC_URL
         sync: false
-      # OAuth do Meta. Só funciona depois do App Review dos escopos
-      # ads_management/business_management. Sem as três variáveis acima ele fica
-      # desligado de qualquer forma; esta serve para desligar mesmo tendo-as.
+      # OAuth do Meta. O acesso padrão do app já autoriza quem tem papel nele
+      # (admin/desenvolvedor/testador), então o fluxo conecta a conta do próprio
+      # dono antes do App Review — é assim que se grava o screencast da análise.
+      # Para cliente sem papel no app, os escopos avançados só saem depois da
+      # aprovação; até lá o caminho dele é o META_MANUAL_CONNECT_ENABLED abaixo.
+      # Sem as três variáveis acima o OAuth fica desligado de qualquer forma.
       - key: META_OAUTH_ENABLED
-        value: "false"
+        value: "true"
       # Conexão manual (cliente cola o próprio token). É o único caminho que
       # funciona antes da aprovação da Meta. Vire para "false" só depois de
       # confirmar que o OAuth conecta uma conta de cliente de verdade.
