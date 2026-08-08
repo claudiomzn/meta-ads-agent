@@ -114,11 +114,11 @@ router.get('/status', async (req: AuthRequest, res: Response) => {
 router.post('/generate', aiBudget('creative_generate'), async (req: AuthRequest, res: Response) => {
   const {
     product, audience, objective, differentials, tone, niche, businessName,
-    count, aspect,
+    count, aspect, copyOnly,
   } = req.body as {
     product?: string; audience?: string; objective?: string; differentials?: string;
     tone?: string; niche?: string; businessName?: string;
-    count?: number; aspect?: CreativeAspect;
+    count?: number; aspect?: CreativeAspect; copyOnly?: boolean;
   };
 
   if (!product?.trim()) {
@@ -153,7 +153,14 @@ router.post('/generate', aiBudget('creative_generate'), async (req: AuthRequest,
   // 2. Arte real (em paralelo) — só para as primeiras `imagesToGenerate`
   // variações, limitado pelo que resta da cota do usuário
   const aspectRatio: CreativeAspect = aspect ?? '1:1';
-  const requestedImages = isImageGenEnabled() ? Math.min(generationsLeft, aiCount) : 0;
+  // `copyOnly` é escolha do usuário, não falta de cota: ele quer só as ideias
+  // de copy e conceito visual, sem queimar arte. É o caso que a tela separada
+  // "Gerador de Criativos" atendia — e a razão de ela poder ser aposentada,
+  // já que aqui o resultado é o mesmo (o bloco `else` abaixo devolve todas as
+  // imagens como null e a reserva de cota vira no-op).
+  const requestedImages = (copyOnly || !isImageGenEnabled())
+    ? 0
+    : Math.min(generationsLeft, aiCount);
   const reservation = await reserveImageQuota(req.userId!, plan, requestedImages);
   const imagesToGenerate = reservation.reserved;
 
