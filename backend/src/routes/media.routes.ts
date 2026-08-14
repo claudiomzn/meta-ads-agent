@@ -52,12 +52,21 @@ router.post('/upload', uploadRateLimit, upload.single('file'), async (req: AuthR
   }
 
   const isVideo = req.file.mimetype.startsWith('video/');
-  const durableUrl = await storeUploadedMedia(
-    req.file.buffer,
-    req.file.mimetype,
-    req.file.originalname,
-    req.userId!,
-  );
+  let durableUrl: string;
+  try {
+    durableUrl = await storeUploadedMedia(
+      req.file.buffer,
+      req.file.mimetype,
+      req.file.originalname,
+      req.userId!,
+    );
+  } catch (error) {
+    console.error('[media/upload] falha ao persistir mídia', error);
+    res.status(503).json({
+      error: 'O envio da mídia está temporariamente indisponível. Tente novamente em instantes.',
+    });
+    return;
+  }
 
   res.json({
     type: isVideo ? 'video' : 'image',

@@ -34,6 +34,7 @@ import {
   META_CONNECTION_STAGES,
 } from '../services/metaConnectionAssistant.service.js';
 import { aiBudget } from '../middleware/aiBudget.middleware.js';
+import { refreshStoredMediaUrl } from '../services/storage.service.js';
 
 // Escopos pedidos no diálogo de OAuth da Meta. Tem que ser exatamente o que
 // está submetido no App Review: o revisor assiste ao fluxo de conexão, e um
@@ -617,7 +618,8 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
         if (ad.imageUrl?.startsWith('https://') && !imageHashMap.has(ad.imageUrl)) {
           try {
             send({ type: 'progress', message: 'Enviando imagem armazenada para o Meta...' });
-            const uploaded = await svc.uploadCreativeImage(ad.imageUrl, adAccountId);
+            const uploadUrl = await refreshStoredMediaUrl(ad.imageUrl);
+            const uploaded = await svc.uploadCreativeImage(uploadUrl, adAccountId);
             if (uploaded.hash) imageHashMap.set(ad.imageUrl, uploaded.hash);
           } catch {
             send({ type: 'progress', message: 'Aviso: falha ao enviar a imagem armazenada.' });
@@ -643,7 +645,8 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
         if (ad.videoUrl?.startsWith('https://') && !videoIdMap.has(ad.videoUrl)) {
           try {
             send({ type: 'progress', message: 'Enviando vídeo armazenado para o Meta...' });
-            const uploaded = await svc.uploadCreativeVideo(ad.videoUrl, adAccountId);
+            const uploadUrl = await refreshStoredMediaUrl(ad.videoUrl);
+            const uploaded = await svc.uploadCreativeVideo(uploadUrl, adAccountId);
             if (uploaded.id) videoIdMap.set(ad.videoUrl, uploaded.id);
           } catch {
             send({ type: 'progress', message: 'Aviso: falha ao enviar o vídeo armazenado.' });
