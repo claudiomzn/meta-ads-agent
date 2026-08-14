@@ -74,6 +74,15 @@ vi.mock('../lib/metaAdAccounts.js', async (importOriginal) => {
   return { ...actual, listTokenAdAccountIds: mockListTokenAdAccountIds };
 });
 
+const { mockListPages } = vi.hoisted(() => ({
+  mockListPages: vi.fn(),
+}));
+vi.mock('../services/meta.graph.service.js', () => ({
+  MetaGraphService: vi.fn().mockImplementation(function () {
+    return { listPages: mockListPages };
+  }),
+}));
+
 vi.mock('../services/crypto.service.js', () => ({
   encrypt: vi.fn((v: string) => `enc:${v}`),
   decrypt: vi.fn((v: string) => v.replace('enc:', '')),
@@ -125,6 +134,7 @@ beforeEach(() => {
   mockDisconnect.mockResolvedValue(undefined);
   mockListAdAccounts.mockResolvedValue([{ id: 'act_123', name: 'Conta Teste' }]);
   mockListTokenAdAccountIds.mockResolvedValue(new Set(['123']));
+  mockListPages.mockResolvedValue([{ id: '456', name: 'Página Teste' }]);
   mockUpdateAdSetStatus.mockResolvedValue(undefined);
   mockUpdateCampaignBudget.mockResolvedValue(undefined);
   mockGetCampaignInsights.mockResolvedValue({ spend: 100, roas: 2.5 });
@@ -298,6 +308,28 @@ describe('GET /api/mcp/status', () => {
   });
 });
 
+describe('GET /api/mcp/pages', () => {
+  it('lista somente as Páginas alcançadas pelo token do usuário', async () => {
+    const res = await request(app)
+      .get('/api/mcp/pages')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([{ id: '456', name: 'Página Teste' }]);
+    expect(mockListPages).toHaveBeenCalledOnce();
+  });
+
+  it('não expõe detalhes internos quando a Meta falha', async () => {
+    mockListPages.mockRejectedValueOnce(new Error('token secreto inválido'));
+    const res = await request(app)
+      .get('/api/mcp/pages')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(503);
+    expect(res.body.error).not.toContain('token secreto');
+  });
+});
+
 describe('POST /api/mcp/publish/dry-run', () => {
   it('valida plano sem erros', async () => {
     mockValidatePlan.mockResolvedValueOnce({ valid: true, errors: [], warnings: [] });
@@ -327,6 +359,70 @@ describe('POST /api/mcp/publish/dry-run', () => {
     expect(res.status).toBe(200);
     expect(res.body.valid).toBe(false);
     expect(res.body.errors).toHaveLength(2);
+  });
+});
+
+describe('POST /api/mcp/publish/:planId', () => {
+  async function createPublishableDraft() {
+    await prisma.mCPConnection.upsert({
+      where: { userId },
+      update: { connected: true, adAccountIds: JSON.stringify(['act_123']), metaAccessToken: 'enc:token' },
+      create: {
+        userId,
+        connected: true,
+        adAccountIds: JSON.stringify(['act_123']),
+        metaAccessToken: 'enc:token',
+        mcpUrl: 'https://test.mcp.example.com',
+        mcpProvider: 'pipeboard',
+      },
+    });
+    return prisma.campaign.create({
+      data: {
+        userId,
+        name: 'Rascunho com Página',
+        product: 'Produto',
+        objective: 'LEAD_GENERATION',
+        budget: 1000,
+      },
+    });
+  }
+
+  it('recusa uma Página que o token do usuário não alcança', async () => {
+    const campaign = await createPublishableDraft();
+    mockListPages.mockResolvedValueOnce([{ id: '456', name: 'Página autorizada' }]);
+
+    const res = await request(app)
+      .post(`/api/mcp/publish/${campaign.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ adAccountId: 'act_123', pageId: '999' });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/não pertence/i);
+    expect(mockPublishCampaignPlan).not.toHaveBeenCalled();
+  });
+
+  it('revalida e encaminha a Página autorizada para a publicação', async () => {
+    const campaign = await createPublishableDraft();
+    mockListPages.mockResolvedValueOnce([{ id: '456', name: 'Página autorizada' }]);
+    mockPublishCampaignPlan.mockResolvedValueOnce({
+      success: true,
+      campaignId: '1200001',
+      status: 'PAUSED_FOR_REVIEW',
+      adSetIds: [],
+      adIds: [],
+      managerUrl: 'https://business.facebook.com/adsmanager',
+    });
+
+    const res = await request(app)
+      .post(`/api/mcp/publish/${campaign.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ adAccountId: 'act_123', pageId: '456' });
+
+    expect(res.status).toBe(200);
+    expect(mockPublishCampaignPlan).toHaveBeenCalledWith(
+      expect.objectContaining({ pageId: '456' }),
+      expect.any(Function),
+    );
   });
 });
 

@@ -22,6 +22,10 @@ services:
         sync: false
       - key: META_MCP_URL
         sync: false
+      # Autentica o transporte no Pipeboard. O token Meta de cada cliente é
+      # enviado separadamente em cada chamada e nunca substitui esta chave.
+      - key: PIPEBOARD_API_KEY
+        sync: false
       - key: META_WEBHOOK_VERIFY_TOKEN
         generateValue: true
       - key: META_APP_ID

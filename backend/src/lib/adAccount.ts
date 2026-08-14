@@ -8,10 +8,9 @@ const GRAPH = 'https://graph.facebook.com/v21.0';
 //
 // Dois problemas que este helper existe para evitar:
 //
-// 1. CROSS-TENANT: para provider pipeboard/zapier o token é o META_ACCESS_TOKEN
-//    do servidor, compartilhado entre clientes. Resolver a conta via
-//    `me/adaccounts` e pegar `accounts[0]` devolve uma conta arbitrária — que
-//    pode ser de OUTRO cliente. A conta correta é a que o usuário vinculou em
+// 1. CROSS-TENANT: mesmo com um token individual, ele pode alcançar várias
+//    contas. Resolver via `me/adaccounts` e pegar `accounts[0]` pode agir na
+//    conta errada. A conta correta é a que o usuário vinculou em
 //    mCPConnection.adAccountIds.
 //
 // 2. FORMATO: o frontend grava o id SEM o prefixo (`MetaConnect` faz

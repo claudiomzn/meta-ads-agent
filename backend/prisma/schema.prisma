@@ -68,6 +68,7 @@ model Campaign {
   // Integração Meta
   metaCampaignId  String?   @unique
   metaAdAccountId String?
+  metaPageId      String?
   metaStatus      String?
   publishedAt     DateTime?
   lastSyncAt      DateTime?

@@ -3,12 +3,13 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import { ArrowLeft, ExternalLink, TrendingUp, DollarSign, MousePointerClick, Eye, Pencil, Copy } from 'lucide-react';
 import { useCampaign, useDuplicateCampaign } from '@/hooks/useCampaigns';
 import { CopyScoreWidget } from '@/components/CopyScoreWidget';
-import { useMCPStatus } from '@/hooks/useMCP';
+import { useMCPStatus, useMetaPages } from '@/hooks/useMCP';
 import { PublishButton } from '@/components/PublishButton';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/utils';
 import { AdPreviewModal } from '@/components/preview/AdPreviewModal';
 import type { AdPreviewData } from '@/utils/preview-checklist';
@@ -18,8 +19,10 @@ export default function CampaignDetailPage() {
   const navigate = useNavigate();
   const { data: campaign, isLoading } = useCampaign(id!);
   const { data: mcpStatus } = useMCPStatus();
+  const { data: metaPages = [], isLoading: pagesLoading } = useMetaPages();
   const duplicateCampaign = useDuplicateCampaign();
   const [adAccountId, setAdAccountId] = useState('');
+  const [pageId, setPageId] = useState('');
   const [destinationUrl, setDestinationUrl] = useState('');
   const [previewAd, setPreviewAd] = useState<AdPreviewData | null>(null);
 
@@ -28,6 +31,8 @@ export default function CampaignDetailPage() {
 
   const isPublished = !!campaign.metaCampaignId;
   const defaultAccount = mcpStatus?.adAccountIds?.[0] ?? '';
+  const selectedPageId = pageId || campaign.metaPageId || '';
+  const selectedPageName = metaPages.find((page) => page.id === selectedPageId)?.name;
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -166,7 +171,7 @@ export default function CampaignDetailPage() {
                               destinationUrl: ad.destinationUrl ?? '',
                               imageUrl: ad.imageUrl ?? undefined,
                               videoUrl: ad.videoUrl ?? undefined,
-                              pageName: campaign.name,
+                              pageName: selectedPageName || campaign.name,
                             })}
                             className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium"
                             title="Ver prévia visual"
@@ -229,6 +234,15 @@ export default function CampaignDetailPage() {
                     />
                   </div>
                   <div className="space-y-1.5">
+                    <label className="text-sm font-medium">Página do Facebook</label>
+                    <Select value={selectedPageId} onValueChange={setPageId} disabled={pagesLoading}>
+                      <SelectTrigger><SelectValue placeholder="Selecione a Página" /></SelectTrigger>
+                      <SelectContent>
+                        {metaPages.map((page) => <SelectItem key={page.id} value={page.id}>{page.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
                     <label className="text-sm font-medium">URL de destino padrão</label>
                     <Input
                       placeholder="https://seusite.com/pagina"
@@ -241,6 +255,7 @@ export default function CampaignDetailPage() {
                 <PublishButton
                   campaign={campaign}
                   adAccountId={adAccountId || defaultAccount}
+                  pageId={selectedPageId}
                   destinationUrl={destinationUrl || 'https://seusite.com'}
                 />
               </>

@@ -6,6 +6,12 @@ export interface AdAccount {
   status: number;
 }
 
+export interface MetaPage {
+  id: string;
+  name: string;
+  instagramBusinessAccountId?: string;
+}
+
 export interface DateRange {
   since: string; // YYYY-MM-DD
   until: string;
@@ -100,6 +106,7 @@ export interface CreateCampaignParams {
 }
 
 export interface CreateAdSetParams {
+  accountId: string;
   campaignId: string;
   name: string;
   dailyBudget: number;
@@ -111,20 +118,23 @@ export interface CreateAdSetParams {
 }
 
 export interface CreateAdParams {
+  accountId: string;
   adSetId: string;
   name: string;
-  creative: {
-    title: string;
-    body: string;
-    callToAction: {
-      type: string;
-      link: string;
-    };
-    imageHash?: string;
-    videoId?: string;
-    imageUrl?: string;
-  };
+  creativeId: string;
   status: 'PAUSED' | 'ACTIVE';
+}
+
+export interface CreateAdCreativeParams {
+  accountId: string;
+  name: string;
+  pageId: string;
+  linkUrl: string;
+  message: string;
+  headline: string;
+  callToActionType: string;
+  imageHash?: string;
+  videoId?: string;
 }
 
 export interface CreateAudienceParams {
@@ -145,7 +155,10 @@ export interface AdPlan {
   bodyText: string;
   ctaType: string;
   destinationUrl: string;
+  imageHash?: string;
   imageUrl?: string;
+  videoId?: string;
+  videoUrl?: string;
 }
 
 export interface AdSetPlan {
@@ -164,6 +177,7 @@ export interface AdSetPlan {
 export interface CampaignPlan {
   localId: string;
   adAccountId: string;
+  pageId: string;
   name: string;
   objective: string;
   specialCategories?: string[];

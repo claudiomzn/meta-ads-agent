@@ -52,6 +52,7 @@ export interface CampaignRecord {
   status: string;
   metaCampaignId?: string;
   metaAdAccountId?: string;
+  metaPageId?: string;
   metaStatus?: string;
   metaSpend?: number;
   metaRoas?: number;
@@ -105,6 +106,7 @@ interface CreateCampaignInput {
   product: string;
   objective: string;
   budget: number;
+  metaPageId?: string;
   adSets?: AdSetInput[];
 }
 

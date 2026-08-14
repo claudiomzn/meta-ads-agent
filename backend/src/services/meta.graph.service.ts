@@ -1,8 +1,8 @@
 // MetaGraphService — fallback de LEITURA direto na Graph API do Meta.
 //
 // Implementa os mesmos métodos de leitura do MetaMCPService, porém chamando
-// graph.facebook.com diretamente (sem Pipeboard), usando o System User token
-// (META_ACCESS_TOKEN) — mesmo padrão já usado em pixel.service.ts.
+// graph.facebook.com diretamente (sem Pipeboard), usando o token individual
+// criptografado da conexão Meta do próprio usuário.
 //
 // Objetivo: remover o ponto único de falha do Pipeboard nas leituras. Quando o
 // Pipeboard estiver fora do ar, a fachada de failover (meta.read.service.ts)
@@ -28,6 +28,7 @@ import type {
   MCPStatus,
   MetaGeoLocation,
   MetaInterest,
+  MetaPage,
   SpendSummary,
 } from '../types/meta.types.js';
 
@@ -117,7 +118,7 @@ export class MetaGraphService {
     this.userId = userId;
   }
 
-  // Resolve o token do System User (mesma lógica do pixel.service).
+  // Resolve exclusivamente o token individual da conexão deste usuário.
   private async getToken(): Promise<string> {
     if (this.token) return this.token;
     const conn = await prisma.mCPConnection.findUnique({ where: { userId: this.userId } });
@@ -166,6 +167,21 @@ export class MetaGraphService {
       timezone: String(a.timezone_name ?? ''),
       status: num(a.account_status),
     }));
+  }
+
+  async listPages(): Promise<MetaPage[]> {
+    const data = await this.graphGet<{ data?: Array<Record<string, unknown>> }>('me/accounts', {
+      fields: 'id,name,instagram_business_account{id}',
+      limit: 100,
+    });
+    return (data.data ?? []).map((page) => {
+      const instagram = page.instagram_business_account as { id?: unknown } | undefined;
+      return {
+        id: String(page.id ?? ''),
+        name: String(page.name ?? ''),
+        ...(instagram?.id ? { instagramBusinessAccountId: String(instagram.id) } : {}),
+      };
+    }).filter((page) => /^\d+$/.test(page.id));
   }
 
   // ─── Leitura — Campanhas ──────────────────────────────────────────────────────

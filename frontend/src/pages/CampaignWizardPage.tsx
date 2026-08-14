@@ -13,6 +13,7 @@ import { MediaUpload } from '@/components/MediaUpload';
 import { AdPreviewModal } from '@/components/preview/AdPreviewModal';
 import type { AdPreviewData } from '@/utils/preview-checklist';
 import { AudiencePicker } from '@/components/AudiencePicker';
+import { useMetaPages } from '@/hooks/useMCP';
 
 const OBJECTIVES = [
   { value: 'LEAD_GENERATION', label: 'Geração de leads' },
@@ -58,6 +59,7 @@ interface AIPlan {
 export default function CampaignWizardPage() {
   const navigate = useNavigate();
   const createCampaign = useCreateCampaign();
+  const { data: metaPages = [], isLoading: pagesLoading, isError: pagesError } = useMetaPages();
 
   // Lê dados do copy importado do sessionStorage — uma vez, no mount
   const [fromCopy] = useState<{
@@ -119,6 +121,7 @@ export default function CampaignWizardPage() {
   );
   const [audience, setAudience] = useState(fromCopy?.audience ?? '');
   const [differentials, setDifferentials] = useState('');
+  const [metaPageId, setMetaPageId] = useState('');
 
   const [whatsapp, setWhatsapp]           = useState('');
   const [ticketMedio, setTicketMedio]     = useState('');
@@ -199,6 +202,7 @@ export default function CampaignWizardPage() {
         product,
         objective,
         budget: Number(budget),
+        metaPageId,
         adSets: plan.adSets.map((as) => ({
           name: as.name,
           dailyBudget: as.dailyBudget,
@@ -273,6 +277,29 @@ export default function CampaignWizardPage() {
           <CardTitle className="text-base">Dados da campanha</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">Página do Facebook que representará o anúncio *</label>
+            <Select value={metaPageId} onValueChange={setMetaPageId} disabled={pagesLoading || pagesError}>
+              <SelectTrigger>
+                <SelectValue placeholder={pagesLoading ? 'Carregando suas Páginas...' : 'Selecione uma Página'} />
+              </SelectTrigger>
+              <SelectContent>
+                {metaPages.map((page) => (
+                  <SelectItem key={page.id} value={page.id}>
+                    {page.name}{page.instagramBusinessAccountId ? ' · Instagram conectado' : ''}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {pagesError && (
+              <p className="text-xs text-destructive">Não foi possível carregar suas Páginas. Renove a conexão com a Meta.</p>
+            )}
+            {!pagesLoading && !pagesError && metaPages.length === 0 && (
+              <p className="text-xs text-destructive">Nenhuma Página foi autorizada. Conecte uma Página no Facebook antes de criar a campanha.</p>
+            )}
+            <p className="text-xs text-muted-foreground">O anúncio aparecerá com o nome e a identidade desta Página.</p>
+          </div>
+
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Produto / Serviço *</label>
@@ -362,7 +389,7 @@ export default function CampaignWizardPage() {
           <Button
             variant="meta"
             onClick={generatePlan}
-            disabled={!product || !objective || !budget || generating}
+            disabled={!metaPageId || !product || !objective || !budget || generating}
             className="w-full"
           >
             {generating
@@ -453,7 +480,7 @@ export default function CampaignWizardPage() {
                                 destinationUrl: ad.destinationUrl ?? '',
                                 imageUrl: ad.imageUrl,
                                 videoUrl: ad.videoUrl,
-                                pageName: product || 'Sua Empresa',
+                                pageName: metaPages.find((page) => page.id === metaPageId)?.name || product || 'Sua Empresa',
                               })}
                               className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium"
                               title="Ver prévia visual"

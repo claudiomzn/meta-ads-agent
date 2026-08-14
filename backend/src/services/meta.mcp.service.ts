@@ -17,6 +17,7 @@ import type {
   CreateCampaignParams,
   CreateAdSetParams,
   CreateAdParams,
+  CreateAdCreativeParams,
   CreateAudienceParams,
   CampaignPlan,
   PublishResult,
@@ -55,11 +56,35 @@ export class MetaMCPService {
     this.userId = userId;
   }
 
+  private requireId(result: { id?: string; error?: unknown }, resource: string): string {
+    if (typeof result.id === 'string' && result.id.trim()) return result.id;
+    console.error(`[MCP] Falha ao criar ${resource}`, { hasError: result.error !== undefined });
+    throw new Error(`Não foi possível criar ${resource} na Meta.`);
+  }
+
+  private normalizeObjective(objective: string): string {
+    const objectives: Record<string, string> = {
+      LEAD_GENERATION: 'OUTCOME_LEADS',
+      CONVERSIONS: 'OUTCOME_SALES',
+      TRAFFIC: 'OUTCOME_TRAFFIC',
+      AWARENESS: 'OUTCOME_AWARENESS',
+      BRAND_AWARENESS: 'OUTCOME_AWARENESS',
+      ENGAGEMENT: 'OUTCOME_ENGAGEMENT',
+      VIDEO_VIEWS: 'OUTCOME_ENGAGEMENT',
+    };
+    return objective.startsWith('OUTCOME_') ? objective : (objectives[objective] ?? objective);
+  }
+
   // ─── Conexão ──────────────────────────────────────────────────────────────
 
   async connect(encryptedToken: string, mcpUrl: string): Promise<void> {
     this.accessToken = decrypt(encryptedToken);
     this.mcpUrl = mcpUrl;
+
+    const pipeboardApiKey = process.env.PIPEBOARD_API_KEY?.trim();
+    if (!pipeboardApiKey) {
+      throw new Error('Integração Meta temporariamente indisponível.');
+    }
 
     this.client = new Client(
       { name: 'meta-ads-agent', version: '1.0.0' },
@@ -68,7 +93,7 @@ export class MetaMCPService {
 
     const transport = new StreamableHTTPClientTransport(new URL(mcpUrl), {
       requestInit: {
-        headers: { Authorization: `Bearer ${this.accessToken}` },
+        headers: { Authorization: `Bearer ${pipeboardApiKey}` },
       },
     });
 
@@ -118,7 +143,10 @@ export class MetaMCPService {
     }
 
     try {
-      const result = await this.client.callTool({ name: tool, arguments: args });
+      const result = await this.client.callTool({
+        name: tool,
+        arguments: { ...args, access_token: this.accessToken },
+      });
 
       if (result.isError) {
         throw new Error(`Erro MCP [${tool}]: ${JSON.stringify(result.content)}`);
@@ -245,19 +273,25 @@ export class MetaMCPService {
   // ─── Escrita — Criação ────────────────────────────────────────────────────
 
   async createCampaign(params: CreateCampaignParams): Promise<{ id: string }> {
-    return this.call<{ id: string }>('create_campaign', {
-      ad_account_id: params.adAccountId,
+    const result = await this.call<{ id?: string; error?: unknown }>('create_campaign', {
+      account_id: params.adAccountId,
       name: params.name,
-      objective: params.objective,
+      objective: this.normalizeObjective(params.objective),
       status: params.status,
       special_ad_categories: params.specialAdCategories ?? [],
+      // O AdsGenius define o orçamento em cada conjunto. Sem esta opção, o
+      // Pipeboard cria por padrão um orçamento também na campanha (CBO) e a
+      // Meta pode rejeitar o orçamento duplicado do conjunto.
+      use_adset_level_budgets: true,
       ...(params.dailyBudget && { daily_budget: params.dailyBudget * 100 }),
       ...(params.lifetimeBudget && { lifetime_budget: params.lifetimeBudget * 100 }),
     });
+    return { id: this.requireId(result, 'campanha') };
   }
 
   async createAdSet(params: CreateAdSetParams): Promise<{ id: string }> {
-    return this.call<{ id: string }>('create_ad_set', {
+    const result = await this.call<{ id?: string; error?: unknown }>('create_adset', {
+      account_id: params.accountId,
       campaign_id: params.campaignId,
       name: params.name,
       daily_budget: params.dailyBudget * 100,
@@ -267,25 +301,36 @@ export class MetaMCPService {
       bid_strategy: params.bidStrategy ?? 'LOWEST_COST_WITHOUT_CAP',
       status: params.status,
     });
+    return { id: this.requireId(result, 'conjunto de anúncios') };
   }
 
   async createAd(params: CreateAdParams): Promise<{ id: string }> {
-    return this.call<{ id: string }>('create_ad', {
+    const result = await this.call<{ id?: string; error?: unknown }>('create_ad', {
+      account_id: params.accountId,
       adset_id: params.adSetId,
       name: params.name,
-      creative: {
-        title: params.creative.title,
-        body: params.creative.body,
-        call_to_action: {
-          type: params.creative.callToAction.type,
-          value: { link: params.creative.callToAction.link },
-        },
-        ...(params.creative.imageHash && { image_hash: params.creative.imageHash }),
-        ...(params.creative.videoId && { video_id: params.creative.videoId }),
-        ...(params.creative.imageUrl && { image_url: params.creative.imageUrl }),
-      },
+      creative_id: params.creativeId,
       status: params.status,
     });
+    return { id: this.requireId(result, 'anúncio') };
+  }
+
+  async createAdCreative(params: CreateAdCreativeParams): Promise<{ id: string }> {
+    const result = await this.call<{ creative_id?: string; id?: string; error?: unknown }>(
+      'create_ad_creative',
+      {
+        account_id: params.accountId,
+        name: params.name,
+        page_id: params.pageId,
+        link_url: params.linkUrl,
+        message: params.message,
+        headline: params.headline,
+        call_to_action_type: params.callToActionType,
+        ...(params.imageHash && { image_hash: params.imageHash }),
+        ...(params.videoId && { video_id: params.videoId }),
+      },
+    );
+    return { id: this.requireId({ id: result.creative_id ?? result.id, error: result.error }, 'criativo') };
   }
 
   async createCustomAudience(params: CreateAudienceParams): Promise<{ id: string }> {
@@ -351,20 +396,26 @@ export class MetaMCPService {
     imageUrl: string,
     adAccountId: string,
   ): Promise<{ hash: string }> {
-    return this.call<{ hash: string }>('upload_ad_image', {
-      ad_account_id: adAccountId,
-      url: imageUrl,
+    const result = await this.call<{ hash?: string; error?: unknown }>('upload_ad_image', {
+      account_id: adAccountId,
+      image_url: imageUrl,
     });
+    if (typeof result.hash !== 'string' || !result.hash.trim()) {
+      console.error('[MCP] Falha no upload da imagem', { hasError: result.error !== undefined });
+      throw new Error('Não foi possível enviar a imagem para a Meta.');
+    }
+    return { hash: result.hash };
   }
 
   async uploadCreativeVideo(
     videoUrl: string,
     adAccountId: string,
   ): Promise<{ id: string }> {
-    return this.call<{ id: string }>('upload_ad_video', {
-      ad_account_id: adAccountId,
-      url: videoUrl,
+    const result = await this.call<{ id?: string; video_id?: string; error?: unknown }>('upload_ad_video', {
+      account_id: adAccountId,
+      video_url: videoUrl,
     });
+    return { id: this.requireId({ id: result.video_id ?? result.id, error: result.error }, 'vídeo') };
   }
 
   // ─── Publicação completa ──────────────────────────────────────────────────
@@ -376,6 +427,7 @@ export class MetaMCPService {
     if (!plan.name?.trim()) errors.push('Nome da campanha é obrigatório');
     if (!plan.objective?.trim()) errors.push('Objetivo da campanha é obrigatório');
     if (!plan.adAccountId?.trim()) errors.push('ID da conta de anúncios é obrigatório');
+    if (!plan.pageId?.trim()) errors.push('Página do Facebook é obrigatória');
     if (!plan.adSets?.length) errors.push('A campanha precisa ter pelo menos um conjunto de anúncios');
 
     for (const adSet of plan.adSets ?? []) {
@@ -391,6 +443,9 @@ export class MetaMCPService {
         if (!ad.headline?.trim()) errors.push(`Anúncio "${ad.name}": headline é obrigatório`);
         if (!ad.bodyText?.trim()) errors.push(`Anúncio "${ad.name}": texto é obrigatório`);
         if (!ad.destinationUrl?.trim()) errors.push(`Anúncio "${ad.name}": URL de destino é obrigatória`);
+        if (!ad.imageHash && !ad.imageUrl && !ad.videoId && !ad.videoUrl) {
+          errors.push(`Anúncio "${ad.name}": imagem ou vídeo é obrigatório`);
+        }
         if (ad.headline && ad.headline.length > 255) {
           warnings.push(`Anúncio "${ad.name}": headline com mais de 255 caracteres pode ser truncado`);
         }
@@ -458,6 +513,7 @@ export class MetaMCPService {
         : adSetPlan.targeting;
 
       const adSet = await this.createAdSet({
+        accountId: plan.adAccountId,
         campaignId: campaign.id,
         name: adSetPlan.name,
         dailyBudget: adSetPlan.dailyBudget,
@@ -483,22 +539,37 @@ export class MetaMCPService {
       for (const adPlan of adSetPlan.ads) {
         log(`Criando anúncio "${adPlan.name}"...`);
 
-        let imageHash: string | undefined;
-        if (adPlan.imageUrl) {
+        let imageHash = adPlan.imageHash;
+        if (!imageHash && adPlan.imageUrl) {
           const uploaded = await this.uploadCreativeImage(adPlan.imageUrl, plan.adAccountId);
           imageHash = uploaded.hash;
         }
 
+        let videoId = adPlan.videoId;
+        if (!videoId && adPlan.videoUrl) {
+          const uploaded = await this.uploadCreativeVideo(adPlan.videoUrl, plan.adAccountId);
+          videoId = uploaded.id;
+        }
+
+        const creative = await this.createAdCreative({
+          accountId: plan.adAccountId,
+          name: `${adPlan.name} — Criativo`,
+          pageId: plan.pageId,
+          linkUrl: adPlan.destinationUrl,
+          message: adPlan.bodyText,
+          headline: adPlan.headline,
+          callToActionType: adPlan.ctaType,
+          imageHash,
+          videoId,
+        });
+
+        log(`✅ Criativo criado (ID: ${creative.id})`);
+
         const ad = await this.createAd({
+          accountId: plan.adAccountId,
           adSetId: adSet.id,
           name: adPlan.name,
-          creative: {
-            title: adPlan.headline,
-            body: adPlan.bodyText,
-            callToAction: { type: adPlan.ctaType, link: adPlan.destinationUrl },
-            imageHash,
-            imageUrl: !imageHash ? adPlan.imageUrl : undefined,
-          },
+          creativeId: creative.id,
           status: 'PAUSED',
         });
 
@@ -509,7 +580,7 @@ export class MetaMCPService {
         if (adPlan.localId) {
           await prisma.ad.updateMany({
             where: { id: adPlan.localId },
-            data: { metaAdId: ad.id, metaStatus: 'PAUSED' },
+            data: { metaAdId: ad.id, metaCreativeId: creative.id, metaStatus: 'PAUSED' },
           });
         }
       }

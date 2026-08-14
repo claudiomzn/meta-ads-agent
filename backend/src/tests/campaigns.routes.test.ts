@@ -60,6 +60,37 @@ describe('POST /api/campaigns', () => {
     expect(res.body.id).toBeDefined();
   });
 
+  it('persiste a Página Meta escolhida no assistente', async () => {
+    const res = await request(app)
+      .post('/api/campaigns')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        name: 'Campanha com Página',
+        product: 'Produto X',
+        objective: 'LEAD_GENERATION',
+        budget: 1000,
+        metaPageId: '456789123',
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.metaPageId).toBe('456789123');
+  });
+
+  it('rejeita um identificador de Página inválido', async () => {
+    const res = await request(app)
+      .post('/api/campaigns')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        name: 'Campanha inválida',
+        product: 'Produto X',
+        objective: 'LEAD_GENERATION',
+        budget: 1000,
+        metaPageId: 'pagina-de-outro-formato',
+      });
+
+    expect(res.status).toBe(400);
+  });
+
   it('cria campanha com adSets e ads aninhados', async () => {
     const res = await request(app)
       .post('/api/campaigns')

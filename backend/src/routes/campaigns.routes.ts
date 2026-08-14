@@ -78,6 +78,7 @@ const CampaignSchema = z.object({
   product: z.string().min(1),
   objective: z.string().min(1),
   budget: z.number().positive(),
+  metaPageId: z.string().regex(/^\d+$/, 'Página do Facebook inválida').optional(),
   adSets: z.array(AdSetSchema).optional(),
 });
 

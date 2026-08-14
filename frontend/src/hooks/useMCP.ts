@@ -10,11 +10,26 @@ export interface MCPStatus {
   lastConnectedAt?: string;
 }
 
+export interface MetaPage {
+  id: string;
+  name: string;
+  instagramBusinessAccountId?: string;
+}
+
 export function useMCPStatus() {
   return useQuery<MCPStatus>({
     queryKey: ['mcp-status'],
     queryFn: () => api.get('/mcp/status'),
     refetchInterval: 30_000,
+  });
+}
+
+export function useMetaPages() {
+  return useQuery<MetaPage[]>({
+    queryKey: ['meta-pages'],
+    queryFn: () => api.get('/mcp/pages'),
+    staleTime: 5 * 60_000,
+    retry: 1,
   });
 }
 

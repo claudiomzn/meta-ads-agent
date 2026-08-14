@@ -12,6 +12,7 @@ import {
 } from '../middleware/rateLimit.middleware.js';
 import { MetaMCPService, PublishValidationError, createMetaMCPService } from '../services/meta.mcp.service.js';
 import { MediaService } from '../services/media.service.js';
+import { MetaGraphService } from '../services/meta.graph.service.js';
 import { SyncService, alertOnConsecutiveFailures } from '../services/sync.service.js';
 import { encrypt } from '../services/crypto.service.js';
 import { auditLog } from '../services/audit.service.js';
@@ -493,6 +494,18 @@ router.get('/accounts', async (req: AuthRequest, res: Response) => {
   res.json(accounts);
 });
 
+router.get('/pages', async (req: AuthRequest, res: Response) => {
+  try {
+    const pages = await new MetaGraphService(req.userId!).listPages();
+    res.json(pages);
+  } catch (error) {
+    console.error('[mcp:pages] Falha ao listar Páginas autorizadas:', error);
+    res.status(503).json({
+      error: 'Não foi possível carregar suas Páginas do Facebook. Renove a conexão com a Meta e tente novamente.',
+    });
+  }
+});
+
 // ─── Publicação ───────────────────────────────────────────────────────────────
 
 router.post('/publish/dry-run', async (req: AuthRequest, res: Response) => {
@@ -516,12 +529,14 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
 
   // Conta de destino: se o frontend mandar adAccountId no body, valida que
   // ela pertence ao usuário (está entre as contas da MCPConnection) antes de
-  // usar — no modelo pipeboard/zapier o token é compartilhado entre todos os
-  // clientes, então sem essa checagem um adAccountId arbitrário publicaria
-  // na conta de outro cliente. Se não vier no body, usa a conta já associada
+  // usar — um token individual ainda pode alcançar várias contas, então sem
+  // essa checagem um adAccountId arbitrário poderia publicar na conta errada.
+  // Se não vier no body, usa a conta já associada
   // à campanha local (comportamento anterior).
   const bodyAdAccountId = typeof req.body?.adAccountId === 'string' ? req.body.adAccountId.trim() : '';
+  const bodyPageId = typeof req.body?.pageId === 'string' ? req.body.pageId.trim() : '';
   let adAccountId = campaign.metaAdAccountId ?? '';
+  const pageId = bodyPageId || campaign.metaPageId || '';
 
   if (bodyAdAccountId) {
     const conn = await prisma.mCPConnection.findUnique({ where: { userId: req.userId! } });
@@ -543,6 +558,27 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
   if (!adAccountId) {
     res.status(400).json({ error: 'Nenhuma conta de anúncios selecionada.' });
     return;
+  }
+
+  if (!/^\d+$/.test(pageId)) {
+    res.status(400).json({ error: 'Selecione a Página do Facebook que representará o anúncio.' });
+    return;
+  }
+
+  try {
+    const pages = await new MetaGraphService(req.userId!).listPages();
+    if (!pages.some((page) => page.id === pageId)) {
+      res.status(403).json({ error: 'A Página selecionada não pertence a esta conexão Meta.' });
+      return;
+    }
+  } catch (error) {
+    console.error('[mcp:publish] Falha ao validar a Página selecionada:', error);
+    res.status(503).json({ error: 'Não foi possível confirmar a Página selecionada. Renove a conexão Meta e tente novamente.' });
+    return;
+  }
+
+  if (campaign.metaPageId !== pageId) {
+    await prisma.campaign.update({ where: { id: campaign.id }, data: { metaPageId: pageId } });
   }
 
   res.setHeader('Content-Type', 'text/event-stream');
@@ -622,6 +658,7 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
       // adAccountId já validado acima (body, se veio e pertence ao usuário;
       // senão o já associado à campanha local).
       adAccountId,
+      pageId,
       name: campaign.name,
       objective: campaign.objective,
       adSets: campaign.adSets.map((as) => ({

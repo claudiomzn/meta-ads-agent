@@ -25,11 +25,12 @@ type Phase = 'idle' | 'preflight' | 'preview' | 'publishing' | 'done' | 'error';
 interface Props {
   campaign: CampaignRecord;
   adAccountId: string;
+  pageId: string;
   destinationUrl: string;
   onDone?: (result: PublishResult) => void;
 }
 
-export function PublishButton({ campaign, adAccountId, destinationUrl, onDone }: Props) {
+export function PublishButton({ campaign, adAccountId, pageId, destinationUrl, onDone }: Props) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [dryRun, setDryRun] = useState<DryRunResult | null>(null);
   const [logs, setLogs] = useState<{ text: string; status: 'ok' | 'pending' | 'error' }[]>([]);
@@ -60,6 +61,7 @@ export function PublishButton({ campaign, adAccountId, destinationUrl, onDone }:
     return {
       localId: campaign.id,
       adAccountId,
+      pageId,
       name: campaign.name,
       objective: campaign.objective,
       destinationUrl,
@@ -102,7 +104,7 @@ export function PublishButton({ campaign, adAccountId, destinationUrl, onDone }:
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ adAccountId, destinationUrl }),
+      body: JSON.stringify({ adAccountId, pageId, destinationUrl }),
       signal: ctrl.signal,
     }).then(async (res) => {
       const reader = res.body!.getReader();
@@ -158,7 +160,7 @@ export function PublishButton({ campaign, adAccountId, destinationUrl, onDone }:
 
   if (phase === 'idle') {
     return (
-      <Button variant="meta" onClick={runPreflight} className="gap-2">
+      <Button variant="meta" onClick={runPreflight} disabled={!pageId} className="gap-2">
         <Play className="h-4 w-4" />
         Publicar no Meta Ads
       </Button>
