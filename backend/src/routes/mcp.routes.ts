@@ -14,7 +14,7 @@ import { MetaMCPService, PublishValidationError, createMetaMCPService } from '..
 import { MediaService } from '../services/media.service.js';
 import { MetaGraphService } from '../services/meta.graph.service.js';
 import { SyncService, alertOnConsecutiveFailures } from '../services/sync.service.js';
-import { encrypt } from '../services/crypto.service.js';
+import { decrypt, encrypt } from '../services/crypto.service.js';
 import { auditLog } from '../services/audit.service.js';
 import { accountsBelongToToken, listTokenAdAccountIds } from '../lib/metaAdAccounts.js';
 import {
@@ -470,6 +470,26 @@ router.post('/connect', async (req: AuthRequest, res: Response) => {
 });
 
 router.delete('/disconnect', async (req: AuthRequest, res: Response) => {
+  const connection = await prisma.mCPConnection.findUnique({ where: { userId: req.userId! } });
+  let authorizationRevoked = false;
+  if (connection?.metaAccessToken) {
+    try {
+      const accessToken = decrypt(connection.metaAccessToken);
+      const revokeResponse = await fetch('https://graph.facebook.com/v23.0/me/permissions', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+      authorizationRevoked = revokeResponse.ok;
+      if (!revokeResponse.ok) {
+        console.warn('[mcp:disconnect] Meta recusou a revogação', revokeResponse.status);
+      }
+    } catch (error) {
+      // A desconexão local continua válida mesmo se o token já tiver expirado.
+      console.warn('[mcp:disconnect] Não foi possível revogar um token já indisponível', error);
+    }
+  }
+
   await prisma.mCPConnection.updateMany({
     where: { userId: req.userId! },
     data: { connected: false, connectionHealth: 'healthy', connectionIssue: null },
@@ -477,7 +497,7 @@ router.delete('/disconnect', async (req: AuthRequest, res: Response) => {
 
   await auditLog({ userId: req.userId!, action: 'MCP_DISCONNECT', resource: 'mcp_connection' });
 
-  res.json({ success: true });
+  res.json({ success: true, authorizationRevoked });
 });
 
 router.get('/status', async (req: AuthRequest, res: Response) => {

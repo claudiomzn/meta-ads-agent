@@ -280,13 +280,39 @@ describe('POST /api/mcp/connect', () => {
 });
 
 describe('DELETE /api/mcp/disconnect', () => {
-  it('desconecta com sucesso', async () => {
-    const res = await request(app)
-      .delete('/api/mcp/disconnect')
-      .set('Authorization', `Bearer ${token}`);
+  it('revoga a autorização na Meta e desconecta localmente', async () => {
+    await prisma.mCPConnection.upsert({
+      where: { userId },
+      update: { connected: true, metaAccessToken: 'enc:token-meta' },
+      create: {
+        userId,
+        connected: true,
+        metaAccessToken: 'enc:token-meta',
+        adAccountIds: '[]',
+      },
+    });
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{"success":true}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const res = await request(app)
+        .delete('/api/mcp/disconnect')
+        .set('Authorization', `Bearer ${token}`);
 
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ success: true, authorizationRevoked: true });
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://graph.facebook.com/v23.0/me/permissions',
+        expect.objectContaining({
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token-meta' },
+        }),
+      );
+      await expect(prisma.mCPConnection.findUnique({ where: { userId } }))
+        .resolves.toMatchObject({ connected: false });
+    } finally {
+      vi.stubGlobal('fetch', originalFetch);
+    }
   });
 });
 
