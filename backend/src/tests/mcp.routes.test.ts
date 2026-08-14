@@ -383,6 +383,24 @@ describe('POST /api/mcp/publish/:planId', () => {
         product: 'Produto',
         objective: 'LEAD_GENERATION',
         budget: 1000,
+        adSets: {
+          create: [{
+            name: 'Conjunto 1',
+            dailyBudget: 10,
+            targeting: '{}',
+            optimizationGoal: 'LINK_CLICKS',
+            ads: {
+              create: [{
+                name: 'Anúncio 1',
+                headline: 'Título',
+                bodyText: 'Texto',
+                cta: 'LEARN_MORE',
+                destinationUrl: 'https://dominio-ilustrativo.example',
+                imageUrl: 'https://storage.example/creative.png',
+              }],
+            },
+          }],
+        },
       },
     });
   }
@@ -416,11 +434,20 @@ describe('POST /api/mcp/publish/:planId', () => {
     const res = await request(app)
       .post(`/api/mcp/publish/${campaign.id}`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ adAccountId: 'act_123', pageId: '456' });
+      .send({
+        adAccountId: 'act_123',
+        pageId: '456',
+        destinationUrl: 'https://www.adsgenius.net/',
+      });
 
     expect(res.status).toBe(200);
     expect(mockPublishCampaignPlan).toHaveBeenCalledWith(
-      expect.objectContaining({ pageId: '456' }),
+      expect.objectContaining({
+        pageId: '456',
+        adSets: [expect.objectContaining({
+          ads: [expect.objectContaining({ destinationUrl: 'https://www.adsgenius.net/' })],
+        })],
+      }),
       expect.any(Function),
     );
   });

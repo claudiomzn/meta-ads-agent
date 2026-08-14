@@ -680,7 +680,10 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
             headline: ad.headline,
             bodyText: ad.bodyText,
             ctaType: ad.cta,
-            destinationUrl: ad.destinationUrl ?? req.body.destinationUrl ?? 'https://example.com',
+            // O link confirmado no modal de publicação é a fonte de verdade.
+            // Planos gerados por IA podem trazer um domínio ilustrativo; nunca
+            // publicamos esse palpite no lugar do endereço revisado pelo usuário.
+            destinationUrl: req.body.destinationUrl ?? ad.destinationUrl ?? 'https://example.com',
             // Imagem: usa hash (upload feito) → fallback URL original
             ...(imageHash
               ? { imageHash }
