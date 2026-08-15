@@ -34,7 +34,11 @@ import {
   META_CONNECTION_STAGES,
 } from '../services/metaConnectionAssistant.service.js';
 import { aiBudget } from '../middleware/aiBudget.middleware.js';
-import { refreshStoredMediaUrl } from '../services/storage.service.js';
+import {
+  downloadStoredImage,
+  isStoredUserMediaUrl,
+  refreshStoredMediaUrl,
+} from '../services/storage.service.js';
 
 // Escopos pedidos no diálogo de OAuth da Meta. Tem que ser exatamente o que
 // está submetido no App Review: o revisor assiste ao fluxo de conexão, e um
@@ -638,10 +642,16 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
         if (ad.imageUrl?.startsWith('https://') && !imageHashMap.has(ad.imageUrl)) {
           try {
             send({ type: 'progress', message: 'Enviando imagem armazenada para o Meta...' });
-            const uploadUrl = await refreshStoredMediaUrl(ad.imageUrl);
-            const uploaded = await svc.uploadCreativeImage(uploadUrl, adAccountId);
+            const uploaded = isStoredUserMediaUrl(ad.imageUrl)
+              ? await downloadStoredImage(ad.imageUrl).then((image) =>
+                mediaSvc.uploadImageBytes(image.bytes, image.fileName))
+              : await svc.uploadCreativeImage(
+                await refreshStoredMediaUrl(ad.imageUrl),
+                adAccountId,
+              );
             if (uploaded.hash) imageHashMap.set(ad.imageUrl, uploaded.hash);
-          } catch {
+          } catch (error) {
+            console.error('[mcp:publish] Falha no upload de imagem armazenada:', error);
             send({ type: 'progress', message: 'Aviso: falha ao enviar a imagem armazenada.' });
           }
         }

@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { refreshStoredMediaUrl, storeUploadedMedia } from './storage.service.js';
+import {
+  downloadStoredImage,
+  refreshStoredMediaUrl,
+  storeUploadedMedia,
+} from './storage.service.js';
 
 const originalUrl = process.env.SUPABASE_URL;
 const originalKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -75,6 +79,37 @@ describe('storeUploadedMedia', () => {
 
     const url = 'https://example.com/creative.png';
     await expect(refreshStoredMediaUrl(url)).resolves.toBe(url);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('renova a assinatura e baixa uma imagem privada com limite de tamanho', async () => {
+    const png = new Uint8Array([137, 80, 78, 71]);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        signedURL: '/object/sign/meta-media/user/meta-media/file.png?token=new-token',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(png, {
+        status: 200,
+        headers: { 'Content-Type': 'image/png', 'Content-Length': String(png.byteLength) },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await downloadStoredImage(
+      'https://project.supabase.co/storage/v1/object/sign/meta-media/user/meta-media/file.png?token=old',
+    );
+
+    expect(result.bytes).toEqual(Buffer.from(png));
+    expect(result.contentType).toBe('image/png');
+    expect(result.fileName).toBe('file.png');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('recusa baixar uma URL externa como mídia privada', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(downloadStoredImage('https://attacker.example/image.png'))
+      .rejects.toThrow('URL de mídia armazenada inválida.');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

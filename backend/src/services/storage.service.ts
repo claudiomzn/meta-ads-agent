@@ -17,6 +17,7 @@ import { fetchSafeImage } from './safe-image-url.service.js';
 const BUCKET = 'creatives';
 const USER_UPLOAD_BUCKET = 'meta-media';
 const USER_UPLOAD_URL_TTL_SECONDS = 7 * 24 * 60 * 60;
+const MAX_STORED_IMAGE_BYTES = 15 * 1024 * 1024;
 export function isStorageEnabled(): boolean {
   return !!(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
 }
@@ -65,6 +66,59 @@ export async function refreshStoredMediaUrl(url: string): Promise<string> {
   const encodedPath = url.slice(prefix.length).split('?', 1)[0];
   if (!encodedPath) return url;
   return signStoredObject(base, serviceKey, decodeURIComponent(encodedPath));
+}
+
+export function isStoredUserMediaUrl(url: string): boolean {
+  const base = process.env.SUPABASE_URL;
+  if (!base) return false;
+  return url.startsWith(`${base}/storage/v1/object/sign/${USER_UPLOAD_BUCKET}/`);
+}
+
+/**
+ * Baixa somente uploads privados criados pelo próprio backend. Isso permite
+ * enviar os bytes diretamente à Graph API, sem depender de um terceiro para
+ * conseguir abrir uma URL assinada do Supabase.
+ */
+export async function downloadStoredImage(url: string): Promise<{
+  bytes: Buffer;
+  contentType: string;
+  fileName: string;
+}> {
+  if (!isStoredUserMediaUrl(url)) {
+    throw new Error('URL de mídia armazenada inválida.');
+  }
+  const refreshedUrl = await refreshStoredMediaUrl(url);
+  const response = await fetch(refreshedUrl, {
+    headers: { Accept: 'image/jpeg,image/png,image/webp,image/gif' },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) throw new Error('Não foi possível baixar a mídia armazenada.');
+
+  const contentType = (response.headers.get('content-type') ?? '').split(';')[0].toLowerCase();
+  if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(contentType)) {
+    throw new Error('A mídia armazenada não é uma imagem permitida.');
+  }
+  const declared = Number(response.headers.get('content-length') ?? 0);
+  if (declared > MAX_STORED_IMAGE_BYTES) throw new Error('Imagem armazenada excede 15 MB.');
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('Resposta da mídia armazenada inválida.');
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_STORED_IMAGE_BYTES) {
+      await reader.cancel();
+      throw new Error('Imagem armazenada excede 15 MB.');
+    }
+    chunks.push(value);
+  }
+
+  const pathname = new URL(refreshedUrl).pathname;
+  const fileName = decodeURIComponent(pathname.split('/').pop() || 'creative.jpg');
+  return { bytes: Buffer.concat(chunks), contentType, fileName };
 }
 
 export async function storeUploadedMedia(

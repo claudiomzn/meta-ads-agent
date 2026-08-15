@@ -42,10 +42,13 @@ export class MediaService {
 
   // Upload de imagem para Meta Ad Images API
   async uploadImage(filePath: string, fileName: string): Promise<UploadedMedia> {
+    const fileBuffer = fs.readFileSync(filePath);
+    return this.uploadImageBytes(fileBuffer, fileName);
+  }
+
+  async uploadImageBytes(fileBuffer: Buffer, fileName: string): Promise<UploadedMedia> {
     const token = await this.getToken();
     const adAccountId = await this.getAdAccountId();
-
-    const fileBuffer = fs.readFileSync(filePath);
     const base64 = fileBuffer.toString('base64');
 
     const formData = new FormData();
