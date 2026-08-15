@@ -744,6 +744,7 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
     send({ type: 'done', result });
     res.end();
   } catch (err) {
+    console.error('[mcp:publish] Falha ao publicar campanha:', err);
     if (err instanceof PublishValidationError) {
       send({ type: 'error', errors: err.errors, warnings: err.warnings });
     } else {

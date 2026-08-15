@@ -169,4 +169,18 @@ describe('MetaMCPService — contrato de publicação Pipeboard', () => {
       objective: 'OUTCOME_TRAFFIC', use_adset_level_budgets: true,
     }));
   });
+
+  it('normaliza o rótulo em português salvo pelo assistente', async () => {
+    const svc = new MetaMCPService('user-test');
+    const call = mockCall(svc, { id: 'campaign-1' });
+    await svc.createCampaign({
+      adAccountId: 'act_123',
+      name: 'Campanha',
+      objective: 'Tráfego para o site',
+      status: 'PAUSED',
+    });
+    expect(call).toHaveBeenCalledWith('create_campaign', expect.objectContaining({
+      objective: 'OUTCOME_TRAFFIC', use_adset_level_budgets: true,
+    }));
+  });
 });

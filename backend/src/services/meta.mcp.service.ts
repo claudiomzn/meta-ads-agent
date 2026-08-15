@@ -71,6 +71,12 @@ export class MetaMCPService {
       BRAND_AWARENESS: 'OUTCOME_AWARENESS',
       ENGAGEMENT: 'OUTCOME_ENGAGEMENT',
       VIDEO_VIEWS: 'OUTCOME_ENGAGEMENT',
+      'Geração de leads': 'OUTCOME_LEADS',
+      Vendas: 'OUTCOME_SALES',
+      'Tráfego para o site': 'OUTCOME_TRAFFIC',
+      'Reconhecimento de marca': 'OUTCOME_AWARENESS',
+      'Mensagens no WhatsApp': 'OUTCOME_ENGAGEMENT',
+      Engajamento: 'OUTCOME_ENGAGEMENT',
     };
     return objective.startsWith('OUTCOME_') ? objective : (objectives[objective] ?? objective);
   }
