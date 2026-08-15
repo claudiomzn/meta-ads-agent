@@ -215,4 +215,24 @@ describe('MetaMCPService — contrato de publicação Pipeboard', () => {
       'Daily budget is below the minimum.',
     ));
   });
+
+  it('sanitiza também falha de transporte ao criar o conjunto', async () => {
+    const svc = new MetaMCPService('user-test');
+    vi.spyOn(svc as never, 'call').mockRejectedValueOnce(
+      new Error('Invalid optimization goal for campaign objective.'),
+    );
+    await expect(svc.createAdSet({
+      accountId: 'act_123',
+      campaignId: 'campaign-1',
+      name: 'Conjunto',
+      dailyBudget: 5,
+      targeting: {},
+      optimizationGoal: 'LINK_CLICKS',
+      billingEvent: 'IMPRESSIONS',
+      status: 'PAUSED',
+    })).rejects.toMatchObject({
+      name: 'MetaToolResponseError',
+      message: 'A Meta rejeitou conjunto de anúncios: Invalid optimization goal for campaign objective.',
+    });
+  });
 });

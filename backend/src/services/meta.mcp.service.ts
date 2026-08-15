@@ -348,18 +348,23 @@ export class MetaMCPService {
   }
 
   async createAdSet(params: CreateAdSetParams): Promise<{ id: string }> {
-    const result = await this.call<{ id?: string; error?: unknown }>('create_adset', {
-      account_id: params.accountId,
-      campaign_id: params.campaignId,
-      name: params.name,
-      daily_budget: params.dailyBudget * 100,
-      targeting: params.targeting,
-      optimization_goal: params.optimizationGoal,
-      billing_event: params.billingEvent,
-      bid_strategy: params.bidStrategy ?? 'LOWEST_COST_WITHOUT_CAP',
-      status: params.status,
-    });
-    return { id: this.requireId(result, 'conjunto de anúncios') };
+    try {
+      const result = await this.call<{ id?: string; error?: unknown }>('create_adset', {
+        account_id: params.accountId,
+        campaign_id: params.campaignId,
+        name: params.name,
+        daily_budget: params.dailyBudget * 100,
+        targeting: params.targeting,
+        optimization_goal: params.optimizationGoal,
+        billing_event: params.billingEvent,
+        bid_strategy: params.bidStrategy ?? 'LOWEST_COST_WITHOUT_CAP',
+        status: params.status,
+      });
+      return { id: this.requireId(result, 'conjunto de anúncios') };
+    } catch (error) {
+      if (error instanceof MetaToolResponseError) throw error;
+      throw new MetaToolResponseError('conjunto de anúncios', safeToolErrorDetail(error));
+    }
   }
 
   async createAd(params: CreateAdParams): Promise<{ id: string }> {
