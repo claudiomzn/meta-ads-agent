@@ -10,7 +10,12 @@ import {
   connectionAssistantRateLimit,
   publishRateLimit,
 } from '../middleware/rateLimit.middleware.js';
-import { MetaMCPService, PublishValidationError, createMetaMCPService } from '../services/meta.mcp.service.js';
+import {
+  MetaMCPService,
+  MetaToolResponseError,
+  PublishValidationError,
+  createMetaMCPService,
+} from '../services/meta.mcp.service.js';
 import { MediaService } from '../services/media.service.js';
 import { MetaGraphService } from '../services/meta.graph.service.js';
 import { SyncService, alertOnConsecutiveFailures } from '../services/sync.service.js';
@@ -747,6 +752,8 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
     console.error('[mcp:publish] Falha ao publicar campanha:', err);
     if (err instanceof PublishValidationError) {
       send({ type: 'error', errors: err.errors, warnings: err.warnings });
+    } else if (err instanceof MetaToolResponseError) {
+      send({ type: 'error', message: err.message });
     } else {
       send({ type: 'error', message: 'Não foi possível publicar a campanha no Meta.' });
     }

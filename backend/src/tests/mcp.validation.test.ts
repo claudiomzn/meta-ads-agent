@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  MetaToolResponseError,
   MetaMCPService,
   resolveOptimizationGoal,
 } from '../services/meta.mcp.service.js';
@@ -195,5 +196,23 @@ describe('MetaMCPService — contrato de publicação Pipeboard', () => {
   it('preserva meta de otimização compatível com campanha de tráfego', () => {
     expect(resolveOptimizationGoal('OUTCOME_TRAFFIC', 'LANDING_PAGE_VIEWS'))
       .toBe('LANDING_PAGE_VIEWS');
+  });
+
+  it('devolve motivo seguro e acionável quando a Meta rejeita o conjunto', async () => {
+    const svc = new MetaMCPService('user-test');
+    mockCall(svc, { error: { message: 'Daily budget is below the minimum.' } });
+    await expect(svc.createAdSet({
+      accountId: 'act_123',
+      campaignId: 'campaign-1',
+      name: 'Conjunto',
+      dailyBudget: 5,
+      targeting: {},
+      optimizationGoal: 'LINK_CLICKS',
+      billingEvent: 'IMPRESSIONS',
+      status: 'PAUSED',
+    })).rejects.toEqual(new MetaToolResponseError(
+      'conjunto de anúncios',
+      'Daily budget is below the minimum.',
+    ));
   });
 });

@@ -84,6 +84,34 @@ export class PublishValidationError extends Error {
   }
 }
 
+export class MetaToolResponseError extends Error {
+  constructor(resource: string, detail?: string) {
+    super(`A Meta rejeitou ${resource}${detail ? `: ${detail}` : '.'}`);
+    this.name = 'MetaToolResponseError';
+  }
+}
+
+function safeToolErrorDetail(error: unknown): string | undefined {
+  let candidate: unknown;
+  if (typeof error === 'string') candidate = error;
+  else if (error && typeof error === 'object') {
+    const value = error as Record<string, unknown>;
+    candidate = value.error_user_msg ?? value.message;
+    if (!candidate && value.error && typeof value.error === 'object') {
+      const nested = value.error as Record<string, unknown>;
+      candidate = nested.error_user_msg ?? nested.message;
+    }
+  }
+  if (typeof candidate !== 'string') return undefined;
+  const sanitized = candidate
+    .replace(/https?:\/\/\S+/gi, '[link]')
+    .replace(/EA[A-Za-z0-9_-]{20,}/g, '[credencial]')
+    .replace(/[\r\n\t]+/g, ' ')
+    .trim()
+    .slice(0, 240);
+  return sanitized || undefined;
+}
+
 export class MetaMCPService {
   private client: Client | null = null;
   private connected = false;
@@ -97,8 +125,12 @@ export class MetaMCPService {
 
   private requireId(result: { id?: string; error?: unknown }, resource: string): string {
     if (typeof result.id === 'string' && result.id.trim()) return result.id;
-    console.error(`[MCP] Falha ao criar ${resource}`, { hasError: result.error !== undefined });
-    throw new Error(`Não foi possível criar ${resource} na Meta.`);
+    const detail = safeToolErrorDetail(result.error);
+    console.error(`[MCP] Falha ao criar ${resource}`, {
+      hasError: result.error !== undefined,
+      detail,
+    });
+    throw new MetaToolResponseError(resource, detail);
   }
 
   // ─── Conexão ──────────────────────────────────────────────────────────────
@@ -515,16 +547,6 @@ export class MetaMCPService {
 
     log(`✅ Campanha criada (ID: ${campaign.id})`);
 
-    await prisma.campaign.updateMany({
-      where: { id: plan.localId },
-      data: {
-        metaCampaignId: campaign.id,
-        metaAdAccountId: plan.adAccountId,
-        metaStatus: 'PAUSED',
-        publishedAt: new Date(),
-      },
-    });
-
     const adSetIds: string[] = [];
     const adIds: string[] = [];
 
@@ -616,6 +638,16 @@ export class MetaMCPService {
     const managerUrl = `https://business.facebook.com/adsmanager/manage/campaigns?act=${plan.adAccountId.replace('act_', '')}&selected_campaign_ids=${campaign.id}`;
 
     log(`🎉 Publicação concluída! ${adSetIds.length} conjuntos, ${adIds.length} anúncios.`);
+
+    await prisma.campaign.updateMany({
+      where: { id: plan.localId },
+      data: {
+        metaCampaignId: campaign.id,
+        metaAdAccountId: plan.adAccountId,
+        metaStatus: 'PAUSED',
+        publishedAt: new Date(),
+      },
+    });
 
     return {
       success: true,
