@@ -77,6 +77,14 @@ describe('MetaMCPService.validatePlan', () => {
     expect(result.errors.some((e) => e.includes('orçamento diário mínimo'))).toBe(true);
   });
 
+  it('rejeita R$ 5 por dia antes de criar campanha na Meta', async () => {
+    const plan = makePlan();
+    plan.adSets[0].dailyBudget = 5;
+    const result = await svc.validatePlan(plan);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain('Conjunto "Conjunto 1": orçamento diário mínimo é R$ 10.00');
+  });
+
   it('rejeita anúncio sem headline', async () => {
     const plan = makePlan();
     plan.adSets[0].ads[0].headline = '';
@@ -99,13 +107,6 @@ describe('MetaMCPService.validatePlan', () => {
     const result = await svc.validatePlan(plan);
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.includes('imagem ou vídeo'))).toBe(true);
-  });
-
-  it('gera warning para conjunto com orçamento < R$5', async () => {
-    const plan = makePlan();
-    plan.adSets[0].dailyBudget = 3;
-    const result = await svc.validatePlan(plan);
-    expect(result.warnings.some((w) => w.includes('R$ 5'))).toBe(true);
   });
 
   it('gera warning para headline muito longa', async () => {

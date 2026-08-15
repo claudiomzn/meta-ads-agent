@@ -82,6 +82,30 @@ interface GenerateCampaignParams {
   businessName?: string;
 }
 
+type BudgetedCampaignPlan = {
+  adSets?: Array<Record<string, unknown> & { dailyBudget?: number }>;
+  [key: string]: unknown;
+};
+
+export const MIN_META_ADSET_DAILY_BRL = 10;
+export const MIN_META_MONTHLY_BUDGET_BRL = MIN_META_ADSET_DAILY_BRL * 30;
+
+export function enforceCampaignPlanBudget(
+  plan: BudgetedCampaignPlan,
+  monthlyBudgetBrl: number,
+): BudgetedCampaignPlan {
+  const adSets = Array.isArray(plan.adSets) ? plan.adSets : [];
+  if (!adSets.length) return plan;
+  const totalDaily = monthlyBudgetBrl / 30;
+  const maxAdSets = Math.max(1, Math.floor(totalDaily / MIN_META_ADSET_DAILY_BRL));
+  const kept = adSets.slice(0, maxAdSets);
+  const dailyPerAdSet = Math.round((totalDaily / kept.length) * 100) / 100;
+  return {
+    ...plan,
+    adSets: kept.map((adSet) => ({ ...adSet, dailyBudget: dailyPerAdSet })),
+  };
+}
+
 // Contexto específico por nicho — alimenta a IA com dores reais, público típico e CTAs que convertem
 const NICHE_CONTEXT: Record<string, { dores: string; publico: string; ganchos: string; ctas: string }> = {
   clinica: {
@@ -210,7 +234,7 @@ Público típico: ${nicheCtx.publico}
 Ganchos que convertem: ${nicheCtx.ganchos}
 CTAs recomendados: ${nicheCtx.ctas}` : ''}
 
-Retorne APENAS este JSON (sem markdown, sem texto extra). Use NO MÁXIMO 2 conjuntos de anúncio e 1 anúncio por conjunto:
+Retorne APENAS este JSON (sem markdown, sem texto extra). Use NO MÁXIMO 2 conjuntos de anúncio e 1 anúncio por conjunto. Cada conjunto deve receber pelo menos R$ ${MIN_META_ADSET_DAILY_BRL.toFixed(2)}/dia; com menos de R$ 600/mês, gere somente 1 conjunto:
 {
   "name": "nome da campanha",
   "strategy": "estratégia em 1-2 frases",
@@ -255,7 +279,8 @@ Retorne APENAS este JSON (sem markdown, sem texto extra). Use NO MÁXIMO 2 conju
     });
 
     const text = response.content[0].type === 'text' ? response.content[0].text : '{}';
-    return JSON.parse(extractJson(text));
+    const plan = JSON.parse(extractJson(text)) as BudgetedCampaignPlan;
+    return enforceCampaignPlanBudget(plan, budget);
   }
 
   // ── Público-alvo: deriva idade, gênero, localização e interesses do briefing ──

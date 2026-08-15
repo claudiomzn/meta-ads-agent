@@ -27,6 +27,7 @@ import type {
   MetaInterest,
   MetaGeoLocation,
 } from '../types/meta.types.js';
+import { MIN_META_ADSET_DAILY_BRL } from './ai.service.js';
 
 
 // Objetivos em que o Meta aceita targeting_optimization: 'expansion_all' sem
@@ -495,8 +496,10 @@ export class MetaMCPService {
 
     for (const adSet of plan.adSets ?? []) {
       if (!adSet.name?.trim()) errors.push(`Conjunto sem nome encontrado`);
-      if (!adSet.dailyBudget || adSet.dailyBudget < 1) {
-        errors.push(`Conjunto "${adSet.name}": orçamento diário mínimo é R$ 1,00`);
+      if (!adSet.dailyBudget || adSet.dailyBudget < MIN_META_ADSET_DAILY_BRL) {
+        errors.push(
+          `Conjunto "${adSet.name}": orçamento diário mínimo é R$ ${MIN_META_ADSET_DAILY_BRL.toFixed(2)}`,
+        );
       }
       if (!adSet.ads?.length) {
         errors.push(`Conjunto "${adSet.name}" não tem anúncios`);
@@ -516,10 +519,6 @@ export class MetaMCPService {
           warnings.push(`Anúncio "${ad.name}": texto muito longo pode ser rejeitado pelo Meta`);
         }
       }
-    }
-
-    if (plan.adSets?.some((s) => s.dailyBudget < 5)) {
-      warnings.push('Orçamentos muito baixos (< R$ 5/dia) podem prejudicar a entrega');
     }
 
     return { valid: errors.length === 0, errors, warnings };

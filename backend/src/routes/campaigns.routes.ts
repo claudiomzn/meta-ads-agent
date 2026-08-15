@@ -3,7 +3,10 @@ import { Router, Response } from 'express';
 
 import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
-import { AIService } from '../services/ai.service.js';
+import {
+  AIService,
+  MIN_META_MONTHLY_BUDGET_BRL,
+} from '../services/ai.service.js';
 import { buildTargeting, type AdPlatform } from '../services/targeting.service.js';
 import { aiBudget } from '../middleware/aiBudget.middleware.js';
 
@@ -17,6 +20,12 @@ router.post('/generate-plan', aiBudget('campaign_create'), async (req: AuthReque
   const { product, objective, budget, audience, differentials, ticketMedio, regiao, concorrentes, niche, businessName } = req.body;
   if (!product || !objective || !budget) {
     res.status(400).json({ error: 'product, objective e budget são obrigatórios' });
+    return;
+  }
+  if (!Number.isFinite(Number(budget)) || Number(budget) < MIN_META_MONTHLY_BUDGET_BRL) {
+    res.status(400).json({
+      error: `O orçamento mínimo para publicar no Meta é R$ ${MIN_META_MONTHLY_BUDGET_BRL.toFixed(2)} por mês.`,
+    });
     return;
   }
   const plan = await ai.generateCampaignPlan({
