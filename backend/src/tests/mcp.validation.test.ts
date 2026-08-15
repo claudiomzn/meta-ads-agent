@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { MetaMCPService } from '../services/meta.mcp.service.js';
+import {
+  MetaMCPService,
+  resolveOptimizationGoal,
+} from '../services/meta.mcp.service.js';
 import type { CampaignPlan } from '../types/meta.types.js';
 
 function makePlan(overrides: Partial<CampaignPlan> = {}): CampaignPlan {
@@ -182,5 +185,15 @@ describe('MetaMCPService — contrato de publicação Pipeboard', () => {
     expect(call).toHaveBeenCalledWith('create_campaign', expect.objectContaining({
       objective: 'OUTCOME_TRAFFIC', use_adset_level_budgets: true,
     }));
+  });
+
+  it('substitui meta de leads incompatível com campanha de tráfego', () => {
+    expect(resolveOptimizationGoal('Tráfego para o site', 'LEAD_GENERATION'))
+      .toBe('LINK_CLICKS');
+  });
+
+  it('preserva meta de otimização compatível com campanha de tráfego', () => {
+    expect(resolveOptimizationGoal('OUTCOME_TRAFFIC', 'LANDING_PAGE_VIEWS'))
+      .toBe('LANDING_PAGE_VIEWS');
   });
 });

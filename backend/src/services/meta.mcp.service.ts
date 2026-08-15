@@ -35,6 +35,45 @@ import type {
 // suportado (ex.: LANDING_PAGE_VIEWS), e enviar o campo lá pode quebrar a publicação.
 const TARGETING_EXPANSION_OBJECTIVES = new Set(['LEAD_GENERATION', 'CONVERSIONS']);
 
+export function normalizeCampaignObjective(objective: string): string {
+  const objectives: Record<string, string> = {
+    LEAD_GENERATION: 'OUTCOME_LEADS',
+    CONVERSIONS: 'OUTCOME_SALES',
+    TRAFFIC: 'OUTCOME_TRAFFIC',
+    AWARENESS: 'OUTCOME_AWARENESS',
+    BRAND_AWARENESS: 'OUTCOME_AWARENESS',
+    ENGAGEMENT: 'OUTCOME_ENGAGEMENT',
+    VIDEO_VIEWS: 'OUTCOME_ENGAGEMENT',
+    'Geração de leads': 'OUTCOME_LEADS',
+    Vendas: 'OUTCOME_SALES',
+    'Tráfego para o site': 'OUTCOME_TRAFFIC',
+    'Reconhecimento de marca': 'OUTCOME_AWARENESS',
+    'Mensagens no WhatsApp': 'OUTCOME_ENGAGEMENT',
+    Engajamento: 'OUTCOME_ENGAGEMENT',
+  };
+  return objective.startsWith('OUTCOME_') ? objective : (objectives[objective] ?? objective);
+}
+
+export function resolveOptimizationGoal(objective: string, suggested?: string): string {
+  const normalized = normalizeCampaignObjective(objective);
+  const allowed: Record<string, Set<string>> = {
+    OUTCOME_TRAFFIC: new Set(['LINK_CLICKS', 'LANDING_PAGE_VIEWS', 'IMPRESSIONS', 'REACH']),
+    OUTCOME_AWARENESS: new Set(['REACH', 'IMPRESSIONS', 'AD_RECALL_LIFT']),
+    OUTCOME_ENGAGEMENT: new Set(['POST_ENGAGEMENT', 'LINK_CLICKS', 'THRUPLAY']),
+    OUTCOME_LEADS: new Set(['LEAD_GENERATION', 'LINK_CLICKS', 'OFFSITE_CONVERSIONS']),
+    OUTCOME_SALES: new Set(['OFFSITE_CONVERSIONS', 'VALUE', 'LINK_CLICKS']),
+  };
+  const fallback: Record<string, string> = {
+    OUTCOME_TRAFFIC: 'LINK_CLICKS',
+    OUTCOME_AWARENESS: 'REACH',
+    OUTCOME_ENGAGEMENT: 'POST_ENGAGEMENT',
+    OUTCOME_LEADS: 'LEAD_GENERATION',
+    OUTCOME_SALES: 'OFFSITE_CONVERSIONS',
+  };
+  if (suggested && allowed[normalized]?.has(suggested)) return suggested;
+  return fallback[normalized] ?? suggested ?? 'LINK_CLICKS';
+}
+
 export class PublishValidationError extends Error {
   constructor(
     public errors: string[],
@@ -60,25 +99,6 @@ export class MetaMCPService {
     if (typeof result.id === 'string' && result.id.trim()) return result.id;
     console.error(`[MCP] Falha ao criar ${resource}`, { hasError: result.error !== undefined });
     throw new Error(`Não foi possível criar ${resource} na Meta.`);
-  }
-
-  private normalizeObjective(objective: string): string {
-    const objectives: Record<string, string> = {
-      LEAD_GENERATION: 'OUTCOME_LEADS',
-      CONVERSIONS: 'OUTCOME_SALES',
-      TRAFFIC: 'OUTCOME_TRAFFIC',
-      AWARENESS: 'OUTCOME_AWARENESS',
-      BRAND_AWARENESS: 'OUTCOME_AWARENESS',
-      ENGAGEMENT: 'OUTCOME_ENGAGEMENT',
-      VIDEO_VIEWS: 'OUTCOME_ENGAGEMENT',
-      'Geração de leads': 'OUTCOME_LEADS',
-      Vendas: 'OUTCOME_SALES',
-      'Tráfego para o site': 'OUTCOME_TRAFFIC',
-      'Reconhecimento de marca': 'OUTCOME_AWARENESS',
-      'Mensagens no WhatsApp': 'OUTCOME_ENGAGEMENT',
-      Engajamento: 'OUTCOME_ENGAGEMENT',
-    };
-    return objective.startsWith('OUTCOME_') ? objective : (objectives[objective] ?? objective);
   }
 
   // ─── Conexão ──────────────────────────────────────────────────────────────
@@ -282,7 +302,7 @@ export class MetaMCPService {
     const result = await this.call<{ id?: string; error?: unknown }>('create_campaign', {
       account_id: params.adAccountId,
       name: params.name,
-      objective: this.normalizeObjective(params.objective),
+      objective: normalizeCampaignObjective(params.objective),
       status: params.status,
       special_ad_categories: params.specialAdCategories ?? [],
       // O AdsGenius define o orçamento em cada conjunto. Sem esta opção, o
@@ -484,6 +504,7 @@ export class MetaMCPService {
 
     log(`Iniciando publicação: "${plan.name}"`);
 
+    const normalizedObjective = normalizeCampaignObjective(plan.objective);
     const campaign = await this.createCampaign({
       adAccountId: plan.adAccountId,
       name: plan.name,
@@ -524,7 +545,7 @@ export class MetaMCPService {
         name: adSetPlan.name,
         dailyBudget: adSetPlan.dailyBudget,
         targeting,
-        optimizationGoal: adSetPlan.optimizationGoal,
+        optimizationGoal: resolveOptimizationGoal(normalizedObjective, adSetPlan.optimizationGoal),
         billingEvent: adSetPlan.billingEvent,
         bidStrategy: adSetPlan.bidStrategy,
         status: 'PAUSED',
