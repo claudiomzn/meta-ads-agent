@@ -14,6 +14,7 @@
 
 import axios from 'axios';
 import prisma from '../lib/prisma.js';
+import { resolveUserAdAccountIds } from '../lib/adAccount.js';
 import { decrypt } from './crypto.service.js';
 import type {
   AdAccount,
@@ -169,19 +170,67 @@ export class MetaGraphService {
     }));
   }
 
+  // A Meta NÃO devolve Página de portfólio empresarial em `me/accounts` com os
+  // escopos que temos aprovados: sem `business_management`, o Login clássico não
+  // tem por onde entregar um ativo cujo acesso vem do Business. Verificado no
+  // Graph Explorer em 20/08 — com os 4 escopos de produção `me/accounts` volta
+  // `{"data": []}` enquanto `act_{id}/promote_pages` devolve a mesma Página.
+  //
+  // Por isso a lista é a UNIÃO das duas fontes. `me/accounts` vem primeiro
+  // porque é a única que traz o Instagram vinculado, e a deduplicação preserva a
+  // primeira ocorrência de cada id.
   async listPages(): Promise<MetaPage[]> {
-    const data = await this.graphGet<{ data?: Array<Record<string, unknown>> }>('me/accounts', {
+    // Falha aqui continua subindo: em `me/accounts` ela costuma significar token
+    // expirado, e a rota traduz isso em "renove a conexão".
+    const direct = await this.graphGet<{ data?: Array<Record<string, unknown>> }>('me/accounts', {
       fields: 'id,name,instagram_business_account{id}',
       limit: 100,
     });
-    return (data.data ?? []).map((page) => {
+
+    const pages: MetaPage[] = [];
+    const seen = new Set<string>();
+    for (const page of [...(direct.data ?? []), ...(await this.listPromotablePages())]) {
+      const id = String(page.id ?? '');
+      if (!/^\d+$/.test(id) || seen.has(id)) continue;
+      seen.add(id);
       const instagram = page.instagram_business_account as { id?: unknown } | undefined;
-      return {
-        id: String(page.id ?? ''),
+      pages.push({
+        id,
         name: String(page.name ?? ''),
         ...(instagram?.id ? { instagramBusinessAccountId: String(instagram.id) } : {}),
-      };
-    }).filter((page) => /^\d+$/.test(page.id));
+      });
+    }
+    return pages;
+  }
+
+  // Páginas usáveis como identidade de anúncio nas contas que o usuário
+  // vinculou. Responde com `ads_management`, que já está aprovada — nenhuma
+  // permissão nova entra na submissão do App Review.
+  private async listPromotablePages(): Promise<Array<Record<string, unknown>>> {
+    let adAccountIds: string[];
+    try {
+      adAccountIds = await resolveUserAdAccountIds(this.userId);
+    } catch {
+      return []; // sem conta vinculada ainda: só `me/accounts` tem o que dizer
+    }
+
+    // Uma conta sem acesso não pode zerar a lista das outras.
+    const results = await Promise.allSettled(
+      adAccountIds.map((id) =>
+        this.graphGet<{ data?: Array<Record<string, unknown>> }>(`${id}/promote_pages`, {
+          fields: 'id,name',
+          limit: 100,
+        }),
+      ),
+    );
+
+    return results.flatMap((result, i) => {
+      if (result.status === 'rejected') {
+        console.error(`[meta:pages] promote_pages falhou em ${adAccountIds[i]}:`, result.reason);
+        return [];
+      }
+      return result.value.data ?? [];
+    });
   }
 
   // ─── Leitura — Campanhas ──────────────────────────────────────────────────────

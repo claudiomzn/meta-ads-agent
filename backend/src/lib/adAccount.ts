@@ -20,7 +20,10 @@ const GRAPH = 'https://graph.facebook.com/v21.0';
 // Quando o token de fato enxerga a conta do usuário, ela é confirmada contra
 // `me/adaccounts`; se a listagem falhar (rede/permissão), seguimos com o id do
 // usuário mesmo assim — é melhor que cair na conta de outra pessoa.
-export async function resolveUserAdAccountId(userId: string, token: string): Promise<string> {
+// TODAS as contas vinculadas pelo usuário, normalizadas com o prefixo `act_`.
+// Base de resolveUserAdAccountId e de qualquer leitura que precise varrer as
+// contas do próprio usuário — como listar as Páginas promovíveis.
+export async function resolveUserAdAccountIds(userId: string): Promise<string[]> {
   const conn = await prisma.mCPConnection.findUnique({ where: { userId } });
   if (!conn?.adAccountIds) throw new Error('Nenhuma conta de anúncio vinculada.');
 
@@ -35,6 +38,12 @@ export async function resolveUserAdAccountId(userId: string, token: string): Pro
     .filter(Boolean)
     .map((id) => (id.startsWith('act_') ? id : `act_${id}`));
   if (!normalized.length) throw new Error('Nenhuma conta de anúncio vinculada.');
+
+  return normalized;
+}
+
+export async function resolveUserAdAccountId(userId: string, token: string): Promise<string> {
+  const normalized = await resolveUserAdAccountIds(userId);
 
   try {
     const res = await axios.get(`${GRAPH}/me/adaccounts`, {
