@@ -17,9 +17,16 @@ router.use(authMiddleware);
 
 // Gera plano de campanha via IA (sem salvar)
 router.post('/generate-plan', aiBudget('campaign_create'), async (req: AuthRequest, res: Response) => {
-  const { product, objective, budget, audience, differentials, ticketMedio, regiao, concorrentes, niche, businessName } = req.body;
+  const { product, objective, budget, audience, differentials, ticketMedio, regiao, concorrentes, niche, businessName, siteUrl } = req.body;
   if (!product || !objective || !budget) {
     res.status(400).json({ error: 'product, objective e budget são obrigatórios' });
+    return;
+  }
+  // Só http(s): o destino vira o link do anúncio, então um `javascript:` ou
+  // `data:` aqui viraria conteúdo publicado.
+  const destination = typeof siteUrl === 'string' ? siteUrl.trim() : '';
+  if (destination && !/^https?:\/\/\S+$/i.test(destination)) {
+    res.status(400).json({ error: 'O endereço de destino precisa começar com http:// ou https://' });
     return;
   }
   if (!Number.isFinite(Number(budget)) || Number(budget) < MIN_META_MONTHLY_BUDGET_BRL) {
@@ -31,6 +38,7 @@ router.post('/generate-plan', aiBudget('campaign_create'), async (req: AuthReque
   const plan = await ai.generateCampaignPlan({
     product, objective, budget, audience, differentials,
     ticketMedio, regiao, concorrentes, niche, businessName,
+    ...(destination ? { siteUrl: destination } : {}),
   });
   res.json(plan);
 });

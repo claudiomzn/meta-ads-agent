@@ -80,6 +80,10 @@ interface GenerateCampaignParams {
   concorrentes?: string;
   niche?: string;
   businessName?: string;
+  // Destino real do anúncio, informado pelo cliente. Sem ele a IA precisa
+  // inventar uma URL e costuma chutar o site da marca citada no briefing —
+  // já mandou tráfego de corretor para o site da operadora.
+  siteUrl?: string;
 }
 
 type BudgetedCampaignPlan = {
@@ -103,6 +107,30 @@ export function enforceCampaignPlanBudget(
   return {
     ...plan,
     adSets: kept.map((adSet) => ({ ...adSet, dailyBudget: dailyPerAdSet })),
+  };
+}
+
+// Garante que todo anúncio aponte para o destino que o CLIENTE informou.
+//
+// A regra no prompt não basta: quando o briefing cita uma marca, o modelo tende
+// a devolver o site oficial dela — foi assim que uma campanha de corretor de
+// plano de saúde saiu apontando para o site da operadora. Como o destino é
+// dinheiro (e rastreamento) indo para o lugar certo ou para o concorrente,
+// sobrescrevemos em vez de confiar.
+export function enforceCampaignPlanDestination(
+  plan: BudgetedCampaignPlan,
+  siteUrl?: string,
+): BudgetedCampaignPlan {
+  if (!siteUrl?.trim()) return plan;
+  const adSets = Array.isArray(plan.adSets) ? plan.adSets : [];
+  if (!adSets.length) return plan;
+  return {
+    ...plan,
+    adSets: adSets.map((adSet) => {
+      const ads = Array.isArray(adSet.ads) ? (adSet.ads as Array<Record<string, unknown>>) : null;
+      if (!ads) return adSet;
+      return { ...adSet, ads: ads.map((ad) => ({ ...ad, destinationUrl: siteUrl.trim() })) };
+    }),
   };
 }
 
@@ -211,7 +239,7 @@ Retorne APENAS o JSON abaixo, sem markdown:
   }
 
   async generateCampaignPlan(params: GenerateCampaignParams): Promise<object> {
-    const { product, objective, budget, audience, differentials, ticketMedio, regiao, concorrentes, niche, businessName } = params;
+    const { product, objective, budget, audience, differentials, ticketMedio, regiao, concorrentes, niche, businessName, siteUrl } = params;
 
     // Contexto específico do nicho — enriquece muito a qualidade dos copies gerados
     const nicheCtx = niche ? NICHE_CONTEXT[niche] ?? NICHE_CONTEXT.outro : null;
@@ -225,6 +253,7 @@ Orçamento mensal: R$ ${budget}
 ${audience ? `Público-alvo: ${audience}` : ''}
 ${differentials ? `Diferenciais: ${differentials}` : ''}
 ${ticketMedio ? `Ticket médio: R$ ${ticketMedio}` : ''}
+${siteUrl ? `Destino do anúncio: ${siteUrl}` : ''}
 ${regiao ? `Região-alvo: ${regiao}` : ''}
 ${concorrentes ? `Concorrentes: ${concorrentes}` : ''}
 ${nicheCtx ? `
@@ -233,6 +262,10 @@ Dores típicas do cliente: ${nicheCtx.dores}
 Público típico: ${nicheCtx.publico}
 Ganchos que convertem: ${nicheCtx.ganchos}
 CTAs recomendados: ${nicheCtx.ctas}` : ''}
+
+${siteUrl
+  ? `REGRA OBRIGATÓRIA: o campo "destinationUrl" de TODO anúncio deve ser exatamente ${siteUrl}. Não altere, não encurte e não substitua por outro endereço.`
+  : `REGRA OBRIGATÓRIA: não invente endereço de site. Se o briefing cita uma marca, NÃO use o site oficial dela — o anunciante costuma ser revendedor ou corretor, e mandar o tráfego para a marca entrega o lead ao concorrente. Sem destino informado, repita o placeholder "https://seusite.com".`}
 
 Retorne APENAS este JSON (sem markdown, sem texto extra). Use NO MÁXIMO 2 conjuntos de anúncio e 1 anúncio por conjunto. Cada conjunto deve receber pelo menos R$ ${MIN_META_ADSET_DAILY_BRL.toFixed(2)}/dia; com menos de R$ 600/mês, gere somente 1 conjunto:
 {
@@ -258,7 +291,7 @@ Retorne APENAS este JSON (sem markdown, sem texto extra). Use NO MÁXIMO 2 conju
           "headline": "título (máx 80 chars)",
           "bodyText": "texto (máx 300 chars)",
           "ctaType": "LEARN_MORE",
-          "destinationUrl": "https://seusite.com"
+          "destinationUrl": ${siteUrl ? `"${siteUrl}"` : '"https://seusite.com"'}
         }
       ]
     }
@@ -280,7 +313,7 @@ Retorne APENAS este JSON (sem markdown, sem texto extra). Use NO MÁXIMO 2 conju
 
     const text = response.content[0].type === 'text' ? response.content[0].text : '{}';
     const plan = JSON.parse(extractJson(text)) as BudgetedCampaignPlan;
-    return enforceCampaignPlanBudget(plan, budget);
+    return enforceCampaignPlanDestination(enforceCampaignPlanBudget(plan, budget), siteUrl);
   }
 
   // ── Público-alvo: deriva idade, gênero, localização e interesses do briefing ──
