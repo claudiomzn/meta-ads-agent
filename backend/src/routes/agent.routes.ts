@@ -4,7 +4,7 @@ import { AIService } from '../services/ai.service.js';
 import { executeProposal } from '../services/agentProposals.service.js';
 import { auditLog } from '../services/audit.service.js';
 import prisma from '../lib/prisma.js';
-import { aiBudget } from '../middleware/aiBudget.middleware.js';
+import { aiBudget, runWithAiBudget } from '../middleware/aiBudget.middleware.js';
 
 const router = Router();
 const ai = new AIService();
@@ -433,7 +433,15 @@ Links válidos: /campaigns, /copies, /audiences, /ab-tests, /automations, /agent
 
 // ─── GET /api/agent/proactive-alerts ─────────────────────────────────────────
 // Analisa campanhas com IA e retorna 1-3 alertas com ações executáveis de 1 clique
-router.get('/proactive-alerts', aiBudget('agent_quick'), async (req: AuthRequest, res: Response) => {
+//
+// ⚠️ Esta rota NÃO usa o middleware `aiBudget`, e isso é deliberado. O sininho
+// de alertas chama aqui a cada 15 minutos enquanto a aba estiver aberta, e o
+// middleware reserva o crédito na ENTRADA — inclusive nas saídas antecipadas
+// abaixo, que nem chegam a falar com a IA. Uma conta sem campanha com gasto
+// (todo cliente novo) queimava 96 créditos por dia sem consumir um token
+// sequer, contra um teto de 50/dia e 100/mês no Pro. Aqui o crédito é
+// cobrado em volta da chamada de IA de verdade, com `runWithAiBudget`.
+router.get('/proactive-alerts', async (req: AuthRequest, res: Response) => {
   const campaigns = await prisma.campaign.findMany({
     where: { userId: req.userId! },
     include: { adSets: true },
@@ -491,7 +499,7 @@ router.get('/proactive-alerts', aiBudget('agent_quick'), async (req: AuthRequest
     const Anthropic = (await import('@anthropic-ai/sdk')).default;
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
-    const response = await client.messages.create({
+    const response = await runWithAiBudget(req.userId!, 'agent_quick', () => client.messages.create({
       model: 'claude-haiku-4-5',
       max_tokens: 1000,
       messages: [{
@@ -536,7 +544,7 @@ Exemplos de path: "/mcp/campaigns/META_CAMPAIGN_ID/status" (method "PATCH")
 Exemplos de body para pausar: {"status":"PAUSED"} | para ativar: {"status":"ACTIVE"}
 Se não houver action possível, use null.`,
       }],
-    });
+    }));
 
     const text = response.content[0].type === 'text' ? response.content[0].text : '{}';
     const jsonMatch = text.match(/\{[\s\S]*\}/);
