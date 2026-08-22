@@ -394,6 +394,69 @@ export class MetaMCPService {
     return { id: this.requireId(result, 'campanha') };
   }
 
+  // A IA monta a segmentação junto com o plano e inventa chave de cidade — vimos
+  // "PLACEHOLDER_MANAUS" chegar à Meta, que respondeu "o tipo integer é
+  // esperado, mas um tipo string foi recebido". Chave de geo é numérica.
+  //
+  // Aqui a chave inválida vira busca pelo nome real (o nome vem no próprio
+  // campo `name`, ou no que sobra da chave depois de tirar o prefixo). Se nada
+  // resolver, a entrada cai fora E o log avisa: segmentar o Brasil inteiro sem
+  // dizer nada gastaria o dinheiro do cliente na cidade errada.
+  async resolveTargetingGeo(
+    targeting: Record<string, unknown>,
+    log: (msg: string) => void,
+  ): Promise<Record<string, unknown>> {
+    const geo = targeting?.geo_locations as Record<string, unknown> | undefined;
+    if (!geo || typeof geo !== 'object') return targeting;
+
+    const isValidKey = (key: unknown) => typeof key === 'string' && /^\d+$/.test(key);
+    const searchTerm = (entry: Record<string, unknown>): string =>
+      String(entry.name ?? entry.key ?? '')
+        .replace(/^PLACEHOLDER[_\s-]*/i, '')
+        .replace(/[_-]+/g, ' ')
+        .trim();
+
+    const resolved: Record<string, unknown> = { ...geo };
+
+    for (const [field, type] of [['cities', 'city'], ['regions', 'region']] as const) {
+      const list = geo[field];
+      if (!Array.isArray(list)) continue;
+
+      const kept: Record<string, unknown>[] = [];
+      for (const raw of list as Record<string, unknown>[]) {
+        if (!raw || typeof raw !== 'object') continue;
+        if (isValidKey(raw.key)) { kept.push(raw); continue; }
+
+        const term = searchTerm(raw);
+        if (!term) continue;
+        try {
+          const found = await this.searchGeoLocations(term, [type]);
+          const top = found[0];
+          if (top?.key) {
+            log(`Localização "${term}" resolvida para ${top.name}.`);
+            kept.push({ ...raw, key: top.key });
+          } else {
+            log(`⚠️ Não encontrei "${term}" no Meta — essa localização foi ignorada.`);
+          }
+        } catch {
+          log(`⚠️ Falha ao buscar "${term}" no Meta — essa localização foi ignorada.`);
+        }
+      }
+
+      if (kept.length) resolved[field] = kept;
+      else delete resolved[field];
+    }
+
+    const temAlgo = ['countries', 'cities', 'regions', 'zips', 'custom_locations']
+      .some((k) => Array.isArray(resolved[k]) && (resolved[k] as unknown[]).length > 0);
+    if (!temAlgo) {
+      log('⚠️ Nenhuma localização válida sobrou — segmentando o Brasil inteiro.');
+      resolved.countries = ['BR'];
+    }
+
+    return { ...targeting, geo_locations: resolved };
+  }
+
   async createAdSet(params: CreateAdSetParams): Promise<{ id: string }> {
     try {
       const result = await this.call<{ id?: string; error?: unknown }>('create_adset', {
@@ -607,9 +670,11 @@ export class MetaMCPService {
       // definidos quando encontra pessoas com maior chance de conversão, sem
       // alterar geo/idade/gênero/exclusões. Só suportado para os objetivos
       // abaixo — em outros o Meta rejeita a publicação com erro.
+      const geoResolved = await this.resolveTargetingGeo(adSetPlan.targeting, log);
+
       const targeting = TARGETING_EXPANSION_OBJECTIVES.has(plan.objective)
-        ? { ...adSetPlan.targeting, targeting_optimization: 'expansion_all' }
-        : adSetPlan.targeting;
+        ? { ...geoResolved, targeting_optimization: 'expansion_all' }
+        : geoResolved;
 
       const adSet = await this.createAdSet({
         accountId: plan.adAccountId,
