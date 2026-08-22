@@ -41,6 +41,41 @@ describe('resolveTargetingGeo', () => {
     expect(spy).toHaveBeenCalledWith('Belém', ['city']);
   });
 
+  // A Meta recusa país junto com cidade dentro dele: "algumas localizações
+  // estão em conflito umas com as outras". A IA mandava os dois.
+  it('tira o país quando há cidade — a Meta trata como conflito', async () => {
+    logs.length = 0;
+    const { svc } = svcWithGeo([{ key: '1234567', name: 'Manaus', type: 'city' }]);
+
+    const out = await svc.resolveTargetingGeo({
+      geo_locations: { countries: ['BR'], cities: [{ key: 'PLACEHOLDER_MANAUS', radius: 25 }] },
+    }, log);
+
+    expect(out.geo_locations).toEqual({ cities: [{ key: '1234567', radius: 25 }] });
+  });
+
+  it('tira o país quando há estado, com a cidade já resolvida', async () => {
+    logs.length = 0;
+    const { svc } = svcWithGeo([]);
+
+    const out = await svc.resolveTargetingGeo({
+      geo_locations: { countries: ['BR'], regions: [{ key: '4321' }] },
+    }, log);
+
+    expect(out.geo_locations).toEqual({ regions: [{ key: '4321' }] });
+  });
+
+  it('mantém o país quando é a única localização', async () => {
+    logs.length = 0;
+    const { svc } = svcWithGeo([]);
+
+    const out = await svc.resolveTargetingGeo({
+      geo_locations: { countries: ['BR'] },
+    }, log);
+
+    expect(out.geo_locations).toEqual({ countries: ['BR'] });
+  });
+
   it('não toca em chave que já é numérica', async () => {
     logs.length = 0;
     const { svc, spy } = svcWithGeo([]);

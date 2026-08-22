@@ -447,6 +447,16 @@ export class MetaMCPService {
       else delete resolved[field];
     }
 
+    // A IA manda `countries: ["BR"]` (que está no template do prompt) e ainda
+    // acrescenta a cidade. A Meta recusa: "algumas localizações estão em
+    // conflito umas com as outras". País contendo a cidade escolhida é
+    // redundante — vence o mais específico, que é o que o cliente pediu.
+    const temEspecifico = ['cities', 'regions', 'zips']
+      .some((k) => Array.isArray(resolved[k]) && (resolved[k] as unknown[]).length > 0);
+    if (temEspecifico && Array.isArray(resolved.countries)) {
+      delete resolved.countries;
+    }
+
     const temAlgo = ['countries', 'cities', 'regions', 'zips', 'custom_locations']
       .some((k) => Array.isArray(resolved[k]) && (resolved[k] as unknown[]).length > 0);
     if (!temAlgo) {
