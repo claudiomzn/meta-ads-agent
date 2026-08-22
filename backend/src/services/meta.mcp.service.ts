@@ -106,6 +106,34 @@ export class MetaToolResponseError extends Error {
   }
 }
 
+// A Meta explica a recusa em `error_user_title`/`error_user_msg`, em português
+// e em linguagem de gente. Só que essa explicação vem DENTRO de um JSON
+// serializado como texto pelo MCP, depois de `message`, `code` e
+// `error_subcode` — e o corte em 240 caracteres a descartava. O cliente lia
+// "Invalid parameter, OAuthException, code 100" e não tinha o que fazer com
+// isso; eu também não.
+//
+// Regex em vez de JSON.parse de propósito: o texto vem com o JSON escapado
+// dentro de outro JSON, em profundidade que já mudou entre versões do MCP.
+function extractMetaUserError(raw: string): string | undefined {
+  // As aspas vêm escapadas (`\"error_user_title\"`): é JSON dentro de JSON.
+  // Desescapa uma vez antes de procurar, senão nada casa.
+  const text = raw.includes('\\"') ? raw.replace(/\\"/g, '"') : raw;
+  const grab = (key: string): string | undefined => {
+    const match = text.match(new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`));
+    if (!match) return undefined;
+    try {
+      return JSON.parse(`"${match[1]}"`) as string;
+    } catch {
+      return match[1];
+    }
+  };
+  const parts = [grab('error_user_title'), grab('error_user_msg')]
+    .map((part) => part?.trim())
+    .filter((part): part is string => !!part);
+  return parts.length ? [...new Set(parts)].join(' — ') : undefined;
+}
+
 function safeToolErrorDetail(error: unknown): string | undefined {
   let candidate: unknown;
   if (typeof error === 'string') candidate = error;
@@ -116,14 +144,18 @@ function safeToolErrorDetail(error: unknown): string | undefined {
       const nested = value.error as Record<string, unknown>;
       candidate = nested.error_user_msg ?? nested.message;
     }
+    if (!candidate) candidate = JSON.stringify(value);
   }
+  if (typeof candidate !== 'string') return undefined;
+  candidate = extractMetaUserError(candidate) ?? candidate;
   if (typeof candidate !== 'string') return undefined;
   const sanitized = candidate
     .replace(/https?:\/\/\S+/gi, '[link]')
     .replace(/EA[A-Za-z0-9_-]{20,}/g, '[credencial]')
     .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
     .trim()
-    .slice(0, 240);
+    .slice(0, 400);
   return sanitized || undefined;
 }
 

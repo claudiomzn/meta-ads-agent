@@ -241,6 +241,30 @@ describe('MetaMCPService — contrato de publicação Pipeboard', () => {
     ));
   });
 
+  // A explicação em linguagem de gente vem depois de message/code/error_subcode
+  // dentro de um JSON escapado. O corte antigo em 240 caracteres a descartava e
+  // sobrava "Invalid parameter, OAuthException, code 100" — inacionável.
+  it('mostra a explicação da Meta em vez do JSON cru', async () => {
+    const svc = new MetaMCPService('user-test');
+    // Exatamente como chega: JSON escapado dentro de outro JSON, com a
+    // explicação depois de message/code/error_subcode.
+    const bruto = String.raw`[{"type":"text","text":"create_adset failed: {\n \"message\": \"Invalid parameter\",\n \"type\": \"OAuthException\",\n \"code\": 100,\n \"error_subcode\": 1885097,\n \"is_transient\": false,\n \"error_user_title\": \"Público muito restrito\",\n \"error_user_msg\": \"Ajuste a segmentação para alcançar mais pessoas.\"\n}"}]`;
+    mockCall(svc, { error: { message: bruto } });
+    await expect(svc.createAdSet({
+      accountId: 'act_123',
+      campaignId: 'campaign-1',
+      name: 'Conjunto',
+      dailyBudget: 20,
+      targeting: {},
+      optimizationGoal: 'LINK_CLICKS',
+      billingEvent: 'IMPRESSIONS',
+      status: 'PAUSED',
+    })).rejects.toEqual(new MetaToolResponseError(
+      'conjunto de anúncios',
+      'Público muito restrito — Ajuste a segmentação para alcançar mais pessoas.',
+    ));
+  });
+
   it('sanitiza também falha de transporte ao criar o conjunto', async () => {
     const svc = new MetaMCPService('user-test');
     vi.spyOn(svc as never, 'call').mockRejectedValueOnce(
