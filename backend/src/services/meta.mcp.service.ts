@@ -57,19 +57,33 @@ export function normalizeCampaignObjective(objective: string): string {
 
 export function resolveOptimizationGoal(objective: string, suggested?: string): string {
   const normalized = normalizeCampaignObjective(objective);
+  // ⚠️ Só entram aqui metas que o Meta aceita SEM `promoted_object`, porque o
+  // `createAdSet` não envia esse campo — nem pixel, nem formulário instantâneo
+  // existem neste backend hoje.
+  //
+  // Ficaram de fora, e por quê:
+  //   LEAD_GENERATION     exige promoted_object.page_id + formulário instantâneo
+  //   OFFSITE_CONVERSIONS exige promoted_object.pixel_id + custom_event_type
+  //   VALUE               idem, com otimização por valor
+  //
+  // Com elas, a Meta recusa o conjunto com "Invalid parameter" (OAuthException
+  // 100) e a publicação morre depois de já ter criado a campanha lá. Aconteceu
+  // em 20/08/2026: "Geração de leads", que é o objetivo PADRÃO do assistente,
+  // era impossível de publicar. Ao adicionar suporte a pixel/formulário,
+  // reponha a meta correspondente aqui E envie o promoted_object.
   const allowed: Record<string, Set<string>> = {
     OUTCOME_TRAFFIC: new Set(['LINK_CLICKS', 'LANDING_PAGE_VIEWS', 'IMPRESSIONS', 'REACH']),
-    OUTCOME_AWARENESS: new Set(['REACH', 'IMPRESSIONS', 'AD_RECALL_LIFT']),
+    OUTCOME_AWARENESS: new Set(['REACH', 'IMPRESSIONS']),
     OUTCOME_ENGAGEMENT: new Set(['POST_ENGAGEMENT', 'LINK_CLICKS', 'THRUPLAY']),
-    OUTCOME_LEADS: new Set(['LEAD_GENERATION', 'LINK_CLICKS', 'OFFSITE_CONVERSIONS']),
-    OUTCOME_SALES: new Set(['OFFSITE_CONVERSIONS', 'VALUE', 'LINK_CLICKS']),
+    OUTCOME_LEADS: new Set(['LINK_CLICKS', 'LANDING_PAGE_VIEWS']),
+    OUTCOME_SALES: new Set(['LINK_CLICKS', 'LANDING_PAGE_VIEWS']),
   };
   const fallback: Record<string, string> = {
     OUTCOME_TRAFFIC: 'LINK_CLICKS',
     OUTCOME_AWARENESS: 'REACH',
     OUTCOME_ENGAGEMENT: 'POST_ENGAGEMENT',
-    OUTCOME_LEADS: 'LEAD_GENERATION',
-    OUTCOME_SALES: 'OFFSITE_CONVERSIONS',
+    OUTCOME_LEADS: 'LINK_CLICKS',
+    OUTCOME_SALES: 'LINK_CLICKS',
   };
   if (suggested && allowed[normalized]?.has(suggested)) return suggested;
   return fallback[normalized] ?? suggested ?? 'LINK_CLICKS';

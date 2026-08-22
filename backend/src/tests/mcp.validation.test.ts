@@ -199,6 +199,30 @@ describe('MetaMCPService — contrato de publicação Pipeboard', () => {
       .toBe('LANDING_PAGE_VIEWS');
   });
 
+  // Estas três metas exigem `promoted_object` (pixel ou formulário instantâneo),
+  // que o createAdSet não envia. Aceitá-las fazia a Meta recusar o conjunto com
+  // "Invalid parameter" DEPOIS de já ter criado a campanha lá.
+  it('nunca devolve meta que exige promoted_object', () => {
+    const proibidas = ['LEAD_GENERATION', 'OFFSITE_CONVERSIONS', 'VALUE'];
+    const objetivos = [
+      'Geração de leads', 'Vendas', 'Tráfego para o site',
+      'Reconhecimento de marca', 'Engajamento', 'Mensagens no WhatsApp',
+    ];
+    for (const objetivo of objetivos) {
+      // sem sugestão, e com cada uma das proibidas sugeridas pela IA
+      expect(proibidas).not.toContain(resolveOptimizationGoal(objetivo));
+      for (const sugerida of proibidas) {
+        expect(proibidas).not.toContain(resolveOptimizationGoal(objetivo, sugerida));
+      }
+    }
+  });
+
+  it('campanha de leads vira clique no link, que é publicável hoje', () => {
+    expect(resolveOptimizationGoal('Geração de leads')).toBe('LINK_CLICKS');
+    expect(resolveOptimizationGoal('Geração de leads', 'LEAD_GENERATION')).toBe('LINK_CLICKS');
+    expect(resolveOptimizationGoal('Vendas', 'OFFSITE_CONVERSIONS')).toBe('LINK_CLICKS');
+  });
+
   it('devolve motivo seguro e acionável quando a Meta rejeita o conjunto', async () => {
     const svc = new MetaMCPService('user-test');
     mockCall(svc, { error: { message: 'Daily budget is below the minimum.' } });
