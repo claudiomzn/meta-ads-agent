@@ -160,6 +160,51 @@ function isObjetoNaoEncontrado(error: unknown): boolean {
   return /object not found|could not be found|was not found/i.test(texto);
 }
 
+// O Pipeboard cola um aviso em texto DEPOIS do JSON da resposta:
+// `{"id":"526..."}⚠️ delivery_check: Meta has not finalized validation yet`.
+// Isso não é JSON válido. O `create_ad` tinha SUCESSO, o parse quebrava e a
+// publicação era descartada como falha — com o anúncio já criado na conta do
+// cliente. Lê o primeiro valor JSON e devolve o resto como aviso.
+function lerJSONComSobra(text: string): { valor: unknown; sobra: string } | undefined {
+  const inicio = text.search(/[[{]/);
+  if (inicio < 0) return undefined;
+  const abre = text[inicio];
+  const fecha = abre === '{' ? '}' : ']';
+
+  let profundidade = 0;
+  let dentroDeTexto = false;
+  let escapado = false;
+
+  for (let i = inicio; i < text.length; i++) {
+    const c = text[i];
+    if (dentroDeTexto) {
+      if (escapado) escapado = false;
+      else if (c === '\\') escapado = true;
+      else if (c === '"') dentroDeTexto = false;
+      continue;
+    }
+    if (c === '"') { dentroDeTexto = true; continue; }
+    if (c === abre) profundidade++;
+    else if (c === fecha && --profundidade === 0) {
+      try {
+        return {
+          valor: JSON.parse(text.slice(inicio, i + 1)),
+          sobra: text.slice(i + 1).trim(),
+        };
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
+function temIdCriado(valor: unknown): boolean {
+  if (!valor || typeof valor !== 'object') return false;
+  const id = (valor as Record<string, unknown>).id ?? (valor as Record<string, unknown>).creative_id;
+  return typeof id === 'string' && id.trim().length > 0;
+}
+
 function safeToolErrorDetail(error: unknown): string | undefined {
   let candidate: unknown;
   if (typeof error === 'string') candidate = error;
@@ -309,14 +354,30 @@ export class MetaMCPService {
         );
       };
 
-      if (result.isError) refuse();
+      // Recurso criado e resposta descartada é o pior desfecho: sobra órfão na
+      // conta do cliente e o app acha que falhou. Se a resposta traz um ID, o
+      // objeto EXISTE — vale mais que a marcação de erro do Pipeboard, que ele
+      // usa também para aviso de validação pendente.
+      if (result.isError) {
+        const salvo = lerJSONComSobra(text);
+        if (!salvo || !temIdCriado(salvo.valor)) refuse();
+        console.warn(
+          `[MCP] ${tool} veio marcado como erro mas devolveu ID; tratando como criado. Aviso: ${salvo!.sobra.slice(0, 400)}`,
+        );
+        return salvo!.valor as T;
+      }
 
       try {
         return JSON.parse(text) as T;
       } catch {
-        // Resposta que não é JSON também é recusa — normalmente texto de erro
-        // do gateway. Sem isso vira SyntaxError e cai no mesmo buraco.
-        return refuse();
+        const comSobra = lerJSONComSobra(text);
+        // Resposta que não é JSON nem começa com JSON é recusa de verdade —
+        // normalmente texto de erro do gateway.
+        if (!comSobra) return refuse();
+        if (comSobra.sobra) {
+          console.warn(`[MCP] ${tool} respondeu com aviso após o JSON: ${comSobra.sobra.slice(0, 400)}`);
+        }
+        return comSobra.valor as T;
       }
     } catch (err) {
       // Olha o texto original quando existir: a mensagem exibida é cortada.
@@ -850,6 +911,9 @@ export class MetaMCPService {
     const managerUrl = `https://business.facebook.com/adsmanager/manage/campaigns?act=${plan.adAccountId.replace('act_', '')}&selected_campaign_ids=${campaign.id}`;
 
     log(`🎉 Publicação concluída! ${adSetIds.length} conjuntos, ${adIds.length} anúncios.`);
+    // A Meta revisa todo anúncio novo antes de deixá-lo apto. Sem dizer isso, o
+    // cliente abre o Ads Manager, vê "em análise" e acha que deu errado.
+    log('A Meta ainda está revisando o anúncio — pode levar alguns minutos até ficar apto. A campanha entra pausada de qualquer forma.');
 
     await prisma.campaign.updateMany({
       where: { id: plan.localId },

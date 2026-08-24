@@ -414,6 +414,55 @@ describe('MetaMCPService — recusa sinalizada como isError pelo MCP', () => {
     expect(client.callTool).toHaveBeenCalledTimes(1);
   });
 
+  // O Pipeboard cola `⚠️ delivery_check: ...` DEPOIS do JSON. O anúncio tinha
+  // sido criado de verdade e a publicação era descartada como falha — órfão na
+  // conta do cliente e app achando que não publicou.
+  const AVISO_APOS_JSON =
+    '{ "id": "52617988625560" }⚠️ Pipeboard delivery_check: Meta has not finalized validation yet (effective_status: IN_PROCESS).';
+
+  it('aceita o anúncio quando o aviso vem depois do JSON', async () => {
+    const svc = new MetaMCPService('user-test');
+    fakeMCP(svc, { content: [{ type: 'text', text: AVISO_APOS_JSON }] });
+
+    await expect(svc.createAd({
+      accountId: 'act_355520187901770',
+      adSetId: 'adset-1',
+      name: 'Anúncio',
+      creativeId: 'creative-1',
+      status: 'PAUSED',
+    })).resolves.toEqual({ id: '52617988625560' });
+  });
+
+  it('aceita mesmo quando o Pipeboard marca isError mas devolve o ID', async () => {
+    const svc = new MetaMCPService('user-test');
+    fakeMCP(svc, { isError: true, content: [{ type: 'text', text: AVISO_APOS_JSON }] });
+
+    await expect(svc.createAd({
+      accountId: 'act_355520187901770',
+      adSetId: 'adset-1',
+      name: 'Anúncio',
+      creativeId: 'creative-1',
+      status: 'PAUSED',
+    })).resolves.toEqual({ id: '52617988625560' });
+  });
+
+  // Sem ID não há objeto criado: continua sendo recusa.
+  it('isError sem ID continua sendo recusa', async () => {
+    const svc = new MetaMCPService('user-test');
+    fakeMCP(svc, {
+      isError: true,
+      content: [{ type: 'text', text: '{"error":{"message":"orçamento inválido"}}' }],
+    });
+
+    await expect(svc.createAd({
+      accountId: 'act_355520187901770',
+      adSetId: 'adset-1',
+      name: 'Anúncio',
+      creativeId: 'creative-1',
+      status: 'PAUSED',
+    })).rejects.toMatchObject({ name: 'MetaToolResponseError' });
+  });
+
   it('não trata resposta válida como recusa', async () => {
     const svc = new MetaMCPService('user-test');
     fakeMCP(svc, { content: [{ type: 'text', text: '{"id":"ad-1"}' }] });
