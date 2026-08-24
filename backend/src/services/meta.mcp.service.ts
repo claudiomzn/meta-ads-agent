@@ -100,11 +100,28 @@ export class PublishValidationError extends Error {
 }
 
 export class MetaToolResponseError extends Error {
-  constructor(resource: string, detail?: string) {
+  // `raw` guarda o texto original da recusa. A mensagem exibida é sanitizada e
+  // cortada; a decisão de retry precisa olhar o texto inteiro, senão um "rate
+  // limit" que caiu fora dos 400 caracteres deixa de ser reconhecido.
+  constructor(resource: string, detail?: string, public raw?: string) {
     super(`A Meta rejeitou ${resource}${detail ? `: ${detail}` : '.'}`);
     this.name = 'MetaToolResponseError';
   }
 }
+
+// Nome de gente para cada ferramenta do MCP, usado quando a recusa estoura
+// dentro de `call()` e não chega ao `requireId` do método que sabe o que
+// estava criando.
+const RESOURCE_LABELS: Record<string, string> = {
+  create_campaign: 'a campanha',
+  create_adset: 'o conjunto de anúncios',
+  create_ad_creative: 'o criativo',
+  create_ad: 'o anúncio',
+  upload_ad_image: 'a imagem do anúncio',
+  upload_ad_video: 'o vídeo do anúncio',
+  duplicate_ad_set: 'a cópia do conjunto',
+  create_custom_audience: 'o público personalizado',
+};
 
 // A Meta explica a recusa em `error_user_title`/`error_user_msg`, em português
 // e em linguagem de gente. Só que essa explicação vem DENTRO de um JSON
@@ -115,7 +132,7 @@ export class MetaToolResponseError extends Error {
 //
 // Regex em vez de JSON.parse de propósito: o texto vem com o JSON escapado
 // dentro de outro JSON, em profundidade que já mudou entre versões do MCP.
-function extractMetaUserError(raw: string): string | undefined {
+export function extractMetaUserError(raw: string): string | undefined {
   // As aspas vêm escapadas (`\"error_user_title\"`): é JSON dentro de JSON.
   // Desescapa uma vez antes de procurar, senão nada casa.
   const text = raw.includes('\\"') ? raw.replace(/\\"/g, '"') : raw;
@@ -132,6 +149,15 @@ function extractMetaUserError(raw: string): string | undefined {
     .map((part) => part?.trim())
     .filter((part): part is string => !!part);
   return parts.length ? [...new Set(parts)].join(' — ') : undefined;
+}
+
+// "Object Not Found" é 404 de objeto: garante que NADA foi criado, então é a
+// única recusa em que repetir a chamada é seguro.
+function isObjetoNaoEncontrado(error: unknown): boolean {
+  const texto =
+    (error instanceof MetaToolResponseError && error.raw) ||
+    (error instanceof Error ? error.message : String(error ?? ''));
+  return /object not found|could not be found|was not found/i.test(texto);
 }
 
 function safeToolErrorDetail(error: unknown): string | undefined {
@@ -253,23 +279,55 @@ export class MetaMCPService {
         arguments: { ...args, access_token: this.accessToken },
       });
 
-      if (result.isError) {
-        throw new Error(`Erro MCP [${tool}]: ${JSON.stringify(result.content)}`);
-      }
-
-      const text = (result.content as Array<{ type: string; text: string }>)
-        .filter((c) => c.type === 'text')
-        .map((c) => c.text)
+      // O `content` de uma resposta de erro nem sempre é a lista de blocos de
+      // texto do caminho feliz — por isso a extração é defensiva e cai para o
+      // JSON bruto quando não houver texto nenhum.
+      const blocks = Array.isArray(result.content)
+        ? (result.content as Array<{ type?: string; text?: string }>)
+        : [];
+      const text = blocks
+        .filter((c) => c?.type === 'text' && typeof c.text === 'string')
+        .map((c) => c.text as string)
         .join('');
 
-      return JSON.parse(text) as T;
+      // A recusa da Meta chega por dois caminhos diferentes: como `isError` do
+      // MCP, ou como JSON legítimo com `error` dentro (esse o `requireId`
+      // trata). O primeiro caminho virava `Error` cru, a rota não reconhecia o
+      // tipo e o cliente lia "Não foi possível publicar" — sem motivo, que é
+      // exatamente o que a Meta tinha se dado ao trabalho de explicar.
+      const refuse = (): never => {
+        const raw = text || JSON.stringify(result.content ?? null);
+        // Recusa sem texto nenhum existe: o log de produção trouxe um
+        // `create_ad` que falhou com o conteúdo vazio. Nesse caso `raw` seria
+        // "null" ou "[]", e mostrar isso ao cliente é pior que não mostrar
+        // nada — vira detalhe sem detalhe. Melhor a frase honesta.
+        const vazio = !raw || ['null', '[]', '{}', 'undefined'].includes(raw.trim());
+        throw new MetaToolResponseError(
+          RESOURCE_LABELS[tool] ?? `a chamada ${tool}`,
+          vazio ? undefined : safeToolErrorDetail(raw),
+          vazio ? undefined : raw,
+        );
+      };
+
+      if (result.isError) refuse();
+
+      try {
+        return JSON.parse(text) as T;
+      } catch {
+        // Resposta que não é JSON também é recusa — normalmente texto de erro
+        // do gateway. Sem isso vira SyntaxError e cai no mesmo buraco.
+        return refuse();
+      }
     } catch (err) {
+      // Olha o texto original quando existir: a mensagem exibida é cortada.
+      const haystack =
+        (err instanceof MetaToolResponseError && err.raw) ||
+        (err instanceof Error ? err.message : '');
       const isRetryable =
-        err instanceof Error &&
-        (err.message.includes('timeout') ||
-          err.message.includes('rate limit') ||
-          err.message.includes('503') ||
-          err.message.includes('502'));
+        haystack.includes('timeout') ||
+        haystack.includes('rate limit') ||
+        haystack.includes('503') ||
+        haystack.includes('502');
 
       if (isRetryable && attempt < 3) {
         const delay = Math.pow(2, attempt) * 500; // 1s, 2s
@@ -487,15 +545,44 @@ export class MetaMCPService {
     }
   }
 
+  // O `create_ad` é o único que consulta o OBJETO da conta antes de criar; os
+  // outros (create_campaign, create_adset, create_ad_creative, uploads) montam
+  // o caminho da conta por dentro e por isso aceitam o ID pelado. Conta de
+  // anúncios como objeto na Graph API só existe com `act_` — sem o prefixo a
+  // resposta é "Object Not Found". Foi o que derrubou a publicação de 24/08,
+  // com campanha, conjunto e criativo já criados na conta.
+  //
+  // Tenta a forma correta primeiro e cai para a pelada se o Pipeboard tiver o
+  // contrato invertido nessa ferramenta. Não temos a documentação dele e o
+  // custo de errar é uma campanha órfã na conta do cliente; o log diz qual
+  // forma passou, e aí isso vira uma linha só.
   async createAd(params: CreateAdParams): Promise<{ id: string }> {
-    const result = await this.call<{ id?: string; error?: unknown }>('create_ad', {
-      account_id: params.accountId,
-      adset_id: params.adSetId,
-      name: params.name,
-      creative_id: params.creativeId,
-      status: params.status,
-    });
-    return { id: this.requireId(result, 'anúncio') };
+    const semPrefixo = params.accountId.replace(/^act_/, '');
+    const formas = [`act_${semPrefixo}`, semPrefixo];
+    let ultimoErro: unknown;
+
+    for (const accountId of formas) {
+      try {
+        const result = await this.call<{ id?: string; error?: unknown }>('create_ad', {
+          account_id: accountId,
+          adset_id: params.adSetId,
+          name: params.name,
+          creative_id: params.creativeId,
+          status: params.status,
+        });
+        const id = this.requireId(result, 'anúncio');
+        console.info(`[MCP] create_ad aceitou a conta no formato "${accountId}".`);
+        return { id };
+      } catch (error) {
+        ultimoErro = error;
+        // Só insiste quando a recusa é "objeto não encontrado": nesse caso nada
+        // foi criado. Qualquer outro erro pode ter criado o anúncio, e repetir
+        // duplicaria — melhor falhar do que cobrar o cliente duas vezes.
+        if (!isObjetoNaoEncontrado(error)) throw error;
+      }
+    }
+
+    throw ultimoErro;
   }
 
   async createAdCreative(params: CreateAdCreativeParams): Promise<{ id: string }> {

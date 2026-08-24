@@ -285,3 +285,145 @@ describe('MetaMCPService — contrato de publicação Pipeboard', () => {
     });
   });
 });
+
+// A recusa da Meta tem dois caminhos: JSON legítimo com `error` dentro (coberto
+// acima) e `isError` do MCP. O segundo virava `Error` cru, a rota não
+// reconhecia o tipo e o cliente lia "Não foi possível publicar a campanha no
+// Meta." — sem motivo. Aconteceu de verdade ao criar o ANÚNCIO: campanha,
+// conjunto e criativo tinham sido criados, e a tela não dizia o que faltava.
+describe('MetaMCPService — recusa sinalizada como isError pelo MCP', () => {
+  // A explicação da Meta, como chega: JSON escapado dentro de outro JSON.
+  const RECUSA = String.raw`create_ad failed: {\n \"message\": \"Invalid parameter\",\n \"type\": \"OAuthException\",\n \"code\": 100,\n \"error_subcode\": 1487215,\n \"error_user_title\": \"Criativo incompatível\",\n \"error_user_msg\": \"O criativo não pode ser usado com esse conjunto de anúncios.\"\n}`;
+
+  function fakeMCP(svc: MetaMCPService, response: object) {
+    const client = { callTool: vi.fn().mockResolvedValue(response) };
+    Object.assign(svc, { client, connected: true, accessToken: 'token-de-teste' });
+    return client;
+  }
+
+  it('createAd entrega a explicação da Meta, não erro genérico', async () => {
+    const svc = new MetaMCPService('user-test');
+    fakeMCP(svc, { isError: true, content: [{ type: 'text', text: RECUSA }] });
+
+    await expect(svc.createAd({
+      accountId: 'act_123',
+      adSetId: 'adset-1',
+      name: 'Anúncio',
+      creativeId: 'creative-1',
+      status: 'PAUSED',
+    })).rejects.toMatchObject({
+      name: 'MetaToolResponseError',
+      message:
+        'A Meta rejeitou o anúncio: Criativo incompatível — O criativo não pode ser usado com esse conjunto de anúncios.',
+    });
+  });
+
+  it('guarda a resposta crua para o log do servidor', async () => {
+    const svc = new MetaMCPService('user-test');
+    fakeMCP(svc, { isError: true, content: [{ type: 'text', text: RECUSA }] });
+
+    await expect(svc.createAd({
+      accountId: 'act_123',
+      adSetId: 'adset-1',
+      name: 'Anúncio',
+      creativeId: 'creative-1',
+      status: 'PAUSED',
+    })).rejects.toMatchObject({ raw: RECUSA });
+  });
+
+  // Gateway devolvendo HTML/texto virava SyntaxError e caía no mesmo buraco.
+  it('resposta que não é JSON também vira recusa tipada', async () => {
+    const svc = new MetaMCPService('user-test');
+    fakeMCP(svc, { content: [{ type: 'text', text: 'Bad Gateway' }] });
+
+    await expect(svc.createAd({
+      accountId: 'act_123',
+      adSetId: 'adset-1',
+      name: 'Anúncio',
+      creativeId: 'creative-1',
+      status: 'PAUSED',
+    })).rejects.toMatchObject({
+      name: 'MetaToolResponseError',
+      message: 'A Meta rejeitou o anúncio: Bad Gateway',
+    });
+  });
+
+  // Conta de anúncios como OBJETO na Graph API só existe com `act_`. O ID é
+  // gravado pelado e repassado cru; o create_ad é o único que consulta o
+  // objeto, e por isso foi o único a quebrar — depois de campanha, conjunto e
+  // criativo já criados de verdade na conta do cliente.
+  it('createAd manda a conta com act_ antes de tentar pelada', async () => {
+    const svc = new MetaMCPService('user-test');
+    const client = fakeMCP(svc, { content: [{ type: 'text', text: '{"id":"ad-1"}' }] });
+
+    await svc.createAd({
+      accountId: '355520187901770',
+      adSetId: 'adset-1',
+      name: 'Anúncio',
+      creativeId: 'creative-1',
+      status: 'PAUSED',
+    });
+
+    expect(client.callTool).toHaveBeenCalledTimes(1);
+    expect(client.callTool.mock.calls[0][0].arguments).toMatchObject({
+      account_id: 'act_355520187901770',
+    });
+  });
+
+  it('cai para a conta pelada quando o objeto não é encontrado', async () => {
+    const svc = new MetaMCPService('user-test');
+    const naoEncontrado = {
+      isError: true,
+      content: [{ type: 'text', text: '## Object Not Found\n"355520187901770" was not found.' }],
+    };
+    const client = fakeMCP(svc, naoEncontrado);
+    client.callTool
+      .mockResolvedValueOnce(naoEncontrado)
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: '{"id":"ad-9"}' }] });
+
+    await expect(svc.createAd({
+      accountId: 'act_355520187901770',
+      adSetId: 'adset-1',
+      name: 'Anúncio',
+      creativeId: 'creative-1',
+      status: 'PAUSED',
+    })).resolves.toEqual({ id: 'ad-9' });
+
+    expect(client.callTool.mock.calls[1][0].arguments).toMatchObject({
+      account_id: '355520187901770',
+    });
+  });
+
+  // Repetir depois de um erro que NÃO é 404 pode duplicar o anúncio — o
+  // primeiro pode ter sido criado antes da recusa.
+  it('não repete o create_ad em recusa que não seja objeto não encontrado', async () => {
+    const svc = new MetaMCPService('user-test');
+    const client = fakeMCP(svc, {
+      isError: true,
+      content: [{ type: 'text', text: 'create_ad failed: orçamento diário abaixo do mínimo' }],
+    });
+
+    await expect(svc.createAd({
+      accountId: 'act_355520187901770',
+      adSetId: 'adset-1',
+      name: 'Anúncio',
+      creativeId: 'creative-1',
+      status: 'PAUSED',
+    })).rejects.toMatchObject({ name: 'MetaToolResponseError' });
+
+    expect(client.callTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('não trata resposta válida como recusa', async () => {
+    const svc = new MetaMCPService('user-test');
+    fakeMCP(svc, { content: [{ type: 'text', text: '{"id":"ad-1"}' }] });
+
+    await expect(svc.createAd({
+      accountId: 'act_123',
+      adSetId: 'adset-1',
+      name: 'Anúncio',
+      creativeId: 'creative-1',
+      status: 'PAUSED',
+    })).resolves.toEqual({ id: 'ad-1' });
+  });
+});

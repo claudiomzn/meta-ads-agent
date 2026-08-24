@@ -14,6 +14,7 @@ import {
   MetaMCPService,
   MetaToolResponseError,
   PublishValidationError,
+  extractMetaUserError,
   createMetaMCPService,
 } from '../services/meta.mcp.service.js';
 import { MediaService } from '../services/media.service.js';
@@ -750,12 +751,29 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
     res.end();
   } catch (err) {
     console.error('[mcp:publish] Falha ao publicar campanha:', err);
+    // O texto integral da recusa não vai para o cliente (é cortado e
+    // sanitizado); no log do servidor ele é o que permite diagnosticar.
+    if (err instanceof MetaToolResponseError && err.raw) {
+      console.error('[mcp:publish] Resposta crua da Meta:', err.raw);
+    }
     if (err instanceof PublishValidationError) {
       send({ type: 'error', errors: err.errors, warnings: err.warnings });
     } else if (err instanceof MetaToolResponseError) {
       send({ type: 'error', message: err.message });
     } else {
-      send({ type: 'error', message: 'Não foi possível publicar a campanha no Meta.' });
+      // Rede de segurança: se a Meta explicou a recusa em algum canto do erro,
+      // o cliente merece ler isso em vez do genérico. Só o texto que a própria
+      // Meta escreveu para usuário final é repassado — nada de mensagem
+      // interna, que poderia vazar detalhe de banco ou de infraestrutura.
+      const explicacao = extractMetaUserError(
+        err instanceof Error ? err.message : String(err),
+      );
+      send({
+        type: 'error',
+        message: explicacao
+          ? `A Meta recusou a publicação: ${explicacao}`
+          : 'Não foi possível publicar a campanha no Meta.',
+      });
     }
     res.end();
   }
