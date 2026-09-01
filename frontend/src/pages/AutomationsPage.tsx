@@ -72,11 +72,20 @@ const ACTIONS = [
   { value: 'ALERT', label: 'Enviar alerta', color: 'text-purple-600', bg: 'bg-purple-50' },
 ];
 
+// `artigo` existe para o resumo da regra ler como frase: "Pausar A campanha"
+// mas "Pausar O conjunto de anúncios". Sem isso o resumo saía com o valor
+// interno em inglês ("→ Pausar o adset") — e essa caixa é a parte do produto
+// que explica a regra para quem está lendo.
 const TARGET_TYPES = [
-  { value: 'campaign', label: 'Campanha' },
-  { value: 'adset', label: 'Conjunto de anúncios' },
-  { value: 'ad', label: 'Anúncio' },
+  { value: 'campaign', label: 'Campanha', artigo: 'a' },
+  { value: 'adset', label: 'Conjunto de anúncios', artigo: 'o' },
+  { value: 'ad', label: 'Anúncio', artigo: 'o' },
 ];
+
+function alvoPorExtenso(value: string): string {
+  const alvo = TARGET_TYPES.find((t) => t.value === value);
+  return alvo ? `${alvo.artigo} ${alvo.label.toLowerCase()}` : value;
+}
 
 function RuleCard({ rule, onToggle, onDelete, onRun }: {
   rule: AutomationRule;
@@ -130,7 +139,7 @@ function RuleCard({ rule, onToggle, onDelete, onRun }: {
 
           {/* Condição */}
           <p className="text-sm text-muted-foreground">
-            Se <strong>{triggerLabel}</strong> for <strong>{conditionLabel} {rule.value}</strong> nos últimos <strong>{rule.window} dias</strong> → <strong className={actionInfo?.color}>{actionInfo?.label}</strong> o {rule.targetType}
+            Se <strong>{triggerLabel}</strong> for <strong>{conditionLabel} {rule.value}</strong> nos últimos <strong>{rule.window} dias</strong> → <strong className={actionInfo?.color}>{actionInfo?.label}</strong> {alvoPorExtenso(rule.targetType)}
           </p>
 
           {/* Última verificação */}
@@ -430,7 +439,7 @@ export default function AutomationsPage() {
               <div className="rounded-lg border border-[#1877F2]/20 bg-[#e7f0fd] px-4 py-3 text-sm text-[#1877F2]">
                 <strong>Resumo:</strong> Se <strong>{TRIGGERS.find(t => t.value === form.trigger)?.label}</strong> for{' '}
                 <strong>{CONDITIONS.find(c => c.value === form.condition)?.label} {form.value}</strong> nos últimos{' '}
-                <strong>{form.window} dias</strong> → <strong>{ACTIONS.find(a => a.value === form.action)?.label}</strong> o {form.targetType}
+                <strong>{form.window} dias</strong> → <strong>{ACTIONS.find(a => a.value === form.action)?.label}</strong> {alvoPorExtenso(form.targetType)}
               </div>
             )}
 
