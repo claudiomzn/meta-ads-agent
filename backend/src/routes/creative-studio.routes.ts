@@ -136,9 +136,14 @@ router.post('/generate', aiBudget('creative_generate'), async (req: AuthRequest,
 
   // No trial, a primeira geração entrega 1 criativo completo (1 arte + copy);
   // depois disso, segue gerando o conjunto normal de copies sem arte.
+  // O padrão é 3, não 6. A cota de artes conta IMAGENS: no Pro são 24 por mês,
+  // então 6 por pedido dá 4 usos no mês inteiro e 3 dá 8. O cliente prefere oito
+  // tentativas de três artes a quatro de seis — ele descarta a maioria de
+  // qualquer forma, e quem cria concentra o uso nos primeiros dias. Quem quiser
+  // seis continua podendo pedir; só deixou de ser o que acontece sem escolher.
   const aiCount = quota.isTrial
-    ? (generationsLeft > 0 ? 1 : 6)
-    : Math.min(Math.max(count ?? 6, 1), 6);
+    ? (generationsLeft > 0 ? 1 : 3)
+    : Math.min(Math.max(count ?? 3, 1), 6);
 
   // 1. Copies + conceitos + prompts de imagem (uma única chamada à IA)
   const { variations } = await ai.generateCreativeSet({
