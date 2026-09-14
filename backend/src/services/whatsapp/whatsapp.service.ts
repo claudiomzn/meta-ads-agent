@@ -246,6 +246,7 @@ export class WhatsappService {
     // mensagem honesta ("o consultor te envia em instantes") e o vendedor
     // recebe as idades para cotar à mão — ninguém fica no vácuo.
     let notaVendedor = '';
+    let textoCotacao = '';
     if (vaiCotar && integracao && dadosLead) {
       let cotacao: CotacaoResultado | null = null;
       let falha: string | undefined;
@@ -261,6 +262,7 @@ export class WhatsappService {
       );
       history.push({ role: 'assistant', text: textoAoLead, at: new Date().toISOString() });
       notaVendedor = montarNotaParaVendedor(dadosLead, cotacao, falha);
+      textoCotacao = textoAoLead;
     } else if (integracao && result.done && result.label === 'QUENTE') {
       // Integração ligada mas sem como cotar (CNPJ, idades ausentes): o
       // vendedor fica sabendo o porquê e não repete as perguntas.
@@ -305,7 +307,9 @@ export class WhatsappService {
       },
     });
 
-    return { reply: result.reply, state: result.state };
+    // O simulador da tela mostra só o que volta aqui: com cotação, volta as
+    // duas mensagens que o lead recebeu.
+    return { reply: textoCotacao ? `${replyFinal}\n\n${textoCotacao}` : replyFinal, state: result.state };
   }
 
   // ── Saldo pré-pago (sem dívida) ──────────────────────────────────────────────
