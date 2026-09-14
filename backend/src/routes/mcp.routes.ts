@@ -49,15 +49,10 @@ import {
 // Escopos pedidos no diálogo de OAuth da Meta. Tem que ser exatamente o que
 // está submetido no App Review: o revisor assiste ao fluxo de conexão, e um
 // escopo pedido fora do envio aparece na tela dele como incoerência.
-//
-// `pages_read_engagement` saiu em 14/09/2026: o App Review de 12/09 recusou
-// as três permissões cujo uso o vídeo não mostrava, e essa nenhuma tela usa
-// (as rotas de Instagram/insights de Página existem no backend, mas o
-// frontend não chama). Permissão pedida sem uso demonstrável é recusa certa.
-// Quando houver tela de engajamento de Página, volta — com a tela pronta.
 export const META_OAUTH_SCOPES = [
   'ads_read',
   'ads_management',
+  'pages_read_engagement',
   'pages_show_list',
 ] as const;
 
