@@ -4,6 +4,16 @@
 
 import prisma from '../../lib/prisma.js';
 import { resolveTransport, type InboundMessage } from './transport.js';
+import {
+  type CotacaoResultado,
+  extrairDadosParaCotacao,
+  montarNotaParaVendedor,
+  pedirCotacao,
+  podeCotarAutomaticamente,
+  REPLY_COTACAO_AGORA,
+  REPLY_COTACAO_FALHOU,
+  resolverIntegracao,
+} from './cotacao.integration.js';
 import { nextReply, type QualConfig, type QualTurn } from './qualification.service.js';
 import { CapiService } from '../capi.service.js';
 import { sendMail } from '../email.service.js';
@@ -210,11 +220,52 @@ export class WhatsappService {
     const turns: QualTurn[] = history.map((h) => ({ role: h.role, text: h.text }));
     const result = await nextReply(this.userId, cfg, turns, conv.questionsAsked, conv.botMessages);
 
+    // ── Cotação na hora (integração personalizada, ver cotacao.integration.ts) ──
+    // Decidido ANTES de enviar: se esta conta tem a integração ligada, o lead é
+    // QUENTE e pessoa física com idades válidas, a resposta de encerramento
+    // vira a frase fixa "vou te passar uma cotação agora" — e o código a
+    // cumpre logo abaixo. Em qualquer outro caso a resposta da IA segue
+    // intacta, que é o comportamento de todo cliente do AdsGenius.
+    const integracao = process.env.COTE_QUOTE_USER
+      ? resolverIntegracao({
+        userId: this.userId,
+        email: (await prisma.user.findUnique({ where: { id: this.userId }, select: { email: true } }))?.email,
+      })
+      : null;
+    const dadosLead = result.done ? extrairDadosParaCotacao(result.dados) : null;
+    const vaiCotar = Boolean(integracao) && result.done && result.label === 'QUENTE' && podeCotarAutomaticamente(dadosLead);
+    const replyFinal = vaiCotar ? REPLY_COTACAO_AGORA : result.reply;
+
     // Envia a resposta pelo transporte configurado
     const transport = resolveTransport(config.transport, config.transportConfig as Record<string, unknown>);
-    await transport.sendText(msg.from, result.reply);
+    await transport.sendText(msg.from, replyFinal);
 
-    history.push({ role: 'assistant', text: result.reply, at: new Date().toISOString() });
+    history.push({ role: 'assistant', text: replyFinal, at: new Date().toISOString() });
+
+    // A promessa acima é cumprida aqui. Falhou o Cote+? O lead recebe uma
+    // mensagem honesta ("o consultor te envia em instantes") e o vendedor
+    // recebe as idades para cotar à mão — ninguém fica no vácuo.
+    let notaVendedor = '';
+    if (vaiCotar && integracao && dadosLead) {
+      let cotacao: CotacaoResultado | null = null;
+      let falha: string | undefined;
+      try {
+        cotacao = await pedirCotacao(integracao, dadosLead);
+      } catch (e) {
+        falha = e instanceof Error ? e.message : String(e);
+        console.error('[whatsapp:cotacao] falha ao pedir cotação ao Cote+:', e);
+      }
+      const textoAoLead = cotacao?.ok && cotacao.texto ? cotacao.texto : REPLY_COTACAO_FALHOU;
+      await transport.sendText(msg.from, textoAoLead).catch((e) =>
+        console.error('[whatsapp:cotacao] falha ao enviar cotação ao lead:', e),
+      );
+      history.push({ role: 'assistant', text: textoAoLead, at: new Date().toISOString() });
+      notaVendedor = montarNotaParaVendedor(dadosLead, cotacao, falha);
+    } else if (integracao && result.done && result.label === 'QUENTE') {
+      // Integração ligada mas sem como cotar (CNPJ, idades ausentes): o
+      // vendedor fica sabendo o porquê e não repete as perguntas.
+      notaVendedor = montarNotaParaVendedor(dadosLead, null);
+    }
 
     // Dispara conversão na PRIMEIRA resposta (clique→conversa = lead via WhatsApp)
     const shouldFireConversion = !conv.conversionFired;
@@ -224,7 +275,8 @@ export class WhatsappService {
 
     // Handoff: avisa o vendedor com o resumo
     if (result.done && result.state === 'handoff' && config.handoffContact) {
-      await this.notifyVendor(config.handoffContact, msg.from, result.summary ?? '', transport);
+      const resumo = [result.summary ?? '', notaVendedor].filter(Boolean).join('\n');
+      await this.notifyVendor(config.handoffContact, msg.from, resumo, transport);
     }
 
     // Lead QUALIFICADO (QUENTE) → envia a conversão de Lead server-side às DUAS

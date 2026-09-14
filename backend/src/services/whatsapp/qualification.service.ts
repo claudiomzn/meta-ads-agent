@@ -44,6 +44,10 @@ export interface QualResult {
   label?: 'QUENTE' | 'FRIO';
   /** Resumo de 1 linha para o vendedor, quando qualificado. */
   summary?: string;
+  /** O que o lead disse, estruturado (só quando done): tipo e idades. A IA
+   *  não inventa — ela organiza as respostas do lead. Validado por quem usa
+   *  (cotacao.integration.ts) como entrada externa. */
+  dados?: { tipo?: string; idades?: number[]; vidas?: number };
 }
 
 function buildSystemPrompt(cfg: QualConfig): string {
@@ -70,9 +74,11 @@ FORMATO DE RESPOSTA — responda SEMPRE em JSON válido, sem markdown:
   "reply": "a mensagem que você enviaria ao lead agora",
   "done": false,
   "label": null,
-  "summary": null
+  "summary": null,
+  "dados": null
 }
-Quando encerrar (done=true): "label" deve ser "QUENTE" (qualificado) ou "FRIO" (sem intenção), e "summary" um resumo de 1 linha para o vendedor com os dados coletados.`;
+Quando encerrar (done=true): "label" deve ser "QUENTE" (qualificado) ou "FRIO" (sem intenção), e "summary" um resumo de 1 linha para o vendedor com os dados coletados.
+"dados" (só quando done=true) organiza o que o lead INFORMOU, sem inventar nada: {"tipo": "pf" ou "cnpj" ou null, "vidas": número de pessoas ou null, "idades": [idades em anos, na ordem em que o lead disse] ou []}. Se o lead não disse as idades, "idades" fica [] — nunca estime.`;
 }
 
 function extractJson(text: string): string {
@@ -133,7 +139,7 @@ export async function nextReply(
   const raw = resp.content.find((b) => b.type === 'text');
   const text = raw && raw.type === 'text' ? raw.text : '';
 
-  let parsed: { reply?: string; done?: boolean; label?: string; summary?: string };
+  let parsed: { reply?: string; done?: boolean; label?: string; summary?: string; dados?: QualResult['dados'] };
   try {
     parsed = JSON.parse(extractJson(text));
   } catch {
@@ -153,5 +159,6 @@ export async function nextReply(
     done,
     label,
     summary: parsed.summary || undefined,
+    dados: done && parsed.dados && typeof parsed.dados === 'object' ? parsed.dados : undefined,
   };
 }
