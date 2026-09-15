@@ -92,8 +92,11 @@ export interface ConnectResult {
 
 // Estado da conexão: "open" (conectado) | "connecting" | "close" | "not_found"
 export async function getConnectionState(userId: string, businessId?: string | null): Promise<string> {
+  // Com timeout: Evolution hibernando (Render free) demorava até 1 min e a
+  // consulta ficava pendurada — a tela desistia antes e escondia o bloco.
   const resp = await fetch(`${baseUrl()}/instance/connectionState/${instanceName(userId, businessId)}`, {
     headers: headers(),
+    signal: AbortSignal.timeout(15_000),
   });
   if (resp.status === 404) return 'not_found';
   if (!resp.ok) throw new Error(`Evolution connectionState ${resp.status}: ${await resp.text()}`);

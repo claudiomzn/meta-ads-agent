@@ -162,8 +162,19 @@ router.post('/evolution/connect', authMiddleware, async (req: AuthRequest, res: 
 // Estado da conexão: "open" = WhatsApp conectado e recebendo mensagens.
 router.get('/evolution/status', authMiddleware, async (req: AuthRequest, res: Response) => {
   if (!evolutionConfigured()) return res.json({ available: false, state: 'unavailable' });
-  const state = await getConnectionState(req.userId!, resolveBusinessId(req));
-  res.json({ available: true, state, connected: state === 'open' });
+  // Falha ao falar com a Evolution (chave recusada, URL errada, serviço fora)
+  // NÃO pode virar 500: a tela interpretava 500 como "recurso não existe" e
+  // escondia o bloco de conexão inteiro — o cliente ficava sem o botão e sem
+  // saber por quê (15/09/2026: variáveis certas, serviço no ar, bloco sumido).
+  // A integração existe; o que falhou foi a consulta. Diz isso, com o motivo.
+  try {
+    const state = await getConnectionState(req.userId!, resolveBusinessId(req));
+    res.json({ available: true, state, connected: state === 'open' });
+  } catch (e) {
+    const motivo = e instanceof Error ? e.message : String(e);
+    console.error('[whatsapp:evolution/status] consulta à Evolution falhou:', motivo);
+    res.json({ available: true, state: 'error', connected: false, error: motivo.slice(0, 200) });
+  }
 });
 
 // Desconecta a sessão do WhatsApp (logout). A instância continua existindo;
