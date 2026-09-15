@@ -335,6 +335,33 @@ describe('Palavra-gatilho por negócio', () => {
     expect(convs).toHaveLength(1);
   });
 
+  it('vários gatilhos separados por vírgula: casa com QUALQUER um deles', async () => {
+    await upsertConfig('trig-multi', { triggerKeyword: 'vi o anúncio, quero uma cotação , promoção samel' });
+
+    // Nenhum dos 3 gatilhos presente: ignorado.
+    const semGatilho = await request(app).post('/api/whatsapp/simulate')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ businessId: 'trig-multi', from: '+551190007201', text: 'oi, tudo bem?' });
+    expect(semGatilho.body).toEqual({ skipped: 'bot desligado ou sem config' });
+
+    // Casa com o 2º gatilho da lista.
+    const comSegundo = await request(app).post('/api/whatsapp/simulate')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ businessId: 'trig-multi', from: '+551190007202', text: 'Quero uma COTAÇÃO, por favor' });
+    expect(comSegundo.body.reply).toBeDefined();
+
+    // Casa com o 3º gatilho (espaço extra ao redor da vírgula não sobra no termo).
+    const comTerceiro = await request(app).post('/api/whatsapp/simulate')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ businessId: 'trig-multi', from: '+551190007203', text: 'vi a promocao samel no instagram' });
+    expect(comTerceiro.body.reply).toBeDefined();
+
+    const convs = await prisma.whatsappConversation.findMany({
+      where: { userId, businessId: 'trig-multi' },
+    });
+    expect(convs).toHaveLength(2); // só as 2 que casaram
+  });
+
   it('a franquia diária não é consumida por mensagens barradas pelo gatilho', async () => {
     await upsertConfig('trig-c', { triggerKeyword: 'orçamento' }, { dailyFreeConversations: 1 });
 
