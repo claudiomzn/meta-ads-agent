@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  cotarRespeitandoPreferencia,
   extrairDadosParaCotacao,
   montarNotaParaVendedor,
   pedirCotacao,
@@ -19,7 +20,7 @@ describe('resolverIntegracao — só a conta configurada', () => {
 
   it('liga pelo e-mail (sem caixa) e traz a operadora padrão', () => {
     const i = resolverIntegracao(luiz, ENV_OK);
-    expect(i).toEqual({ url: ENV_OK.COTE_QUOTE_URL, key: 'chave', operadora: 'samel' });
+    expect(i).toEqual({ url: ENV_OK.COTE_QUOTE_URL, key: 'chave', operadoras: ['samel'] });
   });
 
   it('liga também pelo id interno', () => {
@@ -35,8 +36,9 @@ describe('resolverIntegracao — só a conta configurada', () => {
     expect(resolverIntegracao(luiz, {})).toBeNull();
   });
 
-  it('operadora configurável', () => {
-    expect(resolverIntegracao(luiz, { ...ENV_OK, COTE_QUOTE_OPERATOR: 'hapvida' })?.operadora).toBe('hapvida');
+  it('leque padrão configurável: lista separada por vírgula, sem caixa', () => {
+    expect(resolverIntegracao(luiz, { ...ENV_OK, COTE_QUOTE_OPERATOR: 'Samel, Hapvida ,' })?.operadoras)
+      .toEqual(['samel', 'hapvida']);
   });
 });
 
@@ -60,6 +62,12 @@ describe('extrairDadosParaCotacao — o que a IA estruturou é entrada externa',
     expect(extrairDadosParaCotacao({ tipo: 'pf', vidas: 3, idades: [35] })).toBeNull();
   });
 
+  it('operadora que o lead pediu vem junto; vazia não vem', () => {
+    expect(extrairDadosParaCotacao({ tipo: 'pf', idades: [35], operadora: ' Hapvida ' }))
+      .toEqual({ tipo: 'pf', idades: [35], operadora: 'Hapvida' });
+    expect(extrairDadosParaCotacao({ tipo: 'pf', idades: [35], operadora: null })).toEqual({ tipo: 'pf', idades: [35] });
+  });
+
   it('tipo desconhecido, null ou não-objeto: null', () => {
     expect(extrairDadosParaCotacao({ tipo: 'empresa', idades: [35] })).toBeNull();
     expect(extrairDadosParaCotacao(null)).toBeNull();
@@ -76,7 +84,19 @@ describe('podeCotarAutomaticamente — só pessoa física', () => {
 });
 
 describe('pedirCotacao — a chamada ao Cote+', () => {
-  const integracao = { url: ENV_OK.COTE_QUOTE_URL, key: 'chave', operadora: 'samel' };
+  const integracao = { url: ENV_OK.COTE_QUOTE_URL, key: 'chave', operadoras: ['samel'] };
+
+  it('sem preferência: manda o leque padrão', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, texto: 'x', planos: [{}] }) });
+    await pedirCotacao({ ...integracao, operadoras: ['samel', 'hapvida'] }, { tipo: 'pf', idades: [35] }, { fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).operadoras).toEqual(['samel', 'hapvida']);
+  });
+
+  it('com preferência: manda só a operadora que o lead pediu', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, texto: 'x', planos: [{}] }) });
+    await pedirCotacao(integracao, { tipo: 'pf', idades: [35], operadora: 'Hapvida' }, { fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).operadoras).toEqual(['Hapvida']);
+  });
 
   it('manda idades, operadora e a chave no header; devolve o corpo', async () => {
     const fetchImpl = vi.fn().mockResolvedValue({
@@ -89,7 +109,7 @@ describe('pedirCotacao — a chamada ao Cote+', () => {
     const [url, init] = fetchImpl.mock.calls[0];
     expect(url).toBe(integracao.url);
     expect(init.headers['x-integration-key']).toBe('chave');
-    expect(JSON.parse(init.body)).toMatchObject({ idades: [5, 10, 35], operadora: 'samel', modalidade: 'individual' });
+    expect(JSON.parse(init.body)).toMatchObject({ idades: [5, 10, 35], operadoras: ['samel'], modalidade: 'individual' });
   });
 
   it('HTTP não-ok lança com o status — quem chama faz o fallback honesto', async () => {
@@ -99,12 +119,42 @@ describe('pedirCotacao — a chamada ao Cote+', () => {
   });
 });
 
+describe('cotarRespeitandoPreferencia — pediu operadora que não existe', () => {
+  const integracao = { url: ENV_OK.COTE_QUOTE_URL, key: 'chave', operadoras: ['samel'] };
+  const dados = { tipo: 'pf' as const, idades: [35], operadora: 'Unimed' };
+
+  it('operadora pedida sem plano: cota o leque padrão e avisa o lead', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ ok: true, texto: '', planos: [], operadoras_nao_encontradas: ['unimed'] }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ ok: true, texto: 'Samel: R$ 300', planos: [{}], avisos: [] }) });
+    const r = await cotarRespeitandoPreferencia(integracao, dados, { fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetchImpl.mock.calls[1][1].body).operadoras).toEqual(['samel']);
+    expect(r.texto).toMatch(/^Não trabalho com Unimed por aqui, mas estas são as opções que tenho:/);
+    expect(r.texto).toContain('Samel: R$ 300');
+    expect(r.avisos?.[0]).toContain('Lead pediu "Unimed"');
+  });
+
+  it('operadora pedida com plano: uma chamada só, texto intacto', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, texto: 'Hapvida: R$ 200', planos: [{}] }) });
+    const r = await cotarRespeitandoPreferencia(integracao, { ...dados, operadora: 'Hapvida' }, { fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(r.texto).toBe('Hapvida: R$ 200');
+  });
+
+  it('sem preferência e sem plano: não tenta de novo (nada a substituir)', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, texto: '', planos: [] }) });
+    await cotarRespeitandoPreferencia(integracao, { tipo: 'pf', idades: [35] }, { fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('montarNotaParaVendedor — o vendedor nunca repete as perguntas', () => {
   const dados = { tipo: 'pf' as const, idades: [5, 10, 35] };
 
-  it('cotação enviada: idades + o texto que o lead viu + avisos', () => {
-    const nota = montarNotaParaVendedor(dados, { ok: true, texto: 'Samel: R$ 900', avisos: ['tabela vence em 20 dias'] });
-    expect(nota).toContain('Idades: 5, 10, 35 (PF)');
+  it('cotação enviada: idades + operadora pedida + o texto que o lead viu + avisos', () => {
+    const nota = montarNotaParaVendedor({ ...dados, operadora: 'Samel' }, { ok: true, texto: 'Samel: R$ 900', avisos: ['tabela vence em 20 dias'] });
+    expect(nota).toContain('Idades: 5, 10, 35 (PF) · pediu Samel');
     expect(nota).toContain('✅ Cotação enviada ao lead');
     expect(nota).toContain('R$ 900');
     expect(nota).toContain('⚠️ tabela vence em 20 dias');

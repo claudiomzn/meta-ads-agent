@@ -47,7 +47,7 @@ export interface QualResult {
   /** O que o lead disse, estruturado (só quando done): tipo e idades. A IA
    *  não inventa — ela organiza as respostas do lead. Validado por quem usa
    *  (cotacao.integration.ts) como entrada externa. */
-  dados?: { tipo?: string; idades?: number[]; vidas?: number };
+  dados?: { tipo?: string; idades?: number[]; vidas?: number; operadora?: string | null };
 }
 
 function buildSystemPrompt(cfg: QualConfig): string {
@@ -78,7 +78,7 @@ FORMATO DE RESPOSTA — responda SEMPRE em JSON válido, sem markdown:
   "dados": null
 }
 Quando encerrar (done=true): "label" deve ser "QUENTE" (qualificado) ou "FRIO" (sem intenção), e "summary" um resumo de 1 linha para o vendedor com os dados coletados.
-"dados" (só quando done=true) organiza o que o lead INFORMOU, sem inventar nada: {"tipo": "pf" ou "cnpj" ou null, "vidas": número de pessoas ou null, "idades": [idades em anos, na ordem em que o lead disse] ou []}. Se o lead não disse as idades, "idades" fica [] — nunca estime.`;
+"dados" (só quando done=true) organiza o que o lead INFORMOU, sem inventar nada: {"tipo": "pf" ou "cnpj" ou null, "vidas": número de pessoas ou null, "idades": [idades em anos, na ordem em que o lead disse] ou [], "operadora": nome da operadora/plano que o lead disse preferir (ex.: "Hapvida", "Samel") ou null}. Se o lead não disse as idades, "idades" fica [] — nunca estime. Se não citou operadora, "operadora" é null — não sugira uma.`;
 }
 
 function extractJson(text: string): string {
