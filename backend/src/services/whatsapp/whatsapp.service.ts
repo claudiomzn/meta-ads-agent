@@ -32,6 +32,27 @@ function normalizeForTrigger(text: string): string {
     .trim();
 }
 
+// O campo aceita UMA frase ou VÁRIAS separadas por vírgula (ex.: campanhas
+// diferentes com mensagens pré-escritas diferentes, todas pro mesmo número).
+// PURO: split, trim, descarta vazio ("a,,b" ou ", " nas pontas não vira
+// gatilho fantasma que nunca casa).
+export function parseTriggerKeywords(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((k) => k.trim())
+    .filter((k) => k.length > 0);
+}
+
+// A mensagem do lead casa com ALGUM dos gatilhos configurados? Lista vazia
+// (campo em branco) = sem restrição, atende todo mundo — comportamento de
+// sempre, preservado.
+export function matchesAnyTrigger(triggerField: string | null | undefined, messageText: string): boolean {
+  const keywords = parseTriggerKeywords(triggerField ?? '');
+  if (keywords.length === 0) return true;
+  const msg = normalizeForTrigger(messageText);
+  return keywords.some((k) => msg.includes(normalizeForTrigger(k)));
+}
+
 // Negócio "default" — mesmo sentinela do schema (WhatsappConfig.businessId) e
 // do evolution.manager (DEFAULT_BUSINESS). Contas de hoje (1 config por
 // usuário) continuam funcionando: businessId ausente = "default".
@@ -158,12 +179,9 @@ export class WhatsappService {
       // gatilho, ignora em silêncio — ANTES de contar franquia/billable e de
       // chamar a IA: mensagem ignorada não pode consumir nada nem criar
       // conversa. Conversa já existente (ramo de baixo) nunca reavalia isto.
-      if (config.triggerKeyword && config.triggerKeyword.trim()) {
-        const keyword = normalizeForTrigger(config.triggerKeyword);
-        if (keyword && !normalizeForTrigger(msg.text).includes(keyword)) {
-          console.log(`[whatsapp:trigger] msg sem gatilho "${config.triggerKeyword}" ignorada (userId ${this.userId}, negócio ${this.businessId}, lead ${msg.from})`);
-          return null;
-        }
+      if (!matchesAnyTrigger(config.triggerKeyword, msg.text)) {
+        console.log(`[whatsapp:trigger] msg sem nenhum gatilho de "${config.triggerKeyword}" ignorada (userId ${this.userId}, negócio ${this.businessId}, lead ${msg.from})`);
+        return null;
       }
 
       // Limite diário: as primeiras N conversas NOVAS do dia são grátis; a
