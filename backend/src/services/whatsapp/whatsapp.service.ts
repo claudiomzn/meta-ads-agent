@@ -8,7 +8,7 @@ import {
   type CotacaoResultado,
   extrairDadosParaCotacao,
   montarNotaParaVendedor,
-  pedirCotacao,
+  cotarRespeitandoPreferencia,
   podeCotarAutomaticamente,
   REPLY_COTACAO_AGORA,
   REPLY_COTACAO_FALHOU,
@@ -251,7 +251,7 @@ export class WhatsappService {
       let cotacao: CotacaoResultado | null = null;
       let falha: string | undefined;
       try {
-        cotacao = await pedirCotacao(integracao, dadosLead);
+        cotacao = await cotarRespeitandoPreferencia(integracao, dadosLead);
       } catch (e) {
         falha = e instanceof Error ? e.message : String(e);
         console.error('[whatsapp:cotacao] falha ao pedir cotação ao Cote+:', e);

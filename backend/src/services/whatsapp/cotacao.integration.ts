@@ -16,17 +16,22 @@
 //                        que se sabe de cabeça, o id exigiria abrir o banco
 //   COTE_QUOTE_URL       https://<projeto>.supabase.co/functions/v1/cotacao-externa
 //   COTE_QUOTE_KEY       a mesma chave configurada como COTACAO_EXTERNA_KEY no Cote+
-//   COTE_QUOTE_OPERATOR  operadora a cotar (padrão "samel")
+//   COTE_QUOTE_OPERATOR  operadoras do leque padrão, separadas por vírgula
+//                        (ex.: "samel,hapvida"; padrão "samel") — usadas quando
+//                        o lead não disse preferência
 
 export interface DadosDoLead {
   tipo: 'pf' | 'cnpj';
   idades: number[];
+  /** Operadora que o lead disse preferir, se disse. */
+  operadora?: string;
 }
 
 export interface IntegracaoCotacao {
   url: string;
   key: string;
-  operadora: string;
+  /** Leque padrão, quando o lead não pediu operadora. */
+  operadoras: string[];
 }
 
 export interface CotacaoResultado {
@@ -34,6 +39,8 @@ export interface CotacaoResultado {
   texto?: string;
   avisos?: string[];
   planos?: unknown[];
+  operadoras_encontradas?: string[];
+  operadoras_nao_encontradas?: string[];
   error?: string;
 }
 
@@ -56,7 +63,9 @@ export function resolverIntegracao(
   if (!alvo || !url || !key) return null;
   const minhas = [identidades.userId, identidades.email ?? ''].map((x) => x.trim().toLowerCase()).filter(Boolean);
   if (!minhas.includes(alvo)) return null;
-  return { url, key, operadora: (env.COTE_QUOTE_OPERATOR ?? 'samel').trim() || 'samel' };
+  const operadoras = (env.COTE_QUOTE_OPERATOR ?? 'samel')
+    .split(',').map((o) => o.trim().toLowerCase()).filter(Boolean);
+  return { url, key, operadoras: operadoras.length ? operadoras : ['samel'] };
 }
 
 // PURO. O que a IA devolveu em `dados` serve para cotar? Ela só ESTRUTURA o
@@ -74,7 +83,9 @@ export function extrairDadosParaCotacao(dados: unknown): DadosDoLead | null {
   if (idades.length === 0 || idades.length > MAX_VIDAS) return null;
   const vidas = Number(d.vidas);
   if (Number.isInteger(vidas) && vidas > 0 && vidas !== idades.length) return null;
-  return { tipo: tipo as 'pf' | 'cnpj', idades };
+  // Operadora é texto do lead: curta, sem lixo. Vazia = sem preferência.
+  const operadora = String(d.operadora ?? '').trim().slice(0, 40);
+  return { tipo: tipo as 'pf' | 'cnpj', idades, ...(operadora ? { operadora } : {}) };
 }
 
 /** Cotação automática só para pessoa física; CNPJ tem negociação e vai ao corretor. */
@@ -87,15 +98,16 @@ export function podeCotarAutomaticamente(dados: DadosDoLead | null): dados is Da
 export async function pedirCotacao(
   integracao: IntegracaoCotacao,
   dados: DadosDoLead,
-  opts: { fetchImpl?: typeof fetch; timeoutMs?: number } = {},
+  opts: { fetchImpl?: typeof fetch; timeoutMs?: number; operadoras?: string[] } = {},
 ): Promise<CotacaoResultado> {
   const f = opts.fetchImpl ?? fetch;
+  const operadoras = opts.operadoras ?? (dados.operadora ? [dados.operadora] : integracao.operadoras);
   const resp = await f(integracao.url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-integration-key': integracao.key },
     body: JSON.stringify({
       idades: dados.idades,
-      operadora: integracao.operadora,
+      operadoras,
       modalidade: 'individual',
       coparticipacao: 'sem',
     }),
@@ -106,6 +118,27 @@ export async function pedirCotacao(
   return body;
 }
 
+// O lead pediu uma operadora que o corretor não trabalha? Cota o leque
+// padrão e diz isso ao lead, em vez de deixá-lo sem nada. Lançamentos de
+// rede sobem para quem chama (fallback honesto está lá).
+export async function cotarRespeitandoPreferencia(
+  integracao: IntegracaoCotacao,
+  dados: DadosDoLead,
+  opts: { fetchImpl?: typeof fetch; timeoutMs?: number } = {},
+): Promise<CotacaoResultado> {
+  const primeira = await pedirCotacao(integracao, dados, opts);
+  const pediu = dados.operadora?.trim();
+  if (!pediu || !primeira.ok || (primeira.planos?.length ?? 0) > 0) return primeira;
+
+  const padrao = await pedirCotacao(integracao, dados, { ...opts, operadoras: integracao.operadoras });
+  if (!padrao.ok || !padrao.texto) return padrao;
+  return {
+    ...padrao,
+    texto: `Não trabalho com ${pediu} por aqui, mas estas são as opções que tenho:\n\n${padrao.texto}`,
+    avisos: [`Lead pediu "${pediu}" (sem tabela); cotado o leque padrão`, ...(padrao.avisos ?? [])],
+  };
+}
+
 // PURO. O que o vendedor recebe junto com o resumo: a cotação que o lead viu
 // (para continuar de onde o bot parou) ou o motivo de não ter havido cotação
 // (para cotar à mão na hora, sem perguntar as idades de novo).
@@ -114,7 +147,9 @@ export function montarNotaParaVendedor(
   cotacao: CotacaoResultado | null,
   falha?: string,
 ): string {
-  const idades = dados ? `Idades: ${dados.idades.join(', ')} (${dados.tipo.toUpperCase()})` : 'Idades: não identificadas na conversa';
+  const idades = dados
+    ? `Idades: ${dados.idades.join(', ')} (${dados.tipo.toUpperCase()})${dados.operadora ? ` · pediu ${dados.operadora}` : ''}`
+    : 'Idades: não identificadas na conversa';
   if (cotacao?.ok && cotacao.texto) {
     const avisos = cotacao.avisos?.length ? `\n⚠️ ${cotacao.avisos.join(' · ')}` : '';
     return `${idades}\n✅ Cotação enviada ao lead:\n${cotacao.texto}${avisos}`;
