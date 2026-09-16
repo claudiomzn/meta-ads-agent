@@ -86,6 +86,12 @@ export class EvolutionTransport implements WhatsappTransport {
     if (!body) return null;
     if (body.event && body.event !== 'messages.upsert') return null;
 
+    // Diagnóstico: se `data` vier como array com mais de 1 item, hoje só o
+    // primeiro é usado — se não for a mensagem certa, o texto extraído é
+    // silenciosamente o errado. Logar o tamanho ajuda a confirmar/descartar isso.
+    if (Array.isArray(body.data) && body.data.length > 1) {
+      console.warn(`[whatsapp:evolution] webhook com data[] de ${body.data.length} itens — usando só o índice 0`);
+    }
     const raw = Array.isArray(body.data) ? body.data[0] : body.data;
     const data = raw as {
       key?: { remoteJid?: string; fromMe?: boolean };
