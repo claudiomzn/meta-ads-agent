@@ -91,12 +91,20 @@ export interface ConnectResult {
 }
 
 // Estado da conexão: "open" (conectado) | "connecting" | "close" | "not_found"
-export async function getConnectionState(userId: string, businessId?: string | null): Promise<string> {
-  // Com timeout: Evolution hibernando (Render free) demorava até 1 min e a
-  // consulta ficava pendurada — a tela desistia antes e escondia o bloco.
+export async function getConnectionState(
+  userId: string,
+  businessId?: string | null,
+  // 15s serve pra polling em background (/evolution/status): falha rápido,
+  // a tela mostra o aviso e o cliente tenta de novo. Dentro de connectInstance
+  // (ação explícita do cliente, ele já está esperando) o mesmo limite curto
+  // vinha derrubando a conexão com "aborted due to timeout" bem no momento
+  // em que a Evolution está acordando de hibernar — a pior hora pra ter
+  // pressa. connectInstance passa um timeout maior (ver abaixo).
+  timeoutMs = 15_000,
+): Promise<string> {
   const resp = await fetch(`${baseUrl()}/instance/connectionState/${instanceName(userId, businessId)}`, {
     headers: headers(),
-    signal: AbortSignal.timeout(15_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (resp.status === 404) return 'not_found';
   if (!resp.ok) throw new Error(`Evolution connectionState ${resp.status}: ${await resp.text()}`);
@@ -149,8 +157,11 @@ export async function connectInstance(userId: string, businessId?: string | null
     if (!retry.ok) console.warn(`[evolution] webhook/set falhou (${hookResp.status}/${retry.status}) — instância ${name}`);
   }
 
-  // 3. Estado atual; se já conectado, não precisa de QR
-  const state = await getConnectionState(userId, businessId);
+  // 3. Estado atual; se já conectado, não precisa de QR. Timeout maior que o
+  // do polling: o cliente está esperando por uma ação que ele mesmo pediu,
+  // e é justamente aqui — 1º uso do dia, Evolution ainda dormindo — que o
+  // limite curto do polling falhava sem necessidade.
+  const state = await getConnectionState(userId, businessId, 45_000);
   if (state === 'open') return { qrBase64: null, pairingCode: null, state };
 
   if (createdQr) return { qrBase64: createdQr, pairingCode: createdPairing, state };
