@@ -386,6 +386,85 @@ describe('Palavra-gatilho por negócio', () => {
   });
 });
 
+describe('Config não apaga a conexão do WhatsApp gerenciado (15/09/2026)', () => {
+  // Simula o que /evolution/connect grava direto no banco (transport +
+  // instance), sem passar pela rota HTTP — evita depender da Evolution real.
+  async function simulaConexaoGerenciada(businessId: string, instance = 'adsgenius_xyz') {
+    await upsertConfig(businessId);
+    await prisma.whatsappConfig.update({
+      where: { userId_businessId: { userId, businessId } },
+      data: { transport: 'evolution', transportConfig: { instance } },
+    });
+  }
+
+  it('salvar OUTRO campo (ex.: gatilho) com transportConfig vazio NÃO apaga a instância conectada', async () => {
+    await simulaConexaoGerenciada('conn-a');
+
+    // Isto é exatamente o que o formulário principal reenviava antes do fix:
+    // transport:'evolution' (copiado do state local após conectar) com
+    // transportConfig:{} (nunca sincronizado com o que o banco realmente tem).
+    const res = await upsertConfig('conn-a', {
+      triggerKeyword: 'nova palavra',
+      transport: 'evolution',
+      transportConfig: {},
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.triggerKeyword).toBe('nova palavra'); // o campo pedido MUDOU
+
+    const config = await prisma.whatsappConfig.findUnique({
+      where: { userId_businessId: { userId, businessId: 'conn-a' } },
+    });
+    expect(config?.transport).toBe('evolution');
+    expect(config?.transportConfig).toEqual({ instance: 'adsgenius_xyz' }); // preservado
+  });
+
+  it('transport "none" explícito É aceito — desconectar de propósito continua possível', async () => {
+    await simulaConexaoGerenciada('conn-b');
+
+    await upsertConfig('conn-b', { transport: 'none', transportConfig: {} });
+
+    const config = await prisma.whatsappConfig.findUnique({
+      where: { userId_businessId: { userId, businessId: 'conn-b' } },
+    });
+    expect(config?.transport).toBe('none');
+    expect(config?.transportConfig).toEqual({});
+  });
+
+  it('self-hosted COMPLETO (baseUrl+apiKey+instance) substitui o gerenciado — mudança de propósito é aceita', async () => {
+    await simulaConexaoGerenciada('conn-c');
+
+    await upsertConfig('conn-c', {
+      transport: 'evolution',
+      transportConfig: { baseUrl: 'https://minha-evolution.com', apiKey: 'chave', instance: 'principal' },
+    });
+
+    const config = await prisma.whatsappConfig.findUnique({
+      where: { userId_businessId: { userId, businessId: 'conn-c' } },
+    });
+    expect(config?.transportConfig).toEqual({ baseUrl: 'https://minha-evolution.com', apiKey: 'chave', instance: 'principal' });
+  });
+
+  it('self-hosted INCOMPLETO (só baseUrl preenchido, ainda digitando) não apaga o gerenciado', async () => {
+    await simulaConexaoGerenciada('conn-d');
+
+    await upsertConfig('conn-d', {
+      transport: 'evolution',
+      transportConfig: { baseUrl: 'https://minha-evolution.com' }, // sem apiKey/instance
+    });
+
+    const config = await prisma.whatsappConfig.findUnique({
+      where: { userId_businessId: { userId, businessId: 'conn-d' } },
+    });
+    expect(config?.transportConfig).toEqual({ instance: 'adsgenius_xyz' }); // ainda o gerenciado
+  });
+
+  it('negócio NOVO (sem config prévia) com transport incompleto nasce com "none" — comportamento de sempre', async () => {
+    const res = await upsertConfig('conn-e', { transport: 'evolution', transportConfig: {} });
+    expect(res.status).toBe(200);
+    expect(res.body.transport).toBe('none');
+  });
+});
+
 describe('Remoção de negócio', () => {
   it('não permite remover o negócio "default"', async () => {
     const res = await request(app)

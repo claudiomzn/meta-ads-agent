@@ -102,7 +102,41 @@ export class WhatsappService {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // `transport`/`transportConfig` são geridos por /evolution/connect (modo
+  // gerenciado, que grava a instância direto no banco) e pela seção
+  // "Transporte avançado" (self-hosted) — não pelo formulário principal de
+  // persona/perguntas. O frontend reenvia aqui o que tem em memória local, e
+  // esse estado local só reflete `transport` depois de conectar (nunca
+  // `transportConfig.instance`, que só existe no banco). Sem esta trava,
+  // salvar QUALQUER outro campo (pergunta, gatilho, critério) sobrescrevia
+  // `transportConfig` para `{}`, apagando a instância conectada — o bot
+  // ficava mudo pra mensagens reais enquanto a tela ainda mostrava
+  // "conectado" (esse status vem da Evolution, não deste campo). Caso real:
+  // 15/09/2026.
+  //
+  // Regra: só aceita mudar transport/transportConfig quando o payload chega
+  // COMPLETO para o que ele mesmo declara — gerenciado: `instance` presente
+  // e nenhum campo de self-hosted; self-hosted: baseUrl+apiKey+instance
+  // todos presentes; ou `'none'` explícito. Fora isso, preserva o que já
+  // está gravado — melhor ignorar um envio incompleto do que apagar uma
+  // conexão que funciona.
+  private declaraTransporteCompleto(transport: unknown, cfg: Record<string, any>): boolean {
+    if (transport === 'none') return true;
+    if (transport !== 'evolution') return false;
+    const selfHosted = Boolean(cfg.baseUrl || cfg.apiKey);
+    if (selfHosted) return Boolean(cfg.baseUrl && cfg.apiKey && cfg.instance);
+    return Boolean(cfg.instance);
+  }
+
   async upsertConfig(data: Record<string, any>) {
+    const existing = await this.getConfig();
+    const incomingCfg: Record<string, any> = data.transportConfig ?? {};
+    const mantemTransporteAtual = !this.declaraTransporteCompleto(data.transport, incomingCfg);
+    const transport: string = mantemTransporteAtual ? (existing?.transport ?? 'none') : data.transport;
+    const transportConfig: any = mantemTransporteAtual
+      ? (existing?.transportConfig ?? {})
+      : incomingCfg;
+
     const base = {
       businessName: data.businessName ?? 'Meu Negócio',
       product: data.product ?? '',
@@ -116,8 +150,8 @@ export class WhatsappService {
       handoffContact: data.handoffContact ?? null,
       businessHours: data.businessHours ?? null,
       triggerKeyword: data.triggerKeyword ?? null,
-      transport: data.transport ?? 'none',
-      transportConfig: data.transportConfig ?? {},
+      transport,
+      transportConfig,
       conversionId: data.conversionId ?? null,
       conversionLabel: data.conversionLabel ?? null,
       enabled: data.enabled ?? false,
