@@ -156,7 +156,10 @@ router.post('/evolution/connect', authMiddleware, async (req: AuthRequest, res: 
     });
   }
 
-  res.json(result);
+  // A instância vai na resposta pro frontend sincronizar o estado local
+  // (senão o próximo "Salvar configuração" reenvia transportConfig vazio —
+  // ver o guard em upsertConfig).
+  res.json({ ...result, transportConfig: data.transportConfig });
 });
 
 // Estado da conexão: "open" = WhatsApp conectado e recebendo mensagens.
