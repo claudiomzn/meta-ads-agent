@@ -214,7 +214,10 @@ export class WhatsappService {
       // chamar a IA: mensagem ignorada não pode consumir nada nem criar
       // conversa. Conversa já existente (ramo de baixo) nunca reavalia isto.
       if (!matchesAnyTrigger(config.triggerKeyword, msg.text)) {
-        console.log(`[whatsapp:trigger] msg sem nenhum gatilho de "${config.triggerKeyword}" ignorada (userId ${this.userId}, negócio ${this.businessId}, lead ${msg.from})`);
+        // Log inclui o texto RECEBIDO (truncado) — sem isso não dá pra saber se
+        // o gatilho não bateu porque a mensagem realmente não continha a frase,
+        // ou porque o texto extraído do payload não é o que o lead digitou.
+        console.log(`[whatsapp:trigger] msg sem nenhum gatilho de "${config.triggerKeyword}" ignorada — texto recebido: ${JSON.stringify(msg.text.slice(0, 200))} (userId ${this.userId}, negócio ${this.businessId}, lead ${msg.from})`);
         return null;
       }
 
