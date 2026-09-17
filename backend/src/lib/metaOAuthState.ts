@@ -50,6 +50,20 @@ export function createMetaOAuthState(
 }
 
 /**
+ * Só valida a ASSINATURA e o formato do `state` — sem checar o cookie. Existe
+ * para o passo intermediário `/oauth/start` (ver mcp.routes.ts): ele recebe o
+ * `state` ainda sem nenhum cookie ter sido setado (é ele que vai setar), então
+ * não tem como nem deve checar o nonce ainda.
+ */
+export function decodeMetaOAuthState(state: string, secret: string): { userId: string; nonce: string } {
+  const payload = jwt.verify(state, secret) as MetaOAuthPayload;
+  if (payload.purpose !== 'meta_oauth' || !payload.userId || !payload.nonce) {
+    throw new Error('OAuth inválido');
+  }
+  return { userId: payload.userId, nonce: payload.nonce };
+}
+
+/**
  * Além de validar a assinatura, exige o nonce HttpOnly criado no navegador que
  * iniciou o fluxo. Um state válido copiado para outro navegador deixa de poder
  * vincular a conta Meta da vítima à conta AdsGenius do atacante.
@@ -59,15 +73,9 @@ export function verifyMetaOAuthState(
   cookieHeader: string | undefined,
   secret: string,
 ): { userId: string } {
-  const payload = jwt.verify(state, secret) as MetaOAuthPayload;
+  const payload = decodeMetaOAuthState(state, secret);
   const cookieNonce = readCookie(cookieHeader, META_OAUTH_COOKIE);
-  if (
-    payload.purpose !== 'meta_oauth' ||
-    !payload.userId ||
-    !payload.nonce ||
-    !cookieNonce ||
-    !safeEqual(payload.nonce, cookieNonce)
-  ) {
+  if (!cookieNonce || !safeEqual(payload.nonce, cookieNonce)) {
     throw new Error('OAuth inválido');
   }
   return { userId: payload.userId };
