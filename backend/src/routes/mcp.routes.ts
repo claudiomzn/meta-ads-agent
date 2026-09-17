@@ -197,10 +197,27 @@ router.post('/webhook', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Devolve o cliente à tela de conexão dizendo o que houve.
+//
+// Mandar só `oauth_error=1` obrigava a abrir o log do Render para saber o
+// motivo — e o cliente via a mesma tela de antes, como se o clique não tivesse
+// acontecido. É isso que fez a falha parecer um "loop" em vez de um erro: cada
+// tentativa voltava muda. O motivo trafega na URL porque todas as mensagens
+// aqui são escritas por nós ou pela própria Meta; nenhuma carrega segredo.
+function redirectToConnect(res: Response, reason?: unknown): void {
+  const frontend = (process.env.FRONTEND_URL ?? 'https://app.adsgenius.net').replace(/\/$/, '');
+  if (reason === undefined) {
+    res.redirect(302, `${frontend}/app/meta/connect?connected=1`);
+    return;
+  }
+  const message = reason instanceof Error ? reason.message : String(reason);
+  const motivo = encodeURIComponent(message.slice(0, 200));
+  res.redirect(302, `${frontend}/app/meta/connect?oauth_error=1&motivo=${motivo}`);
+}
+
 // Callback público do OAuth Meta. A identidade fica no state assinado e curto;
 // nenhum userId vindo livremente da URL é aceito.
 router.get('/oauth/callback', async (req: AuthRequest, res: Response) => {
-  const frontend = process.env.FRONTEND_URL ?? 'https://app.adsgenius.net';
   const cookieOptions = {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
@@ -241,7 +258,20 @@ router.get('/oauth/callback', async (req: AuthRequest, res: Response) => {
     tokenUrl.searchParams.set('redirect_uri', redirectUri);
     tokenUrl.searchParams.set('code', code);
     const shortResponse = await fetch(tokenUrl, { signal: AbortSignal.timeout(10_000) });
-    if (!shortResponse.ok) throw new Error('Falha ao trocar código OAuth');
+    if (!shortResponse.ok) {
+      // A Meta diz com todas as letras o que recusou aqui (redirect_uri que não
+      // bate com a cadastrada no app, código já usado, app_secret errada). O
+      // código antigo jogava esse corpo fora e deixava só "Falha ao trocar
+      // código OAuth" — era impossível distinguir erro de configuração de erro
+      // de fluxo sem tentar adivinhar. O corpo fica no log, não na URL, porque
+      // é resposta de terceiro e pode ecoar parâmetros nossos.
+      const detail = await shortResponse.text().catch(() => '');
+      console.error(
+        `[meta:oauth:callback] troca de código recusada (HTTP ${shortResponse.status}):`,
+        detail.slice(0, 500),
+      );
+      throw new Error(`Falha ao trocar código OAuth (HTTP ${shortResponse.status})`);
+    }
     const short = await shortResponse.json() as { access_token?: string };
     if (!short.access_token) throw new Error('Token OAuth ausente');
 
@@ -288,11 +318,11 @@ router.get('/oauth/callback', async (req: AuthRequest, res: Response) => {
     });
     await auditLog({ userId: payload.userId, action: 'META_OAUTH_CONNECT', resource: 'mcp_connection' });
     res.clearCookie(META_OAUTH_COOKIE, cookieOptions);
-    res.redirect(302, `${frontend.replace(/\/$/, '')}/app/meta/connect?connected=1`);
+    redirectToConnect(res);
   } catch (error) {
     console.error('[meta:oauth:callback]', error);
     res.clearCookie(META_OAUTH_COOKIE, cookieOptions);
-    res.redirect(302, `${frontend.replace(/\/$/, '')}/app/meta/connect?oauth_error=1`);
+    redirectToConnect(res, error);
   }
 });
 
@@ -310,7 +340,6 @@ router.get('/oauth/callback', async (req: AuthRequest, res: Response) => {
 // requisição de primeira parte de verdade, e o cookie é gravado de forma
 // confiável. Só então redireciona para a Meta.
 router.get('/oauth/start', (req: AuthRequest, res: Response) => {
-  const frontend = process.env.FRONTEND_URL ?? 'https://app.adsgenius.net';
   try {
     if (!isMetaOAuthEnabled()) throw new Error('OAuth desativado');
     const appId = process.env.META_APP_ID;
@@ -339,7 +368,7 @@ router.get('/oauth/start', (req: AuthRequest, res: Response) => {
     res.redirect(302, url.toString());
   } catch (error) {
     console.error('[meta:oauth:start]', error);
-    res.redirect(302, `${frontend.replace(/\/$/, '')}/app/meta/connect?oauth_error=1`);
+    redirectToConnect(res, error);
   }
 });
 
