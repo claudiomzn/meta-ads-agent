@@ -2,7 +2,11 @@ import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 
 export const META_OAUTH_COOKIE = 'meta_oauth_nonce';
-export const META_OAUTH_MAX_AGE_MS = 10 * 60_000;
+// 10 minutos era curto demais para o fluxo real: escolher Página, revisar as
+// 4 permissões e concluir na tela da Meta leva mais que um clique rápido —
+// confirmado ao vivo (16/09/2026) com `TokenExpiredError: jwt expired` numa
+// tentativa genuína, não travada em nenhuma etapa.
+export const META_OAUTH_MAX_AGE_MS = 30 * 60_000;
 
 interface MetaOAuthPayload {
   purpose?: string;
@@ -40,7 +44,7 @@ export function createMetaOAuthState(
   const state = jwt.sign(
     { purpose: 'meta_oauth', userId, nonce },
     secret,
-    { expiresIn: '10m' },
+    { expiresIn: '30m' },
   );
   return { state, nonce };
 }
