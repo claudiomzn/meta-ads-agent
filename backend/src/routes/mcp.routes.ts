@@ -30,6 +30,7 @@ import {
 } from '../lib/metaConnectOptions.js';
 import {
   createMetaOAuthState,
+  decodeMetaOAuthState,
   META_OAUTH_COOKIE,
   META_OAUTH_MAX_AGE_MS,
   verifyMetaOAuthState,
@@ -295,6 +296,53 @@ router.get('/oauth/callback', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Passo intermediário entre "/oauth/url" (autenticado, chamado via fetch
+// cross-origin do frontend) e a Meta. Existe só por causa de um bug real
+// (16/09/2026): o cookie de estado (`meta_oauth_nonce`) era setado na
+// RESPOSTA do fetch cross-origin de "/oauth/url" — e navegadores modernos
+// (sobretudo em aba anônima, que é justamente como o time testa a conexão)
+// bloqueiam cookie de terceiro nesse tipo de requisição mesmo com
+// SameSite=None;Secure. O cookie nunca era gravado, e a conexão falhava
+// 100% das vezes com "OAuth inválido" (nonce não bate porque não existe).
+//
+// A correção: quem seta o cookie agora é ESTA rota — alcançada por
+// NAVEGAÇÃO DE TOPO (window.location.assign, não fetch), então é uma
+// requisição de primeira parte de verdade, e o cookie é gravado de forma
+// confiável. Só então redireciona para a Meta.
+router.get('/oauth/start', (req: AuthRequest, res: Response) => {
+  const frontend = process.env.FRONTEND_URL ?? 'https://app.adsgenius.net';
+  try {
+    if (!isMetaOAuthEnabled()) throw new Error('OAuth desativado');
+    const appId = process.env.META_APP_ID;
+    const publicUrl = process.env.PUBLIC_URL;
+    if (!appId || !publicUrl) throw new Error('OAuth não configurado');
+
+    const state = String(req.query.state ?? '');
+    // Só assinatura/formato — o cookie ainda não existe, é este handler que
+    // vai criá-lo agora.
+    const { nonce } = decodeMetaOAuthState(state, process.env.JWT_SECRET!);
+
+    res.cookie(META_OAUTH_COOKIE, nonce, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: META_OAUTH_MAX_AGE_MS,
+      path: '/api/mcp/oauth/callback',
+    });
+
+    const redirectUri = `${publicUrl.replace(/\/$/, '')}/api/mcp/oauth/callback`;
+    const url = new URL('https://www.facebook.com/v23.0/dialog/oauth');
+    url.searchParams.set('client_id', appId);
+    url.searchParams.set('redirect_uri', redirectUri);
+    url.searchParams.set('state', state);
+    url.searchParams.set('scope', META_OAUTH_SCOPES.join(','));
+    res.redirect(302, url.toString());
+  } catch (error) {
+    console.error('[meta:oauth:start]', error);
+    res.redirect(302, `${frontend.replace(/\/$/, '')}/app/meta/connect?oauth_error=1`);
+  }
+});
+
 // Todos os endpoints abaixo exigem autenticação
 router.use(authMiddleware);
 
@@ -377,38 +425,25 @@ router.post(
   },
 );
 
+// Autenticado (fetch cross-origin do frontend, com JWT). NÃO seta cookie e
+// NÃO aponta direto para a Meta — devolve a URL do "/oauth/start" (mesmo
+// domínio deste backend), que o frontend alcança por NAVEGAÇÃO DE TOPO, não
+// fetch. É lá que o cookie de estado é gravado de verdade (ver o comentário
+// em "/oauth/start" sobre por quê).
 router.get('/oauth/url', (req: AuthRequest, res: Response) => {
   if (!isMetaOAuthEnabled()) {
     res.status(503).json({ error: 'Conexão automática Meta ainda não está disponível.' });
     return;
   }
-  const appId = process.env.META_APP_ID;
   const publicUrl = process.env.PUBLIC_URL;
-  if (!appId || !publicUrl) {
+  if (!process.env.META_APP_ID || !publicUrl) {
     res.status(503).json({ error: 'Conexão automática Meta ainda não está configurada.' });
     return;
   }
-  const redirectUri = `${publicUrl.replace(/\/$/, '')}/api/mcp/oauth/callback`;
-  const { state, nonce } = createMetaOAuthState(req.userId!, process.env.JWT_SECRET!);
-  res.cookie(META_OAUTH_COOKIE, nonce, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-    maxAge: META_OAUTH_MAX_AGE_MS,
-    path: '/api/mcp/oauth/callback',
-  });
-  const url = new URL('https://www.facebook.com/v23.0/dialog/oauth');
-  url.searchParams.set('client_id', appId);
-  url.searchParams.set('redirect_uri', redirectUri);
-  url.searchParams.set('state', state);
-  // Pedimos exatamente o que está submetido no App Review, nada além. Escopo
-  // pedido e não aprovado a Meta já não concede para quem não tem papel no app,
-  // então pedir a mais só cria incoerência entre a tela que o cliente vê e o
-  // que a revisão aprovou. `business_management` saiu porque não é chamado em
-  // lugar nenhum; as de Instagram ficam para uma submissão futura, junto com a
-  // liberação daquela parte do produto.
-  url.searchParams.set('scope', META_OAUTH_SCOPES.join(','));
-  res.json({ url: url.toString() });
+  const { state } = createMetaOAuthState(req.userId!, process.env.JWT_SECRET!);
+  const startUrl = new URL(`${publicUrl.replace(/\/$/, '')}/api/mcp/oauth/start`);
+  startUrl.searchParams.set('state', state);
+  res.json({ url: startUrl.toString() });
 });
 
 router.post('/connect', async (req: AuthRequest, res: Response) => {
