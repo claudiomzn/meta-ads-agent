@@ -566,3 +566,89 @@ describe('POST /api/mcp/import', () => {
     expect(res.body.error).toContain('adAccountId');
   });
 });
+
+// O fluxo é dividido em dois passos de propósito: o cookie de estado precisa
+// nascer numa NAVEGAÇÃO ao backend, não na resposta de um fetch cross-origin.
+// Setado no fetch, o navegador o descarta como cookie de terceiro e o callback
+// falha 100% das vezes com "OAuth inválido" — o loop reportado em 16/09/2026.
+// Estes testes travam a divisão para ninguém colapsá-la de volta num passo só.
+describe('OAuth Meta em dois passos', () => {
+  const originalAppId = process.env.META_APP_ID;
+  const originalPublicUrl = process.env.PUBLIC_URL;
+
+  beforeAll(() => {
+    process.env.META_APP_ID = '1234567890';
+    process.env.PUBLIC_URL = 'https://backend.example.com';
+  });
+
+  afterAll(() => {
+    if (originalAppId === undefined) delete process.env.META_APP_ID;
+    else process.env.META_APP_ID = originalAppId;
+    if (originalPublicUrl === undefined) delete process.env.PUBLIC_URL;
+    else process.env.PUBLIC_URL = originalPublicUrl;
+  });
+
+  it('GET /oauth/url aponta para o próprio backend e NÃO seta cookie', async () => {
+    const res = await request(app)
+      .get('/api/mcp/oauth/url')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    const url = new URL(res.body.url);
+    expect(url.origin).toBe('https://backend.example.com');
+    expect(url.pathname).toBe('/api/mcp/oauth/start');
+    expect(url.searchParams.get('state')).toBeTruthy();
+    // O cookie aqui seria descartado pelo navegador: esta resposta é de um
+    // fetch cross-origin.
+    expect(res.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('GET /oauth/start seta o cookie e só então manda para a Meta', async () => {
+    const urlRes = await request(app)
+      .get('/api/mcp/oauth/url')
+      .set('Authorization', `Bearer ${token}`);
+    const state = new URL(urlRes.body.url).searchParams.get('state')!;
+
+    const res = await request(app).get('/api/mcp/oauth/start').query({ state });
+
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain('facebook.com');
+    expect(res.headers.location).toContain(`state=${encodeURIComponent(state)}`);
+    const cookies = res.headers['set-cookie'] as unknown as string[];
+    expect(cookies.some((c) => c.startsWith('meta_oauth_nonce='))).toBe(true);
+  });
+
+  it('GET /oauth/start recusa state não assinado por nós', async () => {
+    const res = await request(app)
+      .get('/api/mcp/oauth/start')
+      .query({ state: 'state-inventado' });
+
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain('oauth_error=1');
+    expect(res.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('callback sem o cookie do nonce recusa — e agora diz o motivo', async () => {
+    const urlRes = await request(app)
+      .get('/api/mcp/oauth/url')
+      .set('Authorization', `Bearer ${token}`);
+    const state = new URL(urlRes.body.url).searchParams.get('state')!;
+
+    const res = await request(app)
+      .get('/api/mcp/oauth/callback')
+      .query({ state, code: 'codigo-qualquer' });
+
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain('oauth_error=1');
+    expect(res.headers.location).toContain('motivo=');
+  });
+
+  it('callback repassa o motivo quando a própria Meta recusa', async () => {
+    const res = await request(app)
+      .get('/api/mcp/oauth/callback')
+      .query({ error: 'access_denied', error_description: 'Permissão negada' });
+
+    expect(res.status).toBe(302);
+    expect(decodeURIComponent(res.headers.location)).toContain('access_denied');
+  });
+});
