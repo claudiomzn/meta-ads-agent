@@ -208,6 +208,18 @@ router.get('/oauth/callback', async (req: AuthRequest, res: Response) => {
   };
   try {
     if (!isMetaOAuthEnabled()) throw new Error('OAuth desativado');
+    // Quando a Meta recusa o pedido (permissão negada, redirect_uri não
+    // reconhecida, etc.) ela manda `error`/`error_description` na volta, SEM
+    // `code`. O código antigo caía direto no "OAuth inválido" genérico sem
+    // nunca ler esses campos — a causa real da Meta ficava invisível até no
+    // log do servidor. Log completo da query aqui, sempre, para o próximo
+    // caso não depender de adivinhação de novo.
+    console.error('[meta:oauth:callback] query recebida:', JSON.stringify(req.query));
+    if (req.query.error) {
+      throw new Error(
+        `Meta recusou: ${req.query.error}${req.query.error_description ? ` — ${req.query.error_description}` : ''}`,
+      );
+    }
     const state = String(req.query.state ?? '');
     const code = String(req.query.code ?? '');
     const payload = verifyMetaOAuthState(
@@ -215,7 +227,7 @@ router.get('/oauth/callback', async (req: AuthRequest, res: Response) => {
       req.headers.cookie,
       process.env.JWT_SECRET!,
     );
-    if (!code) throw new Error('OAuth inválido');
+    if (!code) throw new Error('OAuth inválido — code ausente na volta da Meta');
     const appId = process.env.META_APP_ID;
     const appSecret = process.env.META_APP_SECRET;
     const publicUrl = process.env.PUBLIC_URL;
