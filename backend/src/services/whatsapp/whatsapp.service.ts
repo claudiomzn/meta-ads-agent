@@ -21,6 +21,24 @@ import { asaasConfigured, ensureAsaasCustomer, createOverageCharge as createRech
 
 interface HistoryItem { role: 'user' | 'assistant'; text: string; at: string }
 
+// Mutex simples em memória, por processo — o webhook (ver whatsapp.routes.ts)
+// responde ao provedor sem esperar handleInbound terminar, então mensagens do
+// MESMO lead chegando quase juntas processavam em paralelo, cada uma lendo a
+// mesma conversa antes de qualquer escrever de volta. Roda num processo só
+// (Render free, sem múltiplas instâncias), então um Map em memória resolve
+// sem precisar de lock distribuído no banco — se um dia isto escalar
+// horizontalmente, precisa virar lock no Postgres (ex.: advisory lock).
+const leadLocks = new Map<string, Promise<unknown>>();
+
+function withLeadLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = leadLocks.get(key) ?? Promise.resolve();
+  const next = previous.then(fn, fn); // roda fn mesmo se a chamada anterior falhou
+  // Guarda uma versão sem o valor tipado, só pra encadear a próxima chamada —
+  // erro aqui é tratado por quem chamou fn, não deve vazar pro mapa.
+  leadLocks.set(key, next.catch(() => undefined));
+  return next;
+}
+
 // Normaliza texto para comparação de palavra-gatilho: minúsculas, sem
 // diacríticos (NFD + remoção dos combining marks) e sem espaços nas pontas —
 // "Cotação" vira "cotacao", casando com "quero uma cotacao".
@@ -195,7 +213,23 @@ export class WhatsappService {
 
   // ── Processamento de mensagem recebida ──────────────────────────────────────
   // Retorna a resposta enviada (ou null se o bot estiver desligado/sem config).
+  //
+  // Serializada por lead (ver withLeadLock): o webhook responde 200 rápido e
+  // NÃO espera handleInbound terminar (propositalmente, pra evitar reentrega
+  // do provedor) — então duas mensagens do MESMO lead chegando quase juntas
+  // (o lead manda 2-3 mensagens seguidas, comportamento comum no WhatsApp; ou
+  // o provedor reentrega por algum motivo) processavam em PARALELO. Cada
+  // chamada lia a MESMA conversa antes de qualquer uma escrever de volta,
+  // cada uma decidia sozinha "hora do handoff" e mandava a mensagem — real,
+  // ao vivo (18/09/2026): a mesma mensagem final repetida 4x seguidas pro
+  // mesmo lead, cliente achando o bot "descontrolado". Com o lock, a segunda
+  // chamada só começa depois que a primeira já escreveu o estado novo.
   async handleInbound(msg: InboundMessage): Promise<{ reply: string; state: string } | null> {
+    const lockKey = `${this.userId}:${this.businessId}:${msg.from}`;
+    return withLeadLock(lockKey, () => this.handleInboundLocked(msg));
+  }
+
+  private async handleInboundLocked(msg: InboundMessage): Promise<{ reply: string; state: string } | null> {
     const config = await this.getConfig();
     if (!config || !config.enabled) return null;
 
