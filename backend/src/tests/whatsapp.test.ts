@@ -184,6 +184,62 @@ describe('Franquia diária por negócio', () => {
   });
 });
 
+// Real ao vivo (18/09/2026, conta Tabelasamel): a mesma mensagem de handoff
+// chegou 4x seguidas pro mesmo lead. Causa: duas mensagens do MESMO número
+// quase juntas processavam em paralelo — cada uma lia a MESMA conversa antes
+// de qualquer escrever de volta, cada uma decidia sozinha e mandava resposta.
+// withLeadLock serializa por (userId, businessId, leadPhone); estes testes
+// travam que a corrida não volta.
+describe('Corrida no MESMO lead: mensagens concorrentes são serializadas', () => {
+  it('duas mensagens quase juntas do MESMO lead não se perdem (sem lock, uma sobrescrevia a outra)', async () => {
+    await upsertConfig('lock-a', {});
+
+    await Promise.all([
+      request(app).post('/api/whatsapp/simulate')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ businessId: 'lock-a', from: '+551190003001', text: 'oi' }),
+      request(app).post('/api/whatsapp/simulate')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ businessId: 'lock-a', from: '+551190003001', text: 'quero saber mais' }),
+    ]);
+
+    // Sem serialização: as duas leriam history=[] e cada uma escreveria só o
+    // PRÓPRIO turno — a última a salvar vence, e o outro turno some. Com o
+    // lock, a 2ª só começa depois que a 1ª já salvou: UMA conversa só, com os
+    // 2 turnos do usuário + as 2 respostas do bot, todos preservados.
+    const convs = await prisma.whatsappConversation.findMany({
+      where: { userId, businessId: 'lock-a', leadPhone: '+551190003001' },
+    });
+    expect(convs).toHaveLength(1);
+    const history = convs[0].history as unknown as { role: string; text: string }[];
+    expect(history.filter((h) => h.role === 'user')).toHaveLength(2);
+    expect(history.filter((h) => h.role === 'assistant')).toHaveLength(2);
+  });
+
+  it('a 2ª chamada vê o turno da 1ª já salvo — nenhuma decide sozinha com estado velho', async () => {
+    await upsertConfig('lock-b', {});
+
+    await Promise.all([
+      request(app).post('/api/whatsapp/simulate')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ businessId: 'lock-b', from: '+551190003002', text: 'primeira' }),
+      request(app).post('/api/whatsapp/simulate')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ businessId: 'lock-b', from: '+551190003002', text: 'segunda' }),
+    ]);
+
+    const chamadasDesteTeste = mockNextReply.mock.calls.filter(
+      (args) => (args[2] as { text: string }[])?.some((t) => t.text === 'primeira' || t.text === 'segunda'),
+    );
+    expect(chamadasDesteTeste).toHaveLength(2);
+    const tamanhos = chamadasDesteTeste.map((args) => (args[2] as unknown[]).length).sort((a, b) => a - b);
+    // 1ª chamada vê só o próprio turno (1 mensagem no histórico); a 2ª,
+    // rodando DEPOIS da 1ª já ter salvo, vê os 3 (1 turno da 1ª + resposta +
+    // o turno novo dela). Se as duas virem o mesmo tamanho, é corrida.
+    expect(tamanhos).toEqual([1, 3]);
+  });
+});
+
 describe('Cobrança de recarga: corrida por negócio', () => {
   it('duas mensagens concorrentes no MESMO negócio geram só 1 cobrança PENDING', async () => {
     await upsertConfig('race-a', { billingCpfCnpj: '12345678900' }, { dailyFreeConversations: 0 });
