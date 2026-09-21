@@ -556,6 +556,26 @@ ou esperar a virada do dia, quando as conversas grátis renovam sozinhas.</p>
   // Envia a conversão de Lead ao Google Ads (server-side, Enhanced Conversions),
   // chamando a edge function do AdsGenius. Precisa do supabaseUserId do dono
   // (identidade unificada) para a função achar a conexão Google. Não-fatal.
+  //
+  // ⚠️ Usa uma ação de conversão PRÓPRIA ("Lead Qualificado"), separada da
+  // "Lead — AdsGenius" que o clique cru no WhatsApp do site já dispara.
+  // Achado ao vivo 18/09/2026 (conta Tabelasamel): as duas caíam na MESMA
+  // ação antes disso — o Smart Bidding do Google via uma pilha só, misturando
+  // clique curioso (dispara na hora, sem esforço) com lead de verdade
+  // qualificado pelo bot (só depois de uma conversa inteira). O clique cru
+  // afoga o sinal bom em volume, e a IA de lance otimiza pro que é fácil de
+  // conseguir, não pro que vira venda. Separar os dois deixa o Smart Bidding
+  // aprender com o sinal certo.
+  //
+  // ⚠️ PENDENTE DE ATIVAÇÃO (decisão do Luiz, 18/09/2026): a ação
+  // "Lead Qualificado — AdsGenius" ainda NÃO existe no Google Ads e a
+  // campanha "[Google] Pesquisa" ainda não foi configurada para otimizar por
+  // ela — isso fica pra depois de ~20/09 (janela de observação em andamento,
+  // não pode mudar o alvo de otimização no meio dela). Até lá, esta chamada
+  // falha (não-fatal, só loga) porque a ação de destino não existe — é o
+  // comportamento esperado, não um bug.
+  private static readonly QUALIFIED_CONVERSION_ACTION = 'Lead Qualificado — AdsGenius';
+
   private async fireGoogleLeadConversion(leadPhone: string) {
     try {
       const base = process.env.SUPABASE_URL;
@@ -578,7 +598,11 @@ ou esperar a virada do dia, quando as conversas grátis renovam sozinhas.</p>
           Authorization: `Bearer ${serviceKey}`,
           apikey: serviceKey,
         },
-        body: JSON.stringify({ user_id: user.supabaseUserId, phone: leadPhone }),
+        body: JSON.stringify({
+          user_id: user.supabaseUserId,
+          phone: leadPhone,
+          conversion_action_name: WhatsappService.QUALIFIED_CONVERSION_ACTION,
+        }),
       });
       const data = await resp.json().catch(() => ({}));
       if (data?.ok) console.log(`[google-conv] Lead enviado (lead ${leadPhone})`);
