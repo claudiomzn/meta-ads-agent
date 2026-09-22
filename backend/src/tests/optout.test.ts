@@ -62,3 +62,41 @@ describe('isOptOut — NÃO confunde lead de verdade com pedido de parar', () =>
     expect(isOptOut('bom dia, quero uma cotação')).toBe(false);
   });
 });
+
+// ── Estado terminal ──────────────────────────────────────────────────────────
+// `cold` = a IA já concluiu "sem intenção". Até 22/09/2026 esse estado NÃO
+// silenciava o bot: ele seguia respondendo tudo o que aquele número mandasse,
+// para sempre (um fornecedor de material de construção estava assim). Se a IA
+// já decidiu que acabou, acabou.
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const svc = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), '../services/whatsapp/whatsapp.service.ts'),
+  'utf-8',
+);
+
+describe('estados que silenciam o bot', () => {
+  it('cold encerra junto com closed e handoff', () => {
+    expect(svc).toContain("conv.state === 'closed' || conv.state === 'handoff' || conv.state === 'cold'");
+  });
+
+  it('a IA é instruída a encerrar quando o assunto não é plano de saúde', () => {
+    const qual = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../services/whatsapp/qualification.service.ts'),
+      'utf-8',
+    );
+    expect(qual).toContain('NÚMERO TROCADO');
+    expect(qual).toContain('done=true, label "FRIO"');
+  });
+
+  it('existe como encerrar uma conversa já aberta (o gatilho só vale no nascimento)', () => {
+    const routes = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../routes/whatsapp.routes.ts'),
+      'utf-8',
+    );
+    expect(routes).toContain("'/conversations/:leadPhone/close'");
+    expect(routes).toContain("state: 'closed'");
+  });
+});

@@ -53,6 +53,30 @@ router.get('/conversations', authMiddleware, async (req: AuthRequest, res: Respo
   res.json(list);
 });
 
+// Encerra uma conversa: o bot nunca mais responde àquele número neste negócio.
+// Existe porque o gatilho de frase só é avaliado quando a conversa NASCE — a
+// partir daí o bot responde tudo o que aquele número mandar. Quem entrou por
+// engano (recado pessoal, comprovante, "bom dia") ficava exposto para sempre,
+// sem nenhuma forma de encerrar. Escopado ao dono: só encerra conversa do
+// próprio usuário/negócio.
+router.post('/conversations/:leadPhone/close', authMiddleware, async (req: AuthRequest, res: Response) => {
+  const businessId = resolveBusinessId(req);
+  const leadPhone = String(req.params.leadPhone ?? '').replace(/\D/g, '');
+  if (!leadPhone) return res.status(400).json({ error: 'leadPhone inválido' });
+
+  const conv = await prisma.whatsappConversation.findUnique({
+    where: { userId_businessId_leadPhone: { userId: req.userId!, businessId, leadPhone } },
+  });
+  if (!conv) return res.status(404).json({ error: 'Conversa não encontrada' });
+
+  const updated = await prisma.whatsappConversation.update({
+    where: { id: conv.id },
+    data: { state: 'closed' },
+  });
+  console.log(`[whatsapp:encerrada] ${leadPhone} encerrada manualmente (userId ${req.userId}, negócio ${businessId})`);
+  res.json({ ok: true, leadPhone, state: updated.state });
+});
+
 // ── Negócios da conta (multi-negócio) ─────────────────────────────────────────
 // Lista os negócios (bots) desta conta para o seletor do painel. Contas de
 // hoje (1 config, sem negócio explícito) aparecem com um único item

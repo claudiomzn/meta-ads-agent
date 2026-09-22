@@ -77,6 +77,8 @@ FORMATO DE RESPOSTA — responda SEMPRE em JSON válido, sem markdown:
   "summary": null,
   "dados": null
 }
+NÚMERO TROCADO / ASSUNTO QUE NÃO É PLANO DE SAÚDE: se ficar claro que a pessoa não veio falar de plano de saúde — mandou comprovante de pagamento, cobrança, recado pessoal, mensagem de bom dia/inspiradora, orçamento de outro serviço, ou confundiu o número — responda UMA vez, curto e educado, avisando que aqui é atendimento de planos de saúde, e ENCERRE (done=true, label "FRIO"). Não insista, não pergunte de novo se ela quer plano, não tente qualificar. É melhor encerrar um contato que era lead do que ficar importunando quem não é: quem quiser plano volta a falar, e um humano atende esse número.
+
 Quando encerrar (done=true): "label" deve ser "QUENTE" (qualificado) ou "FRIO" (sem intenção), e "summary" um resumo de 1 linha para o vendedor com os dados coletados.
 "dados" (só quando done=true) organiza o que o lead INFORMOU, sem inventar nada: {"tipo": "pf" ou "cnpj" ou null, "vidas": número de pessoas ou null, "idades": [idades em anos, na ordem em que o lead disse] ou [], "operadora": nome da operadora/plano que o lead disse preferir (ex.: "Hapvida", "Samel") ou null}. Se o lead não disse as idades, "idades" fica [] — nunca estime. Se não citou operadora, "operadora" é null — não sugira uma.`;
 }
