@@ -313,8 +313,15 @@ export class WhatsappService {
         console.log(`[whatsapp:contato] lead ${msg.from} — conhecido=${veredito.known} (${veredito.reason})${veredito.name ? ` nome="${veredito.name}"` : ''} (userId ${this.userId}, negócio ${this.businessId})`);
       }
     }
-    if (conv.state === 'closed' || conv.state === 'handoff') {
+    if (conv.state === 'closed' || conv.state === 'handoff' || conv.state === 'cold') {
       // Já encaminhado/encerrado — não responde mais (humano assume).
+      //
+      // `cold` entrou aqui em 22/09/2026: a IA já podia concluir "sem
+      // intenção" (label FRIO → state cold), mas esse estado NÃO silenciava
+      // nada — o bot seguia respondendo tudo o que aquele número mandasse,
+      // para sempre. Um fornecedor que mandou orçamento de material de
+      // construção estava nessa situação. Se a IA já decidiu que acabou,
+      // acabou.
       return null;
     }
 
