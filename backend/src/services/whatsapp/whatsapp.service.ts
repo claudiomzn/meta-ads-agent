@@ -3,6 +3,8 @@
 // envia pelo transporte → dispara conversão (1ª msg) → handoff se qualificado.
 
 import prisma from '../../lib/prisma.js';
+import { lookupContact } from './contacts.js';
+import { instanceName } from './evolution.manager.js';
 import { resolveTransport, type InboundMessage } from './transport.js';
 import {
   type CotacaoResultado,
@@ -266,6 +268,15 @@ export class WhatsappService {
       conv = await prisma.whatsappConversation.create({
         data: { userId: this.userId, businessId: this.businessId, leadPhone: msg.from, state: 'greeting', billable },
       });
+
+      // MODO OBSERVAÇÃO (ver contacts.ts): pergunta à Evolution se este número
+      // já é contato conhecido e só registra. Nada é bloqueado ainda — é o log
+      // destas linhas que vai dizer se o sinal é confiável o bastante para,
+      // depois, o bot deixar de responder quem já está na agenda.
+      if (config.transport === 'evolution') {
+        const veredito = await lookupContact(instanceName(this.userId, this.businessId), msg.from);
+        console.log(`[whatsapp:contato] lead ${msg.from} — conhecido=${veredito.known} (${veredito.reason})${veredito.name ? ` nome="${veredito.name}"` : ''} (userId ${this.userId}, negócio ${this.businessId})`);
+      }
     }
     if (conv.state === 'closed' || conv.state === 'handoff') {
       // Já encaminhado/encerrado — não responde mais (humano assume).
