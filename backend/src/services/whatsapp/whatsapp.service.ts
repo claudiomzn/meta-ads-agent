@@ -63,6 +63,41 @@ export function parseTriggerKeywords(raw: string): string[] {
     .filter((k) => k.length > 0);
 }
 
+// Pedidos de PARAR. Caso real (22/09/2026): um contato conhecido recebeu a
+// qualificação inteira e respondeu "Para de mandar isso pfv. Ta me
+// atrapalhando." — e até aqui não existia nada que tratasse isso. Naquele caso
+// a conversa já tinha ido pra handoff (que silencia o bot), mas quem pedisse
+// para parar NO MEIO da qualificação continuaria recebendo.
+//
+// A lista é curta e sem ambiguidade de propósito. O risco assimétrico aqui é o
+// oposto do resto do arquivo: fechar a conversa de um lead REAL por engano
+// custa uma venda. Por isso nada de "para" ou "não quero" soltos — em
+// português eles aparecem o tempo todo em frase legítima ("plano PARA
+// empresa", "NÃO QUERO o empresarial, quero individual"). Só frases que
+// ninguém escreve por acaso.
+const OPT_OUT_PHRASES = [
+  'para de mandar', 'pare de mandar', 'para de enviar', 'pare de enviar',
+  'para com isso', 'pare com isso', 'para de me', 'pare de me',
+  'nao tenho interesse', 'sem interesse', 'nao me interessa',
+  'nao quero receber', 'nao quero mais', 'nao me manda', 'nao me mande',
+  'nao perturbe', 'me atrapalhando', 'descadastr', 'sair da lista',
+  'me tira da lista', 'stop',
+];
+
+// PURA: o lead está pedindo para o bot parar?
+export function isOptOut(messageText: string): boolean {
+  const msg = normalizeForTrigger(messageText);
+  if (!msg) return false;
+  if (OPT_OUT_PHRASES.some((p) => msg.includes(p))) return true;
+  // "pare" sozinho é imperativo e não aparece por acaso — mas só vale como
+  // palavra inteira, senão casaria dentro de "comparecer", "preparem"...
+  return /\bpare\b/.test(msg);
+}
+
+// Resposta única ao pedido de parar: reconhece, pede desculpa e encerra. Uma
+// mensagem só — quem pediu silêncio não quer um sermão de despedida.
+const REPLY_OPT_OUT = 'Desculpa pelo incômodo! Não te mando mais mensagens por aqui. 🙏';
+
 // A mensagem do lead casa com ALGUM dos gatilhos configurados? Lista vazia
 // (campo em branco) = sem restrição, atende todo mundo — comportamento de
 // sempre, preservado.
@@ -281,6 +316,22 @@ export class WhatsappService {
     if (conv.state === 'closed' || conv.state === 'handoff') {
       // Já encaminhado/encerrado — não responde mais (humano assume).
       return null;
+    }
+
+    // Pediu para parar: encerra na hora, ANTES da IA e antes de consumir
+    // franquia/saldo. Uma desculpa curta e nunca mais.
+    if (isOptOut(msg.text)) {
+      const historyOut = ((conv.history as unknown as HistoryItem[]) ?? []).slice();
+      historyOut.push({ role: 'user', text: msg.text, at: new Date().toISOString() });
+      historyOut.push({ role: 'assistant', text: REPLY_OPT_OUT, at: new Date().toISOString() });
+      const transportOut = resolveTransport(config.transport, config.transportConfig as Record<string, unknown>);
+      await transportOut.sendText(msg.from, REPLY_OPT_OUT);
+      await prisma.whatsappConversation.update({
+        where: { id: conv.id },
+        data: { state: 'closed', history: historyOut as unknown as object },
+      });
+      console.log(`[whatsapp:optout] lead ${msg.from} pediu para parar — conversa encerrada (userId ${this.userId}, negócio ${this.businessId})`);
+      return { reply: REPLY_OPT_OUT, state: 'closed' };
     }
 
     const history = (conv.history as unknown as HistoryItem[]) ?? [];
