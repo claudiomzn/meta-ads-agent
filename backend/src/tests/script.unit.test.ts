@@ -34,6 +34,10 @@ describe('lerRoteiro — a config vira passos, sem inventar nada', () => {
   });
 
   it('⭐ preserva o texto EXATO, sem reescrever, aparar acento ou trocar pontuação', () => {
+    // O "Ola" sem acento é DE PROPÓSITO e não deve ser "corrigido" aqui: ele é a
+    // prova de que o motor não passa a config por nenhuma reescrita. Um dia esse
+    // texto vai ter um erro de digitação de verdade, e o bot tem que mandar o
+    // erro — não uma versão melhorada que o cliente nunca aprovou.
     const original = 'Ola, meu nome é Luiz Cláudio Brito, corretor de seguros e planos de saúde.';
     const [passo] = lerRoteiro([{ pergunta: original, campo: null }]);
     expect(passo.pergunta).toBe(original);

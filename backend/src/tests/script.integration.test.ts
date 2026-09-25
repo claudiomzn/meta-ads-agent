@@ -63,7 +63,7 @@ let userId: string;
 // O roteiro EXATO pedido pelo Luiz em 24/09/2026. Acentos, barras e
 // parênteses fazem parte do contrato: se o teste passar com o texto
 // "arrumado", ele não está protegendo nada.
-const INTRO = 'Ola, meu nome é Luiz Cláudio Brito, corretor de seguros e planos de saúde.';
+const INTRO = 'Olá, meu nome é Luiz Cláudio Brito, corretor de seguros e planos de saúde.';
 const P1 = 'É para você/sua família ou para uma empresa (CNPJ)?';
 const P2 = 'Quantas pessoas vão entrar no plano?';
 const P3 = 'Qual a idade de cada uma? (se for empresa: quantos funcionários?)';
