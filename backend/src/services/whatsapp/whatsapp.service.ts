@@ -17,11 +17,26 @@ import {
   resolverIntegracao,
 } from './cotacao.integration.js';
 import { nextReply, type QualConfig, type QualTurn } from './qualification.service.js';
+import {
+  lerRoteiro,
+  lerResposta,
+  roteiroTerminou,
+  gravarCampo,
+  rotuloDoLead,
+  montarResumoDoRoteiro,
+  dadosParaCotacao,
+  type PassoDoRoteiro,
+  type DadosDoRoteiro,
+} from './script.service.js';
 import { CapiService } from '../capi.service.js';
 import { sendMail } from '../email.service.js';
 import { asaasConfigured, ensureAsaasCustomer, createOverageCharge as createRechargeCharge } from '../asaas.service.js';
 
 interface HistoryItem { role: 'user' | 'assistant'; text: string; at: string }
+
+/** A linha de config como o Prisma devolve — evita repetir o shape à mão e
+ *  divergir dele em silêncio quando o schema mudar. */
+type WhatsappConfigRow = NonNullable<Awaited<ReturnType<WhatsappService['getConfig']>>>;
 
 // Mutex simples em memória, por processo — o webhook (ver whatsapp.routes.ts)
 // responde ao provedor sem esperar handleInbound terminar, então mensagens do
@@ -211,6 +226,17 @@ export class WhatsappService {
       conversionLabel: data.conversionLabel ?? null,
       enabled: data.enabled ?? false,
       billingCpfCnpj: data.billingCpfCnpj ?? null,
+
+      // ⭐ Roteiro fixo: cai para o valor QUE JÁ ESTAVA no banco, não para o
+      // default. Todo campo acima usa `data.X ?? <default>` porque a tela
+      // manda o formulário inteiro a cada save — mas a tela de hoje NÃO
+      // conhece o roteiro. Com `?? false` aqui, salvar a persona pelo painel
+      // desligaria o roteiro em silêncio e o bot voltaria a conversar
+      // sozinho, que é exatamente o que o cliente pediu para acabar.
+      scriptEnabled: data.scriptEnabled ?? existing?.scriptEnabled ?? false,
+      scriptIntro: data.scriptIntro ?? existing?.scriptIntro ?? null,
+      scriptClosing: data.scriptClosing ?? existing?.scriptClosing ?? null,
+      scriptSteps: data.scriptSteps ?? existing?.scriptSteps ?? [],
     };
     return prisma.whatsappConfig.upsert({
       where: { userId_businessId: { userId: this.userId, businessId: this.businessId } },
@@ -362,6 +388,13 @@ export class WhatsappService {
       }
     }
 
+    // Roteiro fixo: desvia ANTES de montar a QualConfig. Daqui pra baixo é o
+    // fluxo generativo, onde a IA escreve cada mensagem — é exatamente o que o
+    // roteiro existe para não fazer.
+    if (config.scriptEnabled) {
+      return await this.handleScript(config, conv, msg, history);
+    }
+
     const cfg: QualConfig = {
       businessName: config.businessName,
       product: config.product,
@@ -468,6 +501,165 @@ export class WhatsappService {
     // O simulador da tela mostra só o que volta aqui: com cotação, volta as
     // duas mensagens que o lead recebeu.
     return { reply: textoCotacao ? `${replyFinal}\n\n${textoCotacao}` : replyFinal, state: result.state };
+  }
+
+  // ── Modo ROTEIRO FIXO ───────────────────────────────────────────────────────
+  // O bot manda as perguntas da config, uma por vez, com o texto LITERAL que o
+  // cliente escreveu. A IA entra só para ler a resposta e preencher um campo —
+  // nada que ela devolve chega ao lead (ver script.service.ts).
+  private async handleScript(
+    config: WhatsappConfigRow,
+    conv: { id: string; botMessages: number; scriptStep: number; scriptRetried: boolean; scriptData: unknown },
+    msg: InboundMessage,
+    history: HistoryItem[],
+  ): Promise<{ reply: string; state: string } | null> {
+    const passos = lerRoteiro(config.scriptSteps);
+    if (!passos.length) {
+      // Roteiro ligado e vazio: o bot fica MUDO. A alternativa seria cair no
+      // fluxo generativo — exatamente o que ligar o roteiro quis desligar.
+      console.warn(`[whatsapp:roteiro] scriptEnabled sem nenhum passo válido — bot mudo (userId ${this.userId}, negócio ${this.businessId})`);
+      return null;
+    }
+
+    let dados = { ...((conv.scriptData ?? {}) as DadosDoRoteiro) };
+    let passoAtual = conv.scriptStep;
+    let repetiu = conv.scriptRetried;
+    const aEnviar: string[] = [];
+
+    if (conv.botMessages === 0) {
+      // Primeiro contato: apresenta e já faz a 1ª pergunta. São duas bolhas
+      // (é assim que uma pessoa escreve no WhatsApp), mas UMA pergunta só —
+      // e sem turno morto, que é o que aconteceria se a apresentação fosse
+      // sozinha e o lead tivesse que falar de novo só para ser perguntado.
+      if (config.scriptIntro?.trim()) aEnviar.push(config.scriptIntro.trim());
+      aEnviar.push(passos[0].pergunta);
+    } else {
+      const passo = passos[passoAtual];
+      const valor = passo.campo ? await lerResposta(this.userId, passo, msg.text) : null;
+
+      if (passo.campo && valor === null && !repetiu) {
+        // Não deu para aproveitar a resposta: repete a pergunta UMA vez.
+        repetiu = true;
+        aEnviar.push(passo.pergunta);
+      } else {
+        // Ou respondeu, ou já insistimos uma vez — segue em frente. Gravar
+        // `null` é de propósito: diz ao vendedor "perguntamos e não veio".
+        if (passo.campo) dados = gravarCampo(dados, passo.campo, valor);
+        passoAtual += 1;
+        repetiu = false;
+        if (!roteiroTerminou(passos, passoAtual)) aEnviar.push(passos[passoAtual].pergunta);
+      }
+    }
+
+    const terminou = roteiroTerminou(passos, passoAtual);
+    const transport = resolveTransport(config.transport, config.transportConfig as Record<string, unknown>);
+
+    for (const texto of aEnviar) {
+      await transport.sendText(msg.from, texto);
+      history.push({ role: 'assistant', text: texto, at: new Date().toISOString() });
+    }
+
+    let fechamento = '';
+    let rotulo: 'QUENTE' | 'FRIO' | undefined;
+    if (terminou) {
+      const r = await this.fecharRoteiro(config, conv.id, msg.from, passos, dados, transport);
+      fechamento = r.texto;
+      rotulo = r.rotulo;
+      for (const texto of r.enviados) history.push({ role: 'assistant', text: texto, at: new Date().toISOString() });
+    }
+
+    await prisma.whatsappConversation.update({
+      where: { id: conv.id },
+      data: {
+        state: terminou ? 'handoff' : (passoAtual === 0 ? 'greeting' : 'qualifying'),
+        label: rotulo,
+        scriptStep: passoAtual,
+        scriptRetried: repetiu,
+        scriptData: dados as unknown as object,
+        questionsAsked: passoAtual,
+        botMessages: conv.botMessages + aEnviar.length,
+        history: history as unknown as object,
+        summary: terminou ? montarResumoDoRoteiro(passos, dados) : undefined,
+      },
+    });
+
+    const tudo = [...aEnviar, fechamento].filter(Boolean).join('\n\n');
+    return { reply: tudo, state: terminou ? 'handoff' : 'qualifying' };
+  }
+
+  // Fim do roteiro: cota se der, avisa o vendedor, sobe a conversão e cala.
+  private async fecharRoteiro(
+    config: WhatsappConfigRow,
+    convId: string,
+    leadPhone: string,
+    passos: PassoDoRoteiro[],
+    dados: DadosDoRoteiro,
+    transport: ReturnType<typeof resolveTransport>,
+  ): Promise<{ texto: string; enviados: string[]; rotulo: 'QUENTE' | 'FRIO' }> {
+    const rotulo = rotuloDoLead(dados);
+    const enviados: string[] = [];
+
+    // Cotação na hora — mesma regra de sempre: só promete o que o código tem
+    // como cumprir (integração ligada + dados que passam na validação).
+    const integracao = process.env.COTE_QUOTE_USER
+      ? resolverIntegracao({
+        userId: this.userId,
+        email: (await prisma.user.findUnique({ where: { id: this.userId }, select: { email: true } }))?.email,
+      })
+      : null;
+    const dadosLead = extrairDadosParaCotacao(dadosParaCotacao(dados));
+    const vaiCotar = Boolean(integracao) && podeCotarAutomaticamente(dadosLead);
+
+    let notaVendedor = '';
+    let textoFinal = '';
+    if (vaiCotar && integracao && dadosLead) {
+      await transport.sendText(leadPhone, REPLY_COTACAO_AGORA);
+      enviados.push(REPLY_COTACAO_AGORA);
+      let cotacao: CotacaoResultado | null = null;
+      let falha: string | undefined;
+      try {
+        cotacao = await cotarRespeitandoPreferencia(integracao, dadosLead);
+      } catch (e) {
+        falha = e instanceof Error ? e.message : String(e);
+        console.error('[whatsapp:roteiro] falha ao pedir cotação ao Cote+:', e);
+      }
+      const textoAoLead = cotacao?.ok && cotacao.texto ? cotacao.texto : REPLY_COTACAO_FALHOU;
+      await transport.sendText(leadPhone, textoAoLead).catch((e) =>
+        console.error('[whatsapp:roteiro] falha ao enviar cotação ao lead:', e));
+      enviados.push(textoAoLead);
+      textoFinal = textoAoLead;
+      notaVendedor = montarNotaParaVendedor(dadosLead, cotacao, falha);
+    }
+
+    // A ÚLTIMA frase que o lead ouve do bot, e ela sai AGORA — não na próxima
+    // mensagem dele. Quem acabou de responder cinco perguntas não pode receber
+    // silêncio: é justamente aí que ele acha que falou com uma parede. Depois
+    // desta linha o estado vira `handoff` e o gate de estado terminal cala o
+    // bot para sempre naquele número.
+    if (config.scriptClosing?.trim()) {
+      const fim = config.scriptClosing.trim();
+      await transport.sendText(leadPhone, fim).catch((e) =>
+        console.error('[whatsapp:roteiro] falha ao enviar a frase de encerramento:', e));
+      enviados.push(fim);
+      textoFinal = textoFinal ? `${textoFinal}\n\n${fim}` : fim;
+    }
+
+    // O vendedor recebe SEMPRE — com ou sem cotação, QUENTE ou FRIO. Quem
+    // respondeu um roteiro inteiro merece um humano olhando, e o resumo diz
+    // o que ficou faltando (ver montarResumoDoRoteiro).
+    if (config.handoffContact) {
+      const resumo = [montarResumoDoRoteiro(passos, dados), notaVendedor].filter(Boolean).join('\n');
+      await this.notifyVendor(config.handoffContact, leadPhone, resumo, transport);
+    }
+
+    // Conversão de lead QUALIFICADO — só para quem disse que quer contratar.
+    if (rotulo === 'QUENTE') {
+      await this.fireCapiLead(convId, leadPhone, null);
+      await this.fireGoogleLeadConversion(leadPhone);
+    }
+
+    console.log(`[whatsapp:roteiro] roteiro concluído (lead ${leadPhone}, rótulo ${rotulo}, cotou=${vaiCotar}) — bot em silêncio a partir daqui`);
+    return { texto: textoFinal, enviados, rotulo };
   }
 
   // ── Saldo pré-pago (sem dívida) ──────────────────────────────────────────────
