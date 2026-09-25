@@ -437,6 +437,21 @@ model WhatsappConfig {
   // sem reavaliar o gatilho. NULL = comportamento de sempre (responde a todos).
   triggerKeyword String?
 
+  // ── Modo ROTEIRO FIXO ──────────────────────────────────────────────────────
+  // Ligado, o bot NÃO conversa: manda as perguntas de `scriptSteps` uma por
+  // vez, com o texto literal que o cliente escreveu, e a IA só LÊ as respostas
+  // (nunca redige nada). No fim, cota se der, passa pro vendedor e se cala.
+  // Desligado, segue o fluxo generativo de sempre (qualification.service).
+  scriptEnabled Boolean @default(false)
+  // Apresentação enviada antes da 1ª pergunta. NULL = começa na pergunta.
+  scriptIntro   String?
+  // A ÚNICA frase que o bot ainda diz depois do handoff — uma vez só, na
+  // próxima mensagem do lead. NULL = silêncio absoluto.
+  scriptClosing String?
+  // [{ "pergunta": "texto exato enviado ao lead",
+  //    "campo": "tipo"|"vidas"|"idades"|"plano_atual"|"urgencia"|null }]
+  scriptSteps   Json    @default("[]")
+
   // Transporte (agnóstico): "evolution" | "meta" | "none"
   transport       String @default("none")
   transportConfig Json   @default("{}") // chaves específicas do transporte (instanceName, phoneId, etc.)
@@ -509,6 +524,16 @@ model WhatsappConversation {
   label          String? // QUENTE | FRIO | SEM_RESPOSTA
   questionsAsked Int     @default(0)
   botMessages    Int     @default(0)
+
+  // ── Estado do ROTEIRO FIXO (só usado quando config.scriptEnabled) ──────
+  // Índice da PRÓXIMA pergunta a enviar. Igual ao total de passos = acabou.
+  scriptStep    Int     @default(0)
+  // A pergunta atual já foi repetida uma vez? Repete no máximo uma: insistir
+  // com quem não quer responder é o comportamento que fez o bot importunar
+  // cliente. Depois da repetição o roteiro segue em frente sem o dado.
+  scriptRetried Boolean @default(false)
+  // O que o roteiro já coletou (ver DadosDoRoteiro em script.service.ts).
+  scriptData    Json    @default("{}")
 
   history         Json    @default("[]") // [{role:'user'|'assistant', text, at}]
   summary         String? // resumo de 1 linha gerado para o vendedor
