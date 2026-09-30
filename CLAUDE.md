@@ -26,9 +26,9 @@ Crons `node-cron` dentro do próprio processo (`src/index.ts`): métricas de hor
 
 ## Como publicar
 
-**Produção é a `main`, e aqui `git push` PUBLICA.** O Render observa a branch e faz o deploy sozinho — merjar na `main` é publicar. A migration roda no `preDeployCommand`, antes do serviço subir.
+**Produção é a `main`, e merjar nela PUBLICA.** O Render observa a branch e faz o deploy sozinho. A migration roda no `preDeployCommand`, antes do serviço subir.
 
-⚠️ **É o oposto do `google-ads-agent`.** Lá a Vercel está configurada com *Production Branch* = `main`, mas a integração git não dispara deploy: quem publica é `vercel --prod`, da CLI, empacotando a árvore de trabalho. Os dois repositórios têm branch de produção com o mesmo nome e formas de publicar diferentes — é o erro fácil de cometer trabalhando nos dois no mesmo dia.
+É o mesmo comportamento do frontend no `google-ads-agent`, onde a Vercel publica no merge para a `main`. A diferença que importa está lá: as **edge functions do Supabase não saem no push** — exigem `supabase functions deploy`. Aqui não há esse caso: tudo o que este repositório serve vai junto no deploy do Render.
 
 Conferir o que está no ar: `GET /health` responde `ok` + timestamp, mas **não diz a versão** — para saber se o deploy subiu, olhe o painel do Render ou teste um comportamento novo.
 
