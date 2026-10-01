@@ -2,6 +2,8 @@
 // O miolo da qualificação (estado + IA + config) NÃO conhece o transporte.
 // Ele só chama transport.sendText(...). Plugamos Evolution OU Meta oficial depois.
 
+import { extrairDadosDoAnuncio, pareceAnuncio, type DadosDoAnuncio } from './origem.js';
+
 export interface InboundMessage {
   /** Número/id do lead que enviou a mensagem (E.164 ou jid do WhatsApp). */
   from: string;
@@ -15,6 +17,8 @@ export interface InboundMessage {
    * oficial do Meta preenche; transportes sem esse dado deixam indefinido.
    */
   ctwaClid?: string | null;
+  /** Referral do anúncio CTWA (só vem na 1ª mensagem de quem clicou no anúncio). */
+  anuncio?: DadosDoAnuncio | null;
 }
 
 export interface WhatsappTransport {
@@ -109,7 +113,17 @@ export class EvolutionTransport implements WhatsappTransport {
     if (!text) return null; // status, ack, reação, mídia sem legenda, etc. — não é lead falando
 
     const from = data.key.remoteJid.replace('@s.whatsapp.net', '');
-    return { from, text, transport: this.name };
+
+    // Referral do anúncio "clique para o WhatsApp". Até 01/10/2026 ninguém lia
+    // isto — o ctwaClid do tipo acima ficava sempre vazio.
+    const anuncio = extrairDadosDoAnuncio(body);
+    if (!anuncio && pareceAnuncio(body)) {
+      // Formato ainda não confirmado com mensagem real: registra a FORMA (só
+      // chaves, nada do lead) para ajustar a leitura sem adivinhar campo.
+      console.warn('[whatsapp:origem] mensagem com cara de anúncio sem ctwaClid/sourceId reconhecível — chaves:',
+        JSON.stringify(Object.keys((raw ?? {}) as object)), JSON.stringify(Object.keys((data.message ?? {}) as object)));
+    }
+    return { from, text, transport: this.name, ctwaClid: anuncio?.ctwaClid ?? null, anuncio };
   }
 }
 

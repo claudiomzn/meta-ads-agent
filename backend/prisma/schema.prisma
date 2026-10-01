@@ -542,6 +542,15 @@ model WhatsappConversation {
   conversionFired Boolean @default(false)
   capiLeadFired   Boolean @default(false) // evento Lead (Meta CAPI) já enviado p/ este lead
 
+  // ── Origem (01/10/2026) — gravada SÓ na criação, nunca sobrescrita ──────
+  // Ver services/whatsapp/origem.ts. null = desconhecida (não "direto").
+  origemCanal     String? // meta_whatsapp | google | meta | organico | outro_site | direto
+  origemRef       String? // código do site, ex.: "HAP-G"
+  // Click id do anúncio CTWA. A Meta só manda na 1ª mensagem; o Lead QUENTE
+  // sai mensagens depois — sem guardar aqui, ele ia sem o vínculo com o anúncio.
+  ctwaClid        String?
+  origemAnuncioId String? // sourceId do anúncio CTWA
+
   // Marcada na criação: true se esta conversa nasceu depois de já ter batido o
   // limite diário de conversas grátis do usuário — cada mensagem do bot aqui
   // dentro conta no acumulado de excedente (ver WhatsappConfig).
