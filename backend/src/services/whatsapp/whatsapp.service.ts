@@ -13,7 +13,10 @@ import {
   extrairDadosParaCotacao,
   montarNotaParaVendedor,
   cotarRespeitandoPreferencia,
+  opcoesDoPlano,
+  planoDeCotacao,
   podeCotarAutomaticamente,
+  semTabela,
   REPLY_COTACAO_AGORA,
   REPLY_COTACAO_FALHOU,
   resolverIntegracao,
@@ -443,7 +446,12 @@ export class WhatsappService {
       })
       : null;
     const dadosLead = result.done ? extrairDadosParaCotacao(result.dados) : null;
-    const vaiCotar = Boolean(integracao) && result.done && result.label === 'QUENTE' && podeCotarAutomaticamente(dadosLead);
+    // Qual operadora: a que o lead disse, senão a da página do site. Plano que
+    // o Luiz vende sem tabela no Cote+ não promete cotação — vai ao vendedor.
+    const plano = dadosLead ? planoDeCotacao(dadosLead, conv.origemRef) : {};
+    const semTabelaDe = semTabela(plano);
+    const vaiCotar = Boolean(integracao) && result.done && result.label === 'QUENTE'
+      && podeCotarAutomaticamente(dadosLead) && !semTabelaDe;
     const replyFinal = vaiCotar ? REPLY_COTACAO_AGORA : result.reply;
 
     // Envia a resposta pelo transporte configurado
@@ -461,7 +469,7 @@ export class WhatsappService {
       let cotacao: CotacaoResultado | null = null;
       let falha: string | undefined;
       try {
-        cotacao = await cotarRespeitandoPreferencia(integracao, dadosLead);
+        cotacao = await cotarRespeitandoPreferencia(integracao, dadosLead, opcoesDoPlano(plano));
       } catch (e) {
         falha = e instanceof Error ? e.message : String(e);
         console.error('[whatsapp:cotacao] falha ao pedir cotação ao Cote+:', e);
@@ -476,7 +484,7 @@ export class WhatsappService {
     } else if (integracao && result.done && result.label === 'QUENTE') {
       // Integração ligada mas sem como cotar (CNPJ, idades ausentes): o
       // vendedor fica sabendo o porquê e não repete as perguntas.
-      notaVendedor = montarNotaParaVendedor(dadosLead, null);
+      notaVendedor = montarNotaParaVendedor(dadosLead, null, undefined, semTabelaDe);
     }
 
     // Handoff: avisa o vendedor com o resumo
@@ -620,7 +628,14 @@ export class WhatsappService {
       })
       : null;
     const dadosLead = extrairDadosParaCotacao(dadosParaCotacao(dados));
-    const vaiCotar = Boolean(integracao) && podeCotarAutomaticamente(dadosLead);
+    // O roteiro não pergunta operadora: a página do site de onde o lead veio
+    // é que diz. Sem isto, todo lead recebia a cotação do leque padrão (Samel).
+    const origem = await prisma.whatsappConversation.findUnique({
+      where: { id: convId }, select: { origemCanal: true, origemRef: true },
+    });
+    const plano = dadosLead ? planoDeCotacao(dadosLead, origem?.origemRef) : {};
+    const semTabelaDe = semTabela(plano);
+    const vaiCotar = Boolean(integracao) && podeCotarAutomaticamente(dadosLead) && !semTabelaDe;
 
     let notaVendedor = '';
     let textoFinal = '';
@@ -630,7 +645,7 @@ export class WhatsappService {
       let cotacao: CotacaoResultado | null = null;
       let falha: string | undefined;
       try {
-        cotacao = await cotarRespeitandoPreferencia(integracao, dadosLead);
+        cotacao = await cotarRespeitandoPreferencia(integracao, dadosLead, opcoesDoPlano(plano));
       } catch (e) {
         falha = e instanceof Error ? e.message : String(e);
         console.error('[whatsapp:roteiro] falha ao pedir cotação ao Cote+:', e);
@@ -641,6 +656,8 @@ export class WhatsappService {
       enviados.push(textoAoLead);
       textoFinal = textoAoLead;
       notaVendedor = montarNotaParaVendedor(dadosLead, cotacao, falha);
+    } else if (integracao && semTabelaDe) {
+      notaVendedor = montarNotaParaVendedor(dadosLead, null, undefined, semTabelaDe);
     }
 
     // A ÚLTIMA frase que o lead ouve do bot, e ela sai AGORA — não na próxima
@@ -660,9 +677,6 @@ export class WhatsappService {
     // respondeu um roteiro inteiro merece um humano olhando, e o resumo diz
     // o que ficou faltando (ver montarResumoDoRoteiro).
     if (config.handoffContact) {
-      const origem = await prisma.whatsappConversation.findUnique({
-        where: { id: convId }, select: { origemCanal: true, origemRef: true },
-      });
       const resumo = [montarResumoDoRoteiro(passos, dados), notaVendedor, origem ? linhaDeOrigem(origem) : null]
         .filter(Boolean).join('\n');
       await this.notifyVendor(config.handoffContact, leadPhone, resumo, transport);
