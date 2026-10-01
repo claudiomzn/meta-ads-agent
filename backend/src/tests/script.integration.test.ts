@@ -391,3 +391,85 @@ describe('⭐ Origem da conversa', () => {
     expect(conv?.origemCanal).toBe('meta');
   });
 });
+
+// Site multimarcas (01/10/2026). O roteiro não pergunta operadora — antes
+// disto, todo lead recebia a cotação do leque padrão (Samel), inclusive quem
+// clicou em "Cotar Hapvida". E SulAmérica/Bradesco, que o Luiz vende sem
+// tabela no Cote+, não podem receber promessa de cotação nem "não trabalho com".
+describe('⭐ Roteiro + cotação: a página do site decide a operadora', () => {
+  const COTE_URL = 'https://cote.test/functions/v1/cotacao-externa';
+  const RESPOSTAS = ['é pra mim', 'somos 2', '34 e 31', 'não tenho', 'quero contratar'];
+  const QUENTE = { tipo: 'pf', vidas: 2, idades: [34, 31], plano_atual: 'nenhum', urgencia: 'contratar' };
+  const fetchOriginal = globalThis.fetch;
+  const pedidosAoCote: { operadoras: string[] }[] = [];
+
+  beforeAll(() => {
+    process.env.COTE_QUOTE_USER = 'roteiro@test.com';
+    process.env.COTE_QUOTE_URL = COTE_URL;
+    process.env.COTE_QUOTE_KEY = 'chave-teste';
+    process.env.COTE_QUOTE_OPERATOR = 'samel';
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url) === COTE_URL) {
+        const corpo = JSON.parse(String(init?.body));
+        pedidosAoCote.push(corpo);
+        return new Response(JSON.stringify({ ok: true, texto: `Cotação ${corpo.operadoras.join('+')}: R$ 500`, planos: [{}] }), { status: 200 });
+      }
+      return fetchOriginal(url, init);
+    }) as typeof fetch;
+  });
+
+  afterAll(() => {
+    globalThis.fetch = fetchOriginal;
+    delete process.env.COTE_QUOTE_USER;
+    delete process.env.COTE_QUOTE_URL;
+    delete process.env.COTE_QUOTE_KEY;
+    delete process.env.COTE_QUOTE_OPERATOR;
+  });
+
+  beforeEach(() => { pedidosAoCote.length = 0; });
+
+  async function rodar(businessId: string, fone: string, primeira: string) {
+    await configRoteiro(businessId);
+    respostasPorCampo(QUENTE);
+    await enviar(businessId, fone, primeira);
+    for (const r of RESPOSTAS) await enviar(businessId, fone, r);
+    return lerConversa(businessId, fone);
+  }
+
+  it('⭐ veio da página da Hapvida: cota Hapvida, não o leque padrão', async () => {
+    const conv = await rodar('cot-hap', '5511900030001', 'Olá! Quero uma cotação do plano Hapvida.\n\n(ref. HAP-G)');
+    expect(pedidosAoCote).toHaveLength(1);
+    expect(pedidosAoCote[0].operadoras).toEqual(['hapvida']);
+    expect(falasDoBot(conv)).toContain('Cotação hapvida: R$ 500');
+  });
+
+  it('página do plano adventista: cota Proasa e Adventista (Plural) juntas', async () => {
+    await rodar('cot-adv', '5511900030002', 'Quero o plano adventista (ref. ADV-G)');
+    expect(pedidosAoCote[0].operadoras).toEqual(['proasa', 'adventista']);
+  });
+
+  it('⭐ página da Bradesco: não chama o Cote+, não promete cotação e o vendedor sabe por quê', async () => {
+    const { LogTransport } = await import('../services/whatsapp/transport.js');
+    const enviados = vi.spyOn(LogTransport.prototype, 'sendText');
+    const conv = await rodar('cot-bra', '5511900030003', 'Olá! Quero uma cotação do plano Bradesco Saúde.\n\n(ref. BRA-G)');
+    expect(pedidosAoCote).toHaveLength(0);
+    const falas = falasDoBot(conv).join('\n');
+    expect(falas).not.toContain('Vou te passar uma cotação agora');
+    expect(falas).not.toMatch(/não trabalho com/i);
+    expect(falas).toContain(FECHAMENTO);
+    const paraVendedor = enviados.mock.calls.filter(([to]) => to === '+551199999999').map(([, txt]) => txt).join('\n');
+    expect(paraVendedor).toContain('Veio para Bradesco Saúde: sem tabela no Cote+, a cotação fica com você.');
+    expect(paraVendedor).toContain('34, 31');
+    enviados.mockRestore();
+  });
+
+  it('página de hospital (Santa Júlia) vai ao vendedor, como SulAmérica/Bradesco', async () => {
+    await rodar('cot-sju', '5511900030004', 'Quero plano com atendimento no Hospital Santa Júlia (ref. SJU-G)');
+    expect(pedidosAoCote).toHaveLength(0);
+  });
+
+  it('sem página (anúncio Meta, conversa direta): leque padrão, como sempre', async () => {
+    await rodar('cot-pad', '5511900030005', 'oi, quero cotação');
+    expect(pedidosAoCote[0].operadoras).toEqual(['samel']);
+  });
+});

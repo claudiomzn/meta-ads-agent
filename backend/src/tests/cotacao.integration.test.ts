@@ -3,6 +3,9 @@ import {
   cotarRespeitandoPreferencia,
   extrairDadosParaCotacao,
   montarNotaParaVendedor,
+  opcoesDoPlano,
+  planoDeCotacao,
+  semTabela,
   pedirCotacao,
   podeCotarAutomaticamente,
   REPLY_COTACAO_AGORA,
@@ -186,3 +189,46 @@ describe('a frase fixa', () => {
     expect(REPLY_COTACAO_AGORA).toBe('Ótimo! Vou te passar uma cotação agora 😊');
   });
 });
+
+describe('planoDeCotacao — qual operadora cotar (site multimarcas, 01/10/2026)', () => {
+  const pf = { tipo: 'pf' as const, idades: [35] };
+
+  it('⭐ sem preferência dita, a página do site decide', () => {
+    expect(opcoesDoPlano(planoDeCotacao(pf, 'HAP-G'))).toEqual({ operadoras: ['hapvida'] });
+    expect(opcoesDoPlano(planoDeCotacao(pf, 'SAM-M'))).toEqual({ operadoras: ['samel', 'samel empresarial'] });
+    expect(opcoesDoPlano(planoDeCotacao(pf, 'INN-O'))).toEqual({ operadoras: ['innova'] });
+    expect(opcoesDoPlano(planoDeCotacao(pf, 'ADV-G'))).toEqual({ operadoras: ['proasa', 'adventista'] });
+  });
+
+  it('⭐ o que o lead DISSE vence a página', () => {
+    expect(planoDeCotacao({ ...pf, operadora: 'Hapvida' }, 'SAM-G')).toEqual({});
+  });
+
+  it('⭐ vende sem tabela (SulAmérica, Bradesco, hospitais): vai ao vendedor', () => {
+    expect(semTabela(planoDeCotacao(pf, 'BRA-G'))).toBe('Bradesco Saúde');
+    expect(semTabela(planoDeCotacao(pf, 'SUL-D'))).toBe('SulAmérica');
+    expect(semTabela(planoDeCotacao(pf, 'SJU-G'))).toContain('Santa Júlia');
+    expect(semTabela(planoDeCotacao(pf, 'CHK-G'))).toContain('Check Up');
+    // dito pelo lead no modo generativo, em qualquer grafia
+    expect(semTabela(planoDeCotacao({ ...pf, operadora: 'sulamerica' }, null))).toBe('SulAmérica');
+    expect(semTabela(planoDeCotacao({ ...pf, operadora: 'Bradesco Saúde' }, 'HAP-G'))).toBe('Bradesco Saúde');
+  });
+
+  it('operadora que ele NÃO vende segue o caminho de antes ("não trabalho com")', () => {
+    expect(planoDeCotacao({ ...pf, operadora: 'Unimed' }, null)).toEqual({});
+  });
+
+  it('página geral, anúncio Meta ou nenhuma origem: leque padrão', () => {
+    for (const ref of [null, undefined, '', 'MEL-G', 'OBR-D']) {
+      expect(opcoesDoPlano(planoDeCotacao(pf, ref))).toEqual({});
+      expect(semTabela(planoDeCotacao(pf, ref))).toBeNull();
+    }
+  });
+
+  it('nota ao vendedor diz que a cotação é dele, com as idades', () => {
+    const nota = montarNotaParaVendedor(pf, null, undefined, 'SulAmérica');
+    expect(nota).toContain('Idades: 35 (PF)');
+    expect(nota).toContain('Veio para SulAmérica: sem tabela no Cote+, a cotação fica com você.');
+  });
+});
+

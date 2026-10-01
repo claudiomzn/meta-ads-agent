@@ -51,6 +51,66 @@ export const REPLY_COTACAO_FALHOU =
 
 export const MAX_VIDAS = 12;
 
+// ── Qual operadora cotar (01/10/2026, site multimarcas) ─────────────────────
+//
+// O site segurosamazon.com passou a anunciar seis operadoras e dois hospitais.
+// Antes, o modo roteiro nunca sabia o que o lead queria (operadora: null) e
+// cotava sempre o leque padrão: quem clicava em "Cotar Hapvida" recebia
+// cotação da Samel. Agora a página de onde ele veio decide.
+//
+// Tabelas no Cote+ (Luiz, 01/10/2026): Samel (cotar só "samel" e "samel
+// empresarial"), Hapvida
+// (individual e empresarial), Innova, Tecgroup-Proasa (o "plano adventista")
+// e Adventista pela Plural. SulAmérica e Bradesco ele VENDE, mas sem tabela —
+// para essas o bot não cota e não diz "não trabalho com", que seria mentira
+// sobre um plano do próprio anúncio: a cotação fica com o vendedor.
+
+/** Vende, mas sem tabela no Cote+. */
+const VENDE_SEM_TABELA: { padrao: RegExp; nome: string }[] = [
+  { padrao: /sul\s*am[eé]rica/i, nome: 'SulAmérica' },
+  { padrao: /bradesco/i, nome: 'Bradesco Saúde' },
+];
+
+/** Prefixo da página no código do site, "(ref. HAP-G)" → HAP. */
+const POR_PAGINA: Record<string, PlanoDeCotacao> = {
+  // Samel: só as duas tabelas que o Luiz quer na cotação (01/10/2026).
+  SAM: { operadoras: ['samel', 'samel empresarial'] },
+  HAP: { operadoras: ['hapvida'] },
+  INN: { operadoras: ['innova'] },
+  ADV: { operadoras: ['proasa', 'adventista'] },
+  SUL: { semTabela: 'SulAmérica' },
+  BRA: { semTabela: 'Bradesco Saúde' },
+  // Hospitais: quem dá acesso a eles são SulAmérica e Bradesco.
+  SJU: { semTabela: 'plano com o Hospital Santa Júlia' },
+  CHK: { semTabela: 'plano com o Check Up Hospital' },
+};
+
+/** `operadoras` ausente = o que já valia: a pedida pelo lead, ou o leque padrão. */
+export type PlanoDeCotacao = { operadoras?: string[] } | { semTabela: string };
+
+/**
+ * PURO. O que o lead DISSE vence a página (ele pode ter entrado pela Samel e
+ * pedido Hapvida). Sem preferência dita, vale a página. Página geral, anúncio
+ * Meta ou nenhuma origem: leque padrão, como sempre.
+ */
+export function planoDeCotacao(dados: DadosDoLead, origemRef: string | null | undefined): PlanoDeCotacao {
+  if (dados.operadora) {
+    const sem = VENDE_SEM_TABELA.find((v) => v.padrao.test(dados.operadora!));
+    return sem ? { semTabela: sem.nome } : {};
+  }
+  const pagina = (origemRef ?? '').split('-')[0].toUpperCase();
+  return POR_PAGINA[pagina] ?? {};
+}
+
+export function semTabela(plano: PlanoDeCotacao): string | null {
+  return 'semTabela' in plano ? plano.semTabela : null;
+}
+
+/** Opções de chamada ao Cote+ a partir do plano (vazio = comportamento de antes). */
+export function opcoesDoPlano(plano: PlanoDeCotacao): { operadoras?: string[] } {
+  return 'operadoras' in plano && plano.operadoras?.length ? { operadoras: plano.operadoras } : {};
+}
+
 /** A integração está ligada para ESTA conta? Só a conta configurada —
  *  identificada pelo id interno ou pelo e-mail (sem caixa). */
 export function resolverIntegracao(
@@ -124,8 +184,11 @@ export async function pedirCotacao(
 export async function cotarRespeitandoPreferencia(
   integracao: IntegracaoCotacao,
   dados: DadosDoLead,
-  opts: { fetchImpl?: typeof fetch; timeoutMs?: number } = {},
+  opts: { fetchImpl?: typeof fetch; timeoutMs?: number; operadoras?: string[] } = {},
 ): Promise<CotacaoResultado> {
+  // Operadoras da página sem plano: nada a substituir — sem "não trabalho
+  // com", porque o lead não pediu nada e o plano é do próprio anúncio. O
+  // vendedor recebe as idades e cota (ver montarNotaParaVendedor).
   const primeira = await pedirCotacao(integracao, dados, opts);
   const pediu = dados.operadora?.trim();
   if (!pediu || !primeira.ok || (primeira.planos?.length ?? 0) > 0) return primeira;
@@ -146,6 +209,8 @@ export function montarNotaParaVendedor(
   dados: DadosDoLead | null,
   cotacao: CotacaoResultado | null,
   falha?: string,
+  /** Operadora que o Luiz vende sem tabela no Cote+ — cotação é dele. */
+  semTabelaDe?: string | null,
 ): string {
   const idades = dados
     ? `Idades: ${dados.idades.join(', ')} (${dados.tipo.toUpperCase()})${dados.operadora ? ` · pediu ${dados.operadora}` : ''}`
@@ -157,6 +222,7 @@ export function montarNotaParaVendedor(
   if (cotacao?.ok && !cotacao.texto) {
     return `${idades}\n⚠️ Sem plano com tabela vigente para cotar — o lead ficou esperando a sua cotação.${cotacao.avisos?.length ? ` ${cotacao.avisos.join(' · ')}` : ''}`;
   }
+  if (semTabelaDe) return `${idades}\nℹ️ Veio para ${semTabelaDe}: sem tabela no Cote+, a cotação fica com você.`;
   if (falha) return `${idades}\n⚠️ Cotação automática falhou (${falha}) — o lead ficou esperando a sua cotação.`;
   if (dados && dados.tipo === 'cnpj') return `${idades}\nℹ️ Empresarial: cotação fica com você.`;
   return idades;
