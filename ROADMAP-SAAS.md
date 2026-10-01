@@ -1,5 +1,10 @@
 # Roadmap SaaS — Meta Ads Agent
 
+> ⚠️ **Documento histórico (jul/2026) — não é a fila de trabalho atual.**
+> Boa parte das fases abaixo já foi feita por outro caminho: o banco é Postgres no **Neon**, o backend publica no **Render** e o app no **Vercel** (ver `CLAUDE.md`), e a cobrança roda por **Hotmart** e **Asaas**, não Stripe. As caixas abaixo não foram atualizadas e **não refletem o que existe**.
+> A fila atual e o princípio do produto estão no cofre Obsidian: `AdsGenius/PRIORIDADES.md`.
+
+
 Melhorias necessárias para transformar o app em um produto SaaS comercial.
 Ordenadas por prioridade de implementação.
 
