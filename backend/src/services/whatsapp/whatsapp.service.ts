@@ -7,6 +7,7 @@ import { lookupContact } from './contacts.js';
 import { instanceName } from './evolution.manager.js';
 import { resolveTransport, type InboundMessage } from './transport.js';
 import { linhaDeOrigem, resolverOrigem } from './origem.js';
+import { resolverCampanhaDoAnuncio } from './origem.meta.js';
 import {
   type CotacaoResultado,
   extrairDadosParaCotacao,
@@ -333,6 +334,17 @@ export class WhatsappService {
       conv = await prisma.whatsappConversation.create({
         data: { userId: this.userId, businessId: this.businessId, leadPhone: msg.from, state: 'greeting', billable, ...origem },
       });
+      // Anúncio CTWA: a campanha sai da Meta, em segundo plano — o lead não
+      // espera a Graph API para receber a resposta do bot.
+      if (origem.origemAnuncioId && !origem.origemCampanhaId) {
+        const convId = conv.id;
+        void resolverCampanhaDoAnuncio(this.userId, origem.origemAnuncioId).then((campanhaId) => {
+          if (!campanhaId) return;
+          return prisma.whatsappConversation.updateMany({
+            where: { id: convId, origemCampanhaId: null }, data: { origemCampanhaId: campanhaId },
+          });
+        }).catch((e) => console.warn('[whatsapp:origem] gravação da campanha falhou:', (e as Error).message));
+      }
       if (origem.origemCanal) {
         console.log(`[whatsapp:origem] conversa nova de ${origem.origemCanal}${origem.origemRef ? ` (ref. ${origem.origemRef})` : ''}${origem.origemAnuncioId ? ` anúncio ${origem.origemAnuncioId}` : ''} (userId ${this.userId}, negócio ${this.businessId})`);
       }

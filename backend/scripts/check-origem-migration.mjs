@@ -10,8 +10,9 @@ import pg from 'pg';
 
 const dataDir = mkdtempSync(join(tmpdir(), 'migcheck-origem-'));
 const epg = new EmbeddedPostgres({ databaseDir: dataDir, user: 'postgres', password: 'test', port: 5435, persistent: false });
-const SQL = readFileSync('prisma/migrations/20261001120000_add_whatsapp_conversation_origem/migration.sql', 'utf8');
-const COLUNAS = ['origemCanal', 'origemRef', 'ctwaClid', 'origemAnuncioId'];
+const SQL = readFileSync('prisma/migrations/20261001120000_add_whatsapp_conversation_origem/migration.sql', 'utf8')
+  + '\n' + readFileSync('prisma/migrations/20261001150000_add_whatsapp_conversation_campanha/migration.sql', 'utf8');
+const COLUNAS = ['origemCanal', 'origemRef', 'ctwaClid', 'origemAnuncioId', 'origemCampanhaId'];
 
 let falhas = 0;
 const ok = (cond, msg) => { if (!cond) { falhas++; console.log('  ✗ ' + msg); } else console.log('  ✓ ' + msg); };

@@ -13,16 +13,20 @@ export type CanalDeOrigem =
   | 'direto';       // site, entrou direto
 
 // O site segurosamazon.com fecha a 1ª mensagem com "(ref. HAP-G)": página
-// (2–4 letras) + canal (G/M/O/R/D). Ver src/assets/js/site.js de lá.
-const REF_DO_SITE = /\(ref\.\s*([A-Z]{2,4})-([GMORD])\)/;
+// (2–4 letras) + canal (G/M/O/R/D) — e, desde 01/10/2026, o número da campanha
+// quando o link do anúncio o traz: "(ref. HAP-G-21345678901)". Ver
+// src/assets/js/site.js de lá: mudar o formato exige mudar os dois.
+const REF_DO_SITE = /\(ref\.\s*([A-Z]{2,4})-([GMORD])(?:-(\d{6,20}))?\)/;
 const CANAL_DO_SITE: Record<string, CanalDeOrigem> = {
   G: 'google', M: 'meta', O: 'organico', R: 'outro_site', D: 'direto',
 };
 
-export function lerRefDoSite(texto: string): { ref: string; pagina: string; canal: CanalDeOrigem } | null {
+export function lerRefDoSite(texto: string): {
+  ref: string; pagina: string; canal: CanalDeOrigem; campanhaId: string | null;
+} | null {
   const m = REF_DO_SITE.exec(texto ?? '');
   if (!m) return null;
-  return { ref: `${m[1]}-${m[2]}`, pagina: m[1], canal: CANAL_DO_SITE[m[2]] };
+  return { ref: `${m[1]}-${m[2]}`, pagina: m[1], canal: CANAL_DO_SITE[m[2]], campanhaId: m[3] ?? null };
 }
 
 export interface DadosDoAnuncio {
@@ -79,6 +83,11 @@ export interface OrigemDaConversa {
   origemRef: string | null;
   ctwaClid: string | null;
   origemAnuncioId: string | null;
+  /**
+   * Campanha que trouxe o lead. Do site vem pronta no código; do anúncio CTWA
+   * fica null aqui e é resolvida depois pela Meta (resolverCampanhaDoAnuncio).
+   */
+  origemCampanhaId: string | null;
 }
 
 /** Anúncio CTWA tem prioridade: é prova direta. O código do site vem depois. */
@@ -89,6 +98,9 @@ export function resolverOrigem(textoDaMensagem: string, anuncio: DadosDoAnuncio 
     origemRef: site?.ref ?? null,
     ctwaClid: anuncio?.ctwaClid ?? null,
     origemAnuncioId: anuncio?.anuncioId ?? null,
+    // A campanha do código do site só vale quando o site é a origem: se veio
+    // do anúncio CTWA, a campanha é a DO ANÚNCIO, resolvida pela Meta.
+    origemCampanhaId: anuncio ? null : site?.campanhaId ?? null,
   };
 }
 
