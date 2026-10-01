@@ -6,6 +6,7 @@ import prisma from '../../lib/prisma.js';
 import { lookupContact } from './contacts.js';
 import { instanceName } from './evolution.manager.js';
 import { resolveTransport, type InboundMessage } from './transport.js';
+import { linhaDeOrigem, resolverOrigem } from './origem.js';
 import {
   type CotacaoResultado,
   extrairDadosParaCotacao,
@@ -326,9 +327,15 @@ export class WhatsappService {
         where: { userId: this.userId, businessId: this.businessId, createdAt: { gte: startOfToday } },
       });
       const billable = todayCount >= config.dailyFreeConversations;
+      // Origem: só aqui, na 1ª mensagem — é a única que traz o código do site
+      // e o referral do anúncio. Nunca sobrescrita depois.
+      const origem = resolverOrigem(msg.text, msg.anuncio ?? null);
       conv = await prisma.whatsappConversation.create({
-        data: { userId: this.userId, businessId: this.businessId, leadPhone: msg.from, state: 'greeting', billable },
+        data: { userId: this.userId, businessId: this.businessId, leadPhone: msg.from, state: 'greeting', billable, ...origem },
       });
+      if (origem.origemCanal) {
+        console.log(`[whatsapp:origem] conversa nova de ${origem.origemCanal}${origem.origemRef ? ` (ref. ${origem.origemRef})` : ''}${origem.origemAnuncioId ? ` anúncio ${origem.origemAnuncioId}` : ''} (userId ${this.userId}, negócio ${this.businessId})`);
+      }
 
       // MODO OBSERVAÇÃO (ver contacts.ts): pergunta à Evolution se este número
       // já é contato conhecido e só registra. Nada é bloqueado ainda — é o log
@@ -462,7 +469,7 @@ export class WhatsappService {
 
     // Handoff: avisa o vendedor com o resumo
     if (result.done && result.state === 'handoff' && config.handoffContact) {
-      const resumo = [result.summary ?? '', notaVendedor].filter(Boolean).join('\n');
+      const resumo = [result.summary ?? '', notaVendedor, linhaDeOrigem(conv)].filter(Boolean).join('\n');
       await this.notifyVendor(config.handoffContact, msg.from, resumo, transport);
     }
 
@@ -641,7 +648,11 @@ export class WhatsappService {
     // respondeu um roteiro inteiro merece um humano olhando, e o resumo diz
     // o que ficou faltando (ver montarResumoDoRoteiro).
     if (config.handoffContact) {
-      const resumo = [montarResumoDoRoteiro(passos, dados), notaVendedor].filter(Boolean).join('\n');
+      const origem = await prisma.whatsappConversation.findUnique({
+        where: { id: convId }, select: { origemCanal: true, origemRef: true },
+      });
+      const resumo = [montarResumoDoRoteiro(passos, dados), notaVendedor, origem ? linhaDeOrigem(origem) : null]
+        .filter(Boolean).join('\n');
       await this.notifyVendor(config.handoffContact, leadPhone, resumo, transport);
     }
 
@@ -783,11 +794,17 @@ ou esperar a virada do dia, quando as conversas grátis renovam sozinhas.</p>
   // deduplicar com o Pixel. Não-fatal: erro aqui não pode quebrar o atendimento.
   private async fireCapiLead(convId: string, leadPhone: string, ctwaClid?: string | null) {
     try {
+      // O click id do anúncio vem SÓ na 1ª mensagem e fica gravado na conversa;
+      // o Lead QUENTE sai mensagens depois. Usar só o da mensagem atual (o que
+      // se fazia até 01/10/2026) mandava o Lead sempre sem vínculo com o anúncio.
+      const salvo = await prisma.whatsappConversation.findUnique({
+        where: { id: convId }, select: { ctwaClid: true },
+      });
       const capi = new CapiService(this.userId);
       const res = await capi.sendLead({
         phone: leadPhone,
         eventId: `lead_${convId}`,
-        ctwaClid: ctwaClid ?? null,
+        ctwaClid: salvo?.ctwaClid ?? ctwaClid ?? null,
       });
       if (res.ok) console.log(`[capi] Lead enviado (lead ${leadPhone}, conv ${convId})`);
       else console.warn(`[capi] Lead não enviado (lead ${leadPhone}): ${res.error}`);

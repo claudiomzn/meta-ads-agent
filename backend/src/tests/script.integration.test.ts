@@ -302,3 +302,80 @@ describe('Config: o roteiro não pode sumir sozinho', () => {
     expect(mockNextReply).not.toHaveBeenCalled();
   });
 });
+
+// ─── Origem da conversa (01/10/2026) ────────────────────────────────────────
+// Até aqui a conversa não guardava de onde veio, e o click id do anúncio
+// "clique para o WhatsApp" — que a Meta manda SÓ na 1ª mensagem — se perdia
+// antes do Lead QUENTE sair para a CAPI, mensagens depois.
+describe('⭐ Origem da conversa', () => {
+  const RESPOSTAS = ['é pra mim', 'somos 2', '34 e 31', 'não tenho', 'quero contratar'];
+  const QUENTE = { tipo: 'pf', vidas: 2, idades: [34, 31], plano_atual: 'nenhum', urgencia: 'contratar' };
+
+  it('⭐ o webhook da Evolution lê o referral do anúncio CTWA', async () => {
+    const { EvolutionTransport } = await import('../services/whatsapp/transport.js');
+    const t = new EvolutionTransport('http://x', 'k', 'i');
+    const msg = t.parseInbound({
+      event: 'messages.upsert',
+      data: {
+        key: { remoteJid: '5511900020001@s.whatsapp.net', fromMe: false },
+        message: {
+          extendedTextMessage: {
+            text: 'Olá! Quero mais informações.',
+            contextInfo: { externalAdReply: { ctwaClid: 'CLID-REAL', sourceId: '1202', sourceType: 'ad' } },
+          },
+        },
+      },
+    });
+    expect(msg?.ctwaClid).toBe('CLID-REAL');
+    expect(msg?.anuncio).toEqual({ ctwaClid: 'CLID-REAL', anuncioId: '1202' });
+  });
+
+  it('⭐ o Lead QUENTE sai com o ctwaClid da 1ª mensagem, mesmo vindo mensagens depois', async () => {
+    await configRoteiro('orig-ctwa');
+    respostasPorCampo(QUENTE);
+    const { WhatsappService } = await import('../services/whatsapp/whatsapp.service.js');
+    const svc = new WhatsappService(userId, 'orig-ctwa');
+
+    // 1ª mensagem: veio do anúncio (é a única que traz o referral).
+    await svc.handleInbound({
+      from: '5511900020002', text: 'Olá! Quero mais informações.', transport: 'log',
+      ctwaClid: 'CLID-1', anuncio: { ctwaClid: 'CLID-1', anuncioId: 'AD-9' },
+    });
+    // As seguintes chegam SEM referral, como na vida real.
+    for (const r of RESPOSTAS) await enviar('orig-ctwa', '5511900020002', r);
+
+    const conv = await lerConversa('orig-ctwa', '5511900020002');
+    expect(conv?.origemCanal).toBe('meta_whatsapp');
+    expect(conv?.origemAnuncioId).toBe('AD-9');
+    expect(mockSendLead).toHaveBeenCalledTimes(1);
+    expect(mockSendLead.mock.calls[0][0]).toMatchObject({ ctwaClid: 'CLID-1' });
+  });
+
+  it('⭐ código do site na 1ª mensagem vira origem, e o vendedor fica sabendo', async () => {
+    await configRoteiro('orig-site');
+    respostasPorCampo(QUENTE);
+    const { LogTransport } = await import('../services/whatsapp/transport.js');
+    const enviados = vi.spyOn(LogTransport.prototype, 'sendText');
+
+    await enviar('orig-site', '5511900020003', 'Olá! Quero uma cotação do plano Hapvida.\n\n(ref. HAP-G)');
+    for (const r of RESPOSTAS) await enviar('orig-site', '5511900020003', r);
+
+    const conv = await lerConversa('orig-site', '5511900020003');
+    expect(conv?.origemCanal).toBe('google');
+    expect(conv?.origemRef).toBe('HAP-G');
+    expect(conv?.ctwaClid).toBeNull();
+    const paraVendedor = enviados.mock.calls.filter(([to]) => to === '+551199999999').map(([, txt]) => txt);
+    expect(paraVendedor.join('\n')).toContain('Origem: anúncio do Google, pelo site (ref. HAP-G)');
+    enviados.mockRestore();
+  });
+
+  it('a origem nunca é sobrescrita por mensagem posterior', async () => {
+    await configRoteiro('orig-fixa');
+    respostasPorCampo({});
+    await enviar('orig-fixa', '5511900020004', 'oi (ref. SAM-M)');
+    await enviar('orig-fixa', '5511900020004', 'e agora (ref. HAP-G)');
+    const conv = await lerConversa('orig-fixa', '5511900020004');
+    expect(conv?.origemRef).toBe('SAM-M');
+    expect(conv?.origemCanal).toBe('meta');
+  });
+});
