@@ -39,6 +39,28 @@ export interface LeadEventInput {
   testEventCode?: string;
 }
 
+export interface PurchaseEventInput {
+  /** Telefone do comprador (qualquer formato — é normalizado e hasheado). */
+  phone: string;
+  /** ID estável da venda — reenviar a mesma venda não conta duas vezes. */
+  eventId: string;
+  /** Valor da venda em reais. Obrigatório: venda sem valor não ensina nada. */
+  value: number;
+  currency?: string;
+  /** Momento da venda (epoch em segundos). Padrão: agora. */
+  eventTime?: number;
+  testEventCode?: string;
+}
+
+export interface CapiResult {
+  ok: boolean;
+  error?: string;
+  eventsReceived?: number;
+}
+
+/** Janela do Meta para eventos fora de loja física. */
+export const PURCHASE_MAX_DIAS = 7;
+
 export interface CapiStatus {
   ready: boolean;
   pixelId: string | null;
@@ -78,14 +100,42 @@ export class CapiService {
    * Envia um evento "Lead" via CAPI. Não lança — devolve {ok,...} para que o
    * fluxo de WhatsApp nunca quebre por causa do rastreamento.
    */
-  async sendLead(input: LeadEventInput): Promise<{ ok: boolean; error?: string; eventsReceived?: number }> {
+  async sendLead(input: LeadEventInput): Promise<CapiResult> {
+    return this.send('Lead', input);
+  }
+
+  /**
+   * Envia um evento "Purchase" (venda fechada) via CAPI, com o valor da venda.
+   *
+   * É o que fecha o laço "custo → lucro": sem ele o Meta só sabe quem
+   * CONVERSOU, nunca quem COMPROU, e otimiza para conversa barata.
+   *
+   * O Meta só aceita evento com até 7 dias (fora o action_source
+   * physical_store). Venda mais antiga é recusada AQUI, com o motivo — mandar
+   * e deixar o Meta recusar viraria erro genérico na tela.
+   */
+  async sendPurchase(input: PurchaseEventInput): Promise<CapiResult> {
+    if (!(input.value > 0)) return { ok: false, error: 'Valor da venda inválido.' };
+    const eventTime = input.eventTime ?? Math.floor(Date.now() / 1000);
+    const idadeDias = (Date.now() / 1000 - eventTime) / 86_400;
+    if (idadeDias > PURCHASE_MAX_DIAS) {
+      return { ok: false, error: `O Meta só aceita vendas dos últimos ${PURCHASE_MAX_DIAS} dias.` };
+    }
+    return this.send('Purchase', { ...input, eventTime });
+  }
+
+  private async send(
+    eventName: 'Lead' | 'Purchase',
+    input: LeadEventInput & { eventTime?: number },
+  ): Promise<CapiResult> {
     try {
       const token = await this.getToken();
       const pixelId = await this.resolvePixelId();
 
       const phone = normalizePhone(input.phone);
       // Sem ctwa_clid não há contexto de navegador; "business_messaging" é a
-      // origem correta p/ conversões vindas de mensageria (WhatsApp).
+      // origem correta p/ conversões vindas de mensageria (WhatsApp). A venda
+      // registrada pelo cliente no app é "system_generated" (vem do CRM dele).
       const action_source = input.ctwaClid ? 'business_messaging' : 'system_generated';
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -95,9 +145,9 @@ export class CapiService {
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const event: Record<string, any> = {
-        event_name: 'Lead',
-        event_time: Math.floor(Date.now() / 1000),
-        event_id: input.eventId, // deduplicação com o Pixel
+        event_name: eventName,
+        event_time: input.eventTime ?? Math.floor(Date.now() / 1000),
+        event_id: input.eventId, // deduplicação com o Pixel e entre reenvios
         action_source,
         user_data: userData,
       };
@@ -113,12 +163,20 @@ export class CapiService {
       const res = await axios.post(`${GRAPH}/${pixelId}/events`, body, {
         params: { access_token: token },
       });
-      return { ok: true, eventsReceived: res.data?.events_received };
+      // A Meta responde recusa com HTTP 200 (CLAUDE.md). Só é envio se ela
+      // confirmar o recebimento — senão a tela diria "enviado" sem ter sido.
+      const recebidos = Number(res.data?.events_received ?? 0);
+      if (!(recebidos >= 1)) {
+        const err = JSON.stringify(res.data ?? {});
+        console.error(`[capi] ${eventName} não confirmado pela Meta:`, err);
+        return { ok: false, error: `Meta não confirmou o recebimento do evento ${eventName}.` };
+      }
+      return { ok: true, eventsReceived: recebidos };
     } catch (e) {
       const err = axios.isAxiosError(e)
         ? JSON.stringify(e.response?.data ?? e.message)
         : (e as Error).message;
-      console.error('[capi] falha ao enviar Lead:', err);
+      console.error(`[capi] falha ao enviar ${eventName}:`, err);
       return { ok: false, error: err };
     }
   }
