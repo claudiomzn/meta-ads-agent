@@ -61,12 +61,12 @@ describe('extrairDadosDoAnuncio — referral do anúncio CTWA, onde quer que a E
 describe('resolverOrigem', () => {
   it('⭐ anúncio CTWA vence o código do site (é prova direta)', () => {
     const o = resolverOrigem(msgSite, { ctwaClid: 'C1', anuncioId: 'A1' });
-    expect(o).toEqual({ origemCanal: 'meta_whatsapp', origemRef: 'HAP-G', ctwaClid: 'C1', origemAnuncioId: 'A1' });
+    expect(o).toEqual({ origemCanal: 'meta_whatsapp', origemRef: 'HAP-G', ctwaClid: 'C1', origemAnuncioId: 'A1', origemCampanhaId: null });
   });
 
   it('só o código do site', () => {
     expect(resolverOrigem(msgSite, null)).toEqual({
-      origemCanal: 'google', origemRef: 'HAP-G', ctwaClid: null, origemAnuncioId: null,
+      origemCanal: 'google', origemRef: 'HAP-G', ctwaClid: null, origemAnuncioId: null, origemCampanhaId: null,
     });
   });
 
@@ -82,5 +82,27 @@ describe('linhaDeOrigem — o vendedor sabe de onde veio o lead', () => {
   it('desconhecida → null (não escreve "Origem: ?")', () => {
     expect(linhaDeOrigem({ origemCanal: null, origemRef: null })).toBeNull();
     expect(linhaDeOrigem({ origemCanal: 'lixo', origemRef: null })).toBeNull();
+  });
+});
+
+describe('campanha no código do site (01/10/2026)', () => {
+  it('⭐ "(ref. HAP-G-21345678901)" → canal google + campanha', () => {
+    expect(lerRefDoSite('Olá\n\n(ref. HAP-G-21345678901)')).toEqual({
+      ref: 'HAP-G', pagina: 'HAP', canal: 'google', campanhaId: '21345678901',
+    });
+  });
+
+  it('formato antigo segue valendo, sem campanha', () => {
+    expect(lerRefDoSite('(ref. HAP-G)')?.campanhaId).toBeNull();
+  });
+
+  it('número curto demais não é ID de campanha → o código inteiro não casa', () => {
+    expect(lerRefDoSite('(ref. HAP-G-123)')).toBeNull();
+  });
+
+  it('⭐ veio do anúncio CTWA: a campanha do site NÃO vale (é a do anúncio, resolvida na Meta)', () => {
+    const o = resolverOrigem('(ref. HAP-G-21345678901)', { ctwaClid: 'C', anuncioId: '1' });
+    expect(o.origemCampanhaId).toBeNull();
+    expect(resolverOrigem('(ref. HAP-G-21345678901)', null).origemCampanhaId).toBe('21345678901');
   });
 });

@@ -3,6 +3,7 @@ import { Router, Request, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { WhatsappService, creditPaidRecharge, DEFAULT_BUSINESS } from '../services/whatsapp/whatsapp.service.js';
 import { resolveTransport } from '../services/whatsapp/transport.js';
+import { periodo, somarFunil } from '../services/whatsapp/funil.js';
 import {
   evolutionConfigured,
   connectInstance,
@@ -37,6 +38,20 @@ router.post('/config', authMiddleware, async (req: AuthRequest, res: Response) =
 });
 
 // Limite diário, excedente acumulado e histórico de cobranças (Asaas) — por negócio
+// GET /api/whatsapp/funil-por-campanha?desde=AAAA-MM-DD&ate=AAAA-MM-DD
+// Leads (conversas novas) e QUENTES por canal e campanha, somando todos os
+// negócios da conta. É o que o relatório do app cruza com gasto e vendas.
+router.get('/funil-por-campanha', authMiddleware, async (req: AuthRequest, res: Response) => {
+  const p = periodo(req.query.desde, req.query.ate);
+  if (!p) return res.status(400).json({ error: 'Período inválido. Use desde/ate no formato AAAA-MM-DD.' });
+  const linhas = await prisma.whatsappConversation.groupBy({
+    by: ['origemCanal', 'origemCampanhaId', 'label'],
+    where: { userId: req.userId!, createdAt: { gte: p.de, lt: p.ate } },
+    _count: { _all: true },
+  });
+  res.json({ de: p.de.toISOString(), ate: p.ate.toISOString(), campanhas: somarFunil(linhas) });
+});
+
 router.get('/usage', authMiddleware, async (req: AuthRequest, res: Response) => {
   const svc = new WhatsappService(req.userId!, resolveBusinessId(req));
   res.json(await svc.getUsageStatus());

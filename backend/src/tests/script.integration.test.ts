@@ -32,6 +32,12 @@ vi.mock('../services/whatsapp/script.service.js', async (importOriginal) => {
   return { ...real, lerResposta: (...args: unknown[]) => mockLerResposta(...args) };
 });
 
+// A pergunta à Meta "qual a campanha deste anúncio?" (Graph API) — sem rede.
+const mockCampanhaDoAnuncio = vi.fn(async () => '120210000000777');
+vi.mock('../services/whatsapp/origem.meta.js', () => ({
+  resolverCampanhaDoAnuncio: (...a: unknown[]) => mockCampanhaDoAnuncio(...(a as [])),
+}));
+
 vi.mock('../services/email.service.js', () => ({
   sendMail: vi.fn().mockResolvedValue(undefined),
   resetPasswordEmail: vi.fn().mockReturnValue({ html: '', text: '' }),
@@ -136,6 +142,7 @@ beforeEach(() => {
   mockNextReply.mockClear();
   mockLerResposta.mockReset();
   mockSendLead.mockClear();
+  mockCampanhaDoAnuncio.mockClear();
 });
 
 // Lê o campo como a IA leria, mas sem IA: devolve o valor combinado por campo.
@@ -347,6 +354,9 @@ describe('⭐ Origem da conversa', () => {
     const conv = await lerConversa('orig-ctwa', '5511900020002');
     expect(conv?.origemCanal).toBe('meta_whatsapp');
     expect(conv?.origemAnuncioId).toBe('AD-9');
+    // ⭐ A campanha do anúncio é resolvida na Meta em segundo plano e gravada.
+    expect(mockCampanhaDoAnuncio).toHaveBeenCalledWith(userId, 'AD-9');
+    expect(conv?.origemCampanhaId).toBe('120210000000777');
     expect(mockSendLead).toHaveBeenCalledTimes(1);
     expect(mockSendLead.mock.calls[0][0]).toMatchObject({ ctwaClid: 'CLID-1' });
   });
@@ -357,13 +367,15 @@ describe('⭐ Origem da conversa', () => {
     const { LogTransport } = await import('../services/whatsapp/transport.js');
     const enviados = vi.spyOn(LogTransport.prototype, 'sendText');
 
-    await enviar('orig-site', '5511900020003', 'Olá! Quero uma cotação do plano Hapvida.\n\n(ref. HAP-G)');
+    await enviar('orig-site', '5511900020003', 'Olá! Quero uma cotação do plano Hapvida.\n\n(ref. HAP-G-21345678901)');
     for (const r of RESPOSTAS) await enviar('orig-site', '5511900020003', r);
 
     const conv = await lerConversa('orig-site', '5511900020003');
     expect(conv?.origemCanal).toBe('google');
     expect(conv?.origemRef).toBe('HAP-G');
+    expect(conv?.origemCampanhaId).toBe('21345678901'); // ⭐ campanha do código do site
     expect(conv?.ctwaClid).toBeNull();
+    expect(mockCampanhaDoAnuncio).not.toHaveBeenCalledWith(userId, expect.anything()); // site não pergunta à Meta
     const paraVendedor = enviados.mock.calls.filter(([to]) => to === '+551199999999').map(([, txt]) => txt);
     expect(paraVendedor.join('\n')).toContain('Origem: anúncio do Google, pelo site (ref. HAP-G)');
     enviados.mockRestore();
