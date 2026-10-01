@@ -551,3 +551,23 @@ describe('Remoção de negócio', () => {
     expect(convs).toHaveLength(1); // histórico preservado
   });
 });
+
+describe('Sem conversão de mentira na 1ª resposta (30/09/2026)', () => {
+  it('⭐ a 1ª resposta NÃO marca conversionFired — nada é enviado nesse momento', async () => {
+    // Antes, a 1ª resposta chamava fireConversion(), que só escrevia no log
+    // "conversão disparada" e marcava a flag, sem enviar nada ao Google. A
+    // conversão de verdade sobe no lead QUENTE (CAPI + upload-lead-conversion).
+    await upsertConfig('conv-falsa', { conversionId: 'AW-123', conversionLabel: 'abc' });
+
+    const res = await request(app).post('/api/whatsapp/simulate')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ businessId: 'conv-falsa', from: '+551190009001', text: 'oi' });
+
+    expect(res.body.reply).toBeDefined(); // prova que a conversa rodou até o fim
+    const conv = await prisma.whatsappConversation.findUnique({
+      where: { userId_businessId_leadPhone: { userId, businessId: 'conv-falsa', leadPhone: '+551190009001' } },
+    });
+    expect(conv).not.toBeNull();
+    expect(conv?.conversionFired).toBe(false);
+  });
+});

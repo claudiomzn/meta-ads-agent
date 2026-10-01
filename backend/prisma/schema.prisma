@@ -537,6 +537,8 @@ model WhatsappConversation {
 
   history         Json    @default("[]") // [{role:'user'|'assistant', text, at}]
   summary         String? // resumo de 1 linha gerado para o vendedor
+  // LEGADO, não é mais escrito: marcava "conversão disparada" sem nada ter
+  // sido enviado. Coluna mantida para não mexer no banco (ver drift no CLAUDE.md).
   conversionFired Boolean @default(false)
   capiLeadFired   Boolean @default(false) // evento Lead (Meta CAPI) já enviado p/ este lead
 

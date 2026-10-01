@@ -460,12 +460,6 @@ export class WhatsappService {
       notaVendedor = montarNotaParaVendedor(dadosLead, null);
     }
 
-    // Dispara conversão na PRIMEIRA resposta (clique→conversa = lead via WhatsApp)
-    const shouldFireConversion = !conv.conversionFired;
-    if (shouldFireConversion) {
-      await this.fireConversion(config.conversionId, config.conversionLabel, msg.from);
-    }
-
     // Handoff: avisa o vendedor com o resumo
     if (result.done && result.state === 'handoff' && config.handoffContact) {
       const resumo = [result.summary ?? '', notaVendedor].filter(Boolean).join('\n');
@@ -493,7 +487,6 @@ export class WhatsappService {
         botMessages: conv.botMessages + 1,
         history: history as unknown as object,
         summary: result.summary ?? conv.summary,
-        conversionFired: conv.conversionFired || shouldFireConversion,
         capiLeadFired: conv.capiLeadFired || shouldReport,
       },
     });
@@ -784,17 +777,6 @@ ou esperar a virada do dia, quando as conversas grátis renovam sozinhas.</p>
       await prisma.whatsappCharge.delete({ where: { id: placeholder.id } }).catch(() => {});
       throw e;
     }
-  }
-
-  // Dispara a conversão. Por enquanto registra; o envio real ao Google Ads
-  // (conversão offline/click) entra quando ligarmos a ponte com a conta.
-  private async fireConversion(conversionId: string | null, label: string | null, lead: string) {
-    if (!conversionId || !label) {
-      console.log(`[whatsapp] conversão não configurada p/ lead ${lead} — pulando disparo`);
-      return;
-    }
-    // TODO: enviar Click/Enhanced Conversion ao Google Ads (precisa do gclid do lead).
-    console.log(`[whatsapp] conversão disparada: ${conversionId}/${label} (lead ${lead})`);
   }
 
   // Envia o evento Lead ao Meta via CAPI. event_id estável por conversa para
