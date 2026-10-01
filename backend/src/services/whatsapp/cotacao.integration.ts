@@ -58,7 +58,8 @@ export const MAX_VIDAS = 12;
 // cotava sempre o leque padrão: quem clicava em "Cotar Hapvida" recebia
 // cotação da Samel. Agora a página de onde ele veio decide.
 //
-// Tabelas no Cote+ (Luiz, 01/10/2026): Samel (adesão e empresarial), Hapvida
+// Tabelas no Cote+ (Luiz, 01/10/2026): Samel (cotar só "samel" e "samel
+// empresarial"), Hapvida
 // (individual e empresarial), Innova, Tecgroup-Proasa (o "plano adventista")
 // e Adventista pela Plural. SulAmérica e Bradesco ele VENDE, mas sem tabela —
 // para essas o bot não cota e não diz "não trabalho com", que seria mentira
@@ -72,7 +73,8 @@ const VENDE_SEM_TABELA: { padrao: RegExp; nome: string }[] = [
 
 /** Prefixo da página no código do site, "(ref. HAP-G)" → HAP. */
 const POR_PAGINA: Record<string, PlanoDeCotacao> = {
-  SAM: { operadoras: ['samel'] },
+  // Samel: só as duas tabelas que o Luiz quer na cotação (01/10/2026).
+  SAM: { operadoras: ['samel', 'samel empresarial'] },
   HAP: { operadoras: ['hapvida'] },
   INN: { operadoras: ['innova'] },
   ADV: { operadoras: ['proasa', 'adventista'] },

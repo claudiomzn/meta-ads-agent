@@ -195,7 +195,7 @@ describe('planoDeCotacao — qual operadora cotar (site multimarcas, 01/10/2026)
 
   it('⭐ sem preferência dita, a página do site decide', () => {
     expect(opcoesDoPlano(planoDeCotacao(pf, 'HAP-G'))).toEqual({ operadoras: ['hapvida'] });
-    expect(opcoesDoPlano(planoDeCotacao(pf, 'SAM-M'))).toEqual({ operadoras: ['samel'] });
+    expect(opcoesDoPlano(planoDeCotacao(pf, 'SAM-M'))).toEqual({ operadoras: ['samel', 'samel empresarial'] });
     expect(opcoesDoPlano(planoDeCotacao(pf, 'INN-O'))).toEqual({ operadoras: ['innova'] });
     expect(opcoesDoPlano(planoDeCotacao(pf, 'ADV-G'))).toEqual({ operadoras: ['proasa', 'adventista'] });
   });
