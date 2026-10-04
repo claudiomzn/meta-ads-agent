@@ -473,3 +473,92 @@ describe('⭐ Roteiro + cotação: a página do site decide a operadora', () => 
     expect(pedidosAoCote[0].operadoras).toEqual(['samel']);
   });
 });
+
+// Ficha do site (04/10/2026): o balão de chat e o simulador já perguntaram
+// quase tudo. Antes, o bot perguntava as 5 de novo — o lead respondia DUAS
+// vezes, que é o jeito mais rápido de perdê-lo.
+describe('⭐ Ficha do site: o roteiro só pergunta o que falta', () => {
+  const COTE_URL = 'https://cote.test/functions/v1/cotacao-externa';
+  const fetchOriginal = globalThis.fetch;
+  const pedidosAoCote: { operadoras: string[]; idades: number[] }[] = [];
+  const CHAT = 'Olá! Quero uma cotação de plano de saúde.\n• Nome: Maria Souza\n• Para: Eu e minha família\n• Operadora: Hapvida\n• Pessoas: 1 pessoa\n• Quando: o quanto antes\n\n(ref. HAP-G-21345678901)';
+  const SIMULADOR_COMPLETO = 'Olá! Quero uma cotação de plano de saúde.\n• Para: Só para mim\n• Pessoas: 2 (idades: 34, 31)\n• Operadora: Samel\n• Plano atual: Não tenho\n• Nome: João\n\n(ref. SAM-D)';
+
+  beforeAll(() => {
+    process.env.COTE_QUOTE_USER = 'roteiro@test.com';
+    process.env.COTE_QUOTE_URL = COTE_URL;
+    process.env.COTE_QUOTE_KEY = 'chave-teste';
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url) === COTE_URL) {
+        const corpo = JSON.parse(String(init?.body));
+        pedidosAoCote.push(corpo);
+        return new Response(JSON.stringify({ ok: true, texto: `Cotação ${corpo.operadoras.join('+')}: R$ 500`, planos: [{}] }), { status: 200 });
+      }
+      return fetchOriginal(url, init);
+    }) as typeof fetch;
+  });
+
+  afterAll(() => {
+    globalThis.fetch = fetchOriginal;
+    delete process.env.COTE_QUOTE_USER;
+    delete process.env.COTE_QUOTE_URL;
+    delete process.env.COTE_QUOTE_KEY;
+  });
+
+  beforeEach(() => { pedidosAoCote.length = 0; });
+
+  it('⭐ balão de chat: pergunta só idades e plano atual, e cota a operadora escolhida', async () => {
+    await configRoteiro('ficha-chat');
+    respostasPorCampo({ idades: [34], plano_atual: 'nenhum' });
+    const r1 = await enviar('ficha-chat', '5511900040001', CHAT);
+    // Apresentação + a PRIMEIRA pergunta que falta (idades) — nada de "é para você?"
+    expect(r1.body.reply).toBe(`${INTRO}\n\n${P3}`);
+
+    const r2 = await enviar('ficha-chat', '5511900040001', '34');
+    expect(r2.body.reply).toBe(P4);
+    await enviar('ficha-chat', '5511900040001', 'não tenho');
+
+    const conv = await lerConversa('ficha-chat', '5511900040001');
+    const falas = falasDoBot(conv);
+    for (const repetida of [P1, P2, P5]) expect(falas).not.toContain(repetida);
+    expect(conv?.state).toBe('handoff');
+    expect(conv?.label).toBe('QUENTE'); // "o quanto antes"
+    expect(pedidosAoCote).toHaveLength(1);
+    expect(pedidosAoCote[0].operadoras).toEqual(['hapvida']);
+    expect(pedidosAoCote[0].idades).toEqual([34]);
+    expect(mockLerResposta).toHaveBeenCalledTimes(2); // só as 2 perguntas feitas
+  });
+
+  it('⭐ simulador: só falta a urgência — uma pergunta e pronto', async () => {
+    await configRoteiro('ficha-sim');
+    respostasPorCampo({ urgencia: 'pesquisando' });
+    const r1 = await enviar('ficha-sim', '5511900040002', SIMULADOR_COMPLETO);
+    expect(r1.body.reply).toBe(`${INTRO}\n\n${P5}`);
+    await enviar('ficha-sim', '5511900040002', 'só pesquisando');
+    const conv = await lerConversa('ficha-sim', '5511900040002');
+    expect(conv?.label).toBe('FRIO');
+    // Samel dita pelo nome cota as mesmas tabelas da página da Samel.
+    expect(pedidosAoCote[0].operadoras).toEqual(['samel', 'samel empresarial']);
+    expect(pedidosAoCote[0].idades).toEqual([34, 31]);
+  });
+
+  it('ficha que responde tudo fecha na 1ª mensagem: cota e passa ao vendedor', async () => {
+    await configRoteiro('ficha-tudo');
+    respostasPorCampo({});
+    await enviar('ficha-tudo', '5511900040003', `${SIMULADOR_COMPLETO.replace('\n• Nome', '\n• Quando: o quanto antes\n• Nome')}`);
+    const conv = await lerConversa('ficha-tudo', '5511900040003');
+    expect(conv?.state).toBe('handoff');
+    expect(conv?.label).toBe('QUENTE');
+    expect(mockLerResposta).not.toHaveBeenCalled();
+    const falas = falasDoBot(conv);
+    for (const p of [P1, P2, P3, P4, P5]) expect(falas).not.toContain(p);
+    expect(falas).toContain('Cotação samel+samel empresarial: R$ 500');
+  });
+
+  it('mensagem comum continua com o roteiro inteiro', async () => {
+    await configRoteiro('ficha-nao');
+    respostasPorCampo({});
+    const r1 = await enviar('ficha-nao', '5511900040004', 'oi, quero saber de plano');
+    expect(r1.body.reply).toBe(`${INTRO}\n\n${P1}`);
+  });
+});
