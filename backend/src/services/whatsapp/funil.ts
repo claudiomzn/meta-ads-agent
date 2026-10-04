@@ -47,3 +47,56 @@ export function periodo(desde?: unknown, ate?: unknown, agora = Date.now()): { d
   if (!Number.isFinite(ini) || !Number.isFinite(fim) || ini >= fim) return null;
   return { de: new Date(ini), ate: new Date(fim) };
 }
+
+// ── De qual campanha veio esta venda? (04/10/2026) ──────────────────────────
+//
+// O cliente registra a venda no app com o WhatsApp do comprador. Se esse
+// número conversou com o bot, a conversa sabe a origem (canal e campanha) —
+// o app pré-seleciona a campanha em vez de pedir que o cliente adivinhe.
+
+/**
+ * PURO. Chave de comparação de telefone brasileiro: DDD + 8 últimos dígitos.
+ *
+ * O mesmo celular aparece de jeitos diferentes: digitado com ou sem 55, e no
+ * WhatsApp às vezes SEM o 9º dígito (contas antigas: 559291234567). DDD + os 8
+ * finais casa todos. null = não dá para comparar com segurança.
+ */
+export function chaveDoTelefone(raw: string): string | null {
+  let d = String(raw ?? '').replace(/\D/g, '');
+  if (d.length >= 12 && d.startsWith('55')) d = d.slice(2);
+  if (d.length !== 10 && d.length !== 11) return null;
+  return d.slice(0, 2) + d.slice(-8);
+}
+
+export interface ConversaComOrigem {
+  leadPhone: string;
+  origemCanal: string | null;
+  origemCampanhaId: string | null;
+  origemRef: string | null;
+  label: string | null;
+  createdAt: Date;
+}
+
+export interface OrigemDaVenda {
+  canal: string | null;
+  campanhaId: string | null;
+  ref: string | null;
+  rotulo: string | null;
+  desde: string;
+}
+
+/**
+ * PURO. Entre as conversas candidatas, a do MESMO número com origem conhecida
+ * mais recente. Sem origem nenhuma (conversa anterior à medição) → null: "não
+ * sei" não pode virar "não veio de campanha".
+ */
+export function origemDaVenda(telefone: string, conversas: ConversaComOrigem[]): OrigemDaVenda | null {
+  const chave = chaveDoTelefone(telefone);
+  if (!chave) return null;
+  const doNumero = conversas
+    .filter((c) => chaveDoTelefone(c.leadPhone) === chave && c.origemCanal)
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  const c = doNumero[0];
+  if (!c) return null;
+  return { canal: c.origemCanal, campanhaId: c.origemCampanhaId, ref: c.origemRef, rotulo: c.label, desde: c.createdAt.toISOString() };
+}

@@ -115,3 +115,47 @@ describe('GET /api/whatsapp/funil-por-campanha', () => {
     expect((await request(app).get('/api/whatsapp/funil-por-campanha')).status).toBe(401);
   });
 });
+
+// Venda → lead (04/10/2026): o app manda o WhatsApp do comprador e recebe de
+// qual campanha veio a conversa, para pré-selecionar a campanha da venda.
+describe('GET /api/whatsapp/origem-do-telefone', () => {
+  const buscar = (telefone: string) =>
+    request(app).get(`/api/whatsapp/origem-do-telefone?telefone=${encodeURIComponent(telefone)}`).set('Authorization', `Bearer ${token}`);
+
+  it('⭐ acha a conversa pelo número digitado de qualquer jeito, inclusive sem o 9º dígito', async () => {
+    // WhatsApp antigo grava o número SEM o 9: 5592 + 8 dígitos.
+    await prisma.whatsappConversation.create({
+      data: { userId, leadPhone: '559281234567', origemCanal: 'google', origemCampanhaId: '21345678901', origemRef: 'HAP-G', label: 'QUENTE' },
+    });
+    for (const digitado of ['(92) 98123-4567', '92981234567', '+55 92 98123-4567']) {
+      const res = await buscar(digitado);
+      expect(res.status, digitado).toBe(200);
+      expect(res.body.origem, digitado).toMatchObject({ canal: 'google', campanhaId: '21345678901', ref: 'HAP-G', rotulo: 'QUENTE' });
+    }
+  });
+
+  it('⭐ mesmo final em OUTRO DDD não é a mesma pessoa', async () => {
+    const res = await buscar('(11) 98123-4567');
+    expect(res.body.origem).toBeNull();
+  });
+
+  it('conversa sem origem (antes da medição) devolve null — "não sei" não vira "sem campanha"', async () => {
+    await prisma.whatsappConversation.create({ data: { userId, leadPhone: '5592977776666', label: 'FRIO' } });
+    expect((await buscar('92977776666')).body.origem).toBeNull();
+  });
+
+  it('número de OUTRO usuário não aparece', async () => {
+    const outro = await prisma.user.create({ data: { name: 'Outro', email: 'outro-origem@test.com', password: 'x' } });
+    await prisma.whatsappConversation.create({
+      data: { userId: outro.id, leadPhone: '5592955554444', origemCanal: 'google', origemCampanhaId: '999' },
+    });
+    expect((await buscar('92955554444')).body.origem).toBeNull();
+    await prisma.whatsappConversation.deleteMany({ where: { userId: outro.id } });
+    await prisma.user.delete({ where: { id: outro.id } });
+  });
+
+  it('telefone incompleto → 400; sem login → 401', async () => {
+    expect((await buscar('9999')).status).toBe(400);
+    expect((await request(app).get('/api/whatsapp/origem-do-telefone?telefone=92981234567')).status).toBe(401);
+  });
+});
