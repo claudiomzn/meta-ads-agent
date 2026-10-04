@@ -13,6 +13,8 @@ import {
   dadosParaCotacao,
   gravarCampo,
   validarValor,
+  lerFichaDoSite,
+  proximoPassoPendente,
   type PassoDoRoteiro,
 } from '../services/whatsapp/script.service.js';
 
@@ -184,3 +186,68 @@ describe('dadosParaCotacao — a ponte para a cotação automática', () => {
     expect(dadosParaCotacao({})).toEqual({ tipo: null, vidas: null, idades: [], operadora: null });
   });
 });
+
+// Ficha que chega pronta do segurosamazon.com (04/10/2026). As mensagens abaixo
+// são as que o site.js monta HOJE — se o formato mudar lá, estes testes são o
+// aviso de que o bot voltou a perguntar tudo de novo.
+describe('lerFichaDoSite — o bot não pergunta o que o site já perguntou', () => {
+  const CHAT = 'Olá! Quero uma cotação de plano de saúde.\n• Nome: Maria Souza\n• Para: Eu e minha família\n• Operadora: Hapvida\n• Pessoas: 1 pessoa\n• Quando: o quanto antes\n\n(ref. HAP-G-21345678901)';
+  const SIMULADOR = 'Olá! Quero uma cotação de plano de saúde.\n• Para: Só para mim\n• Pessoas: 3 (idades: 34, 31, 5)\n• Operadora: Samel\n• Plano atual: Não tenho\n• Nome: João\n\n(ref. SAM-D)';
+
+  it('⭐ balão de chat: tipo, pessoas, operadora e urgência', () => {
+    expect(lerFichaDoSite(CHAT)).toEqual({ tipo: 'pf', vidas: 1, operadora: 'Hapvida', urgencia: 'contratar' });
+  });
+
+  it('⭐ simulador: idades viram lista, pessoas vem da contagem, "Não tenho" vira nenhum', () => {
+    expect(lerFichaDoSite(SIMULADOR)).toEqual({ tipo: 'pf', vidas: 3, idades: [34, 31, 5], operadora: 'Samel', plano_atual: 'nenhum' });
+  });
+
+  it('⭐ só "o quanto antes" é QUENTE — "próximos meses" e "avaliando" não', () => {
+    const q = (quando: string) => lerFichaDoSite(`Quero uma cotação\n• Quando: ${quando}`).urgencia;
+    expect(q('o quanto antes')).toBe('contratar');
+    expect(q('nos próximos meses')).toBe('pesquisando');
+    expect(q('ainda avaliando')).toBe('pesquisando');
+  });
+
+  it('MEI e empresa vão como CNPJ (empresarial, cotação com o corretor)', () => {
+    expect(lerFichaDoSite('Quero uma cotação\n• Para: Sou MEI').tipo).toBe('cnpj');
+    expect(lerFichaDoSite('Quero uma cotação\n• Para: Minha empresa (CNPJ)').tipo).toBe('cnpj');
+  });
+
+  it('o que é ambíguo NÃO é preenchido — o roteiro pergunta', () => {
+    const f = lerFichaDoSite('Quero uma cotação\n• Pessoas: 2 a 4 pessoas\n• Operadora: Quero comparar\n• Plano atual: Sim: não informou\n• Quando: semana que vem');
+    expect(f).toEqual({});
+  });
+
+  it('plano atual informado entra como texto', () => {
+    expect(lerFichaDoSite('Quero uma cotação\n• Plano atual: Sim: Unimed').plano_atual).toBe('Unimed');
+  });
+
+  it('mensagem comum não é ficha', () => {
+    expect(lerFichaDoSite('oi, quanto custa?')).toEqual({});
+    expect(lerFichaDoSite('Olá! Quero uma cotação do plano Hapvida.\n\n(ref. HAP-G)')).toEqual({});
+  });
+});
+
+describe('proximoPassoPendente — pula o que já foi respondido', () => {
+  const passos: PassoDoRoteiro[] = [
+    { pergunta: 'P1', campo: 'tipo' },
+    { pergunta: 'P2', campo: 'vidas' },
+    { pergunta: 'Recado', campo: null },
+    { pergunta: 'P3', campo: 'idades' },
+  ];
+
+  it('pula os campos preenchidos e para no primeiro que falta', () => {
+    expect(proximoPassoPendente(passos, 0, { tipo: 'pf' })).toBe(1);
+    expect(proximoPassoPendente(passos, 0, {})).toBe(0);
+  });
+
+  it('passo sem campo nunca é pulado', () => {
+    expect(proximoPassoPendente(passos, 0, { tipo: 'pf', vidas: 2 })).toBe(2);
+  });
+
+  it('tudo respondido = fim do roteiro', () => {
+    expect(proximoPassoPendente(passos, 3, { idades: [30] })).toBe(4);
+  });
+});
+

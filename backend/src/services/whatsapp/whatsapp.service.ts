@@ -30,6 +30,8 @@ import {
   rotuloDoLead,
   montarResumoDoRoteiro,
   dadosParaCotacao,
+  lerFichaDoSite,
+  proximoPassoPendente,
   type PassoDoRoteiro,
   type DadosDoRoteiro,
 } from './script.service.js';
@@ -551,8 +553,13 @@ export class WhatsappService {
       // (é assim que uma pessoa escreve no WhatsApp), mas UMA pergunta só —
       // e sem turno morto, que é o que aconteceria se a apresentação fosse
       // sozinha e o lead tivesse que falar de novo só para ser perguntado.
+      //
+      // Se a 1ª mensagem é a ficha do site (balão de chat ou simulador), o que
+      // ela já responde NÃO é perguntado de novo (ver lerFichaDoSite).
+      dados = { ...dados, ...lerFichaDoSite(msg.text) };
+      passoAtual = proximoPassoPendente(passos, 0, dados);
       if (config.scriptIntro?.trim()) aEnviar.push(config.scriptIntro.trim());
-      aEnviar.push(passos[0].pergunta);
+      if (!roteiroTerminou(passos, passoAtual)) aEnviar.push(passos[passoAtual].pergunta);
     } else {
       const passo = passos[passoAtual];
       const valor = passo.campo ? await lerResposta(this.userId, passo, msg.text) : null;
@@ -565,7 +572,7 @@ export class WhatsappService {
         // Ou respondeu, ou já insistimos uma vez — segue em frente. Gravar
         // `null` é de propósito: diz ao vendedor "perguntamos e não veio".
         if (passo.campo) dados = gravarCampo(dados, passo.campo, valor);
-        passoAtual += 1;
+        passoAtual = proximoPassoPendente(passos, passoAtual + 1, dados);
         repetiu = false;
         if (!roteiroTerminou(passos, passoAtual)) aEnviar.push(passos[passoAtual].pergunta);
       }

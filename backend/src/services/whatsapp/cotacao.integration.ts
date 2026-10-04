@@ -93,10 +93,22 @@ export type PlanoDeCotacao = { operadoras?: string[] } | { semTabela: string };
  * pedido Hapvida). Sem preferência dita, vale a página. Página geral, anúncio
  * Meta ou nenhuma origem: leque padrão, como sempre.
  */
+/** Operadora dita pelo nome (ficha do site, ou o lead escreveu) → mesma regra da página. */
+const PAGINA_POR_NOME: { padrao: RegExp; pagina: string }[] = [
+  { padrao: /samel/i, pagina: 'SAM' },
+  { padrao: /hapvida/i, pagina: 'HAP' },
+  { padrao: /innova|inova/i, pagina: 'INN' },
+  { padrao: /adventista|proasa/i, pagina: 'ADV' },
+];
+
 export function planoDeCotacao(dados: DadosDoLead, origemRef: string | null | undefined): PlanoDeCotacao {
   if (dados.operadora) {
     const sem = VENDE_SEM_TABELA.find((v) => v.padrao.test(dados.operadora!));
-    return sem ? { semTabela: sem.nome } : {};
+    if (sem) return { semTabela: sem.nome };
+    // "Samel" dito pelo lead cota as MESMAS tabelas da página da Samel — sem
+    // isto, mandaria "Samel" cru ao Cote+ e ignoraria a escolha das tabelas.
+    const porNome = PAGINA_POR_NOME.find((v) => v.padrao.test(dados.operadora!));
+    return porNome ? POR_PAGINA[porNome.pagina] : {};
   }
   const pagina = (origemRef ?? '').split('-')[0].toUpperCase();
   return POR_PAGINA[pagina] ?? {};

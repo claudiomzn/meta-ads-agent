@@ -41,6 +41,9 @@ export interface DadosDoRoteiro {
   idades?: number[] | null;
   plano_atual?: string | null;
   urgencia?: 'contratar' | 'pesquisando' | null;
+  /** Operadora escolhida no site (chat ou simulador). Não é passo do roteiro —
+   *  nenhuma pergunta coleta isto; serve só para a cotação. */
+  operadora?: string | null;
 }
 
 const CAMPOS_VALIDOS: CampoDoRoteiro[] = ['tipo', 'vidas', 'idades', 'plano_atual', 'urgencia'];
@@ -116,6 +119,8 @@ export function montarResumoDoRoteiro(passos: PassoDoRoteiro[], dados: DadosDoRo
     if (!(passo.campo in dados)) continue;
     linhas.push(`${ROTULO_CAMPO[passo.campo]}: ${valorLegivel(passo.campo, dados[passo.campo])}`);
   }
+  // Nenhuma pergunta coleta a operadora: só aparece quando veio da ficha do site.
+  if (dados.operadora) linhas.push(`Operadora: ${dados.operadora}`);
   return linhas.join('\n');
 }
 
@@ -132,7 +137,7 @@ export function dadosParaCotacao(dados: DadosDoRoteiro): Record<string, unknown>
     tipo: dados.tipo ?? null,
     vidas: dados.vidas ?? null,
     idades: dados.idades ?? [],
-    operadora: null,
+    operadora: dados.operadora ?? null,
   };
 }
 
@@ -245,3 +250,103 @@ export async function lerResposta(
     return null;
   }
 }
+
+// ── Ficha que já chega pronta do site (04/10/2026) ──────────────────────────
+//
+// O balão de chat e o simulador do segurosamazon.com perguntam ao visitante
+// para quem é, quantas pessoas, idades, operadora, plano atual e quando quer
+// contratar — e abrem o WhatsApp com isso numa mensagem pronta:
+//
+//   Olá! Quero uma cotação de plano de saúde.
+//   • Para: Eu e minha família
+//   • Pessoas: 3 (idades: 34, 31, 5)
+//   • Operadora: Hapvida
+//   • Quando: o quanto antes
+//
+// Antes disto o roteiro perguntava TUDO de novo. Responder duas vezes é o jeito
+// mais rápido de perder o lead. A leitura é determinística, sem IA: o formato é
+// nosso (site.js, linkWhatsApp). O que não reconhecer fica de fora, e o roteiro
+// pergunta — errar para "perguntar de novo" é barato; preencher errado não é.
+
+const TIPO_DA_FICHA: Record<string, 'pf' | 'cnpj'> = {
+  'só para mim': 'pf',
+  'so para mim': 'pf',
+  'eu e minha família': 'pf',
+  'eu e minha familia': 'pf',
+  'minha empresa (cnpj)': 'cnpj',
+  // MEI contrata plano EMPRESARIAL: negociação vai ao corretor, como CNPJ.
+  'sou mei': 'cnpj',
+};
+
+// "O quanto antes" é o único QUENTE. "Nos próximos meses" não é "nos próximos
+// dias" (a pergunta do roteiro): chamar de QUENTE quem não é afoga o sinal que
+// o lance do Google usa para aprender.
+const URGENCIA_DA_FICHA: Record<string, 'contratar' | 'pesquisando'> = {
+  'o quanto antes': 'contratar',
+  'nos próximos meses': 'pesquisando',
+  'nos proximos meses': 'pesquisando',
+  'ainda avaliando': 'pesquisando',
+  'ainda estou avaliando': 'pesquisando',
+};
+
+/**
+ * PURO. Lê a ficha que o site põe na 1ª mensagem. Devolve só os campos que
+ * reconheceu com certeza; mensagem que não é ficha devolve `{}`.
+ */
+export function lerFichaDoSite(texto: string): DadosDoRoteiro {
+  if (!/quero uma cota[cç][aã]o/i.test(texto)) return {};
+  const campos = new Map<string, string>();
+  for (const linha of texto.split('\n')) {
+    const m = linha.match(/^\s*[•\-*]\s*([^:]{2,30}):\s*(.+?)\s*$/);
+    if (m) campos.set(m[1].trim().toLowerCase(), m[2].trim());
+  }
+  if (!campos.size) return {};
+
+  const ficha: DadosDoRoteiro = {};
+  const tipo = TIPO_DA_FICHA[(campos.get('para') ?? '').toLowerCase()];
+  if (tipo) ficha.tipo = tipo;
+
+  const pessoas = campos.get('pessoas') ?? '';
+  const idadesTxt = pessoas.match(/idades?:\s*([\d,\s]+)/i)?.[1];
+  if (idadesTxt) {
+    const idades = validarValor('idades', idadesTxt.split(',').map((x) => x.trim()).filter(Boolean));
+    if (idades) ficha.idades = idades as number[];
+  }
+  // "1 pessoa", "3" ou "3 (idades: …)". Faixas do chat ("2 a 4 pessoas",
+  // "5 ou mais") NÃO viram número — o roteiro pergunta.
+  const vidas = pessoas.match(/^(\d{1,2})(?:\s*pessoas?)?(?:\s*\(|$)/i)?.[1];
+  if (vidas) ficha.vidas = Number(vidas);
+  else if (ficha.idades) ficha.vidas = ficha.idades.length;
+
+  const operadora = campos.get('operadora');
+  if (operadora && !/comparar|sem prefer/i.test(operadora)) ficha.operadora = operadora.slice(0, 40);
+
+  const atual = campos.get('plano atual');
+  if (atual) {
+    if (/^n[aã]o tenho/i.test(atual)) ficha.plano_atual = 'nenhum';
+    else {
+      const qual = atual.replace(/^sim:\s*/i, '').trim();
+      if (qual && !/n[aã]o informou/i.test(qual)) ficha.plano_atual = qual.slice(0, 60);
+    }
+  }
+
+  const urgencia = URGENCIA_DA_FICHA[(campos.get('quando') ?? '').toLowerCase()];
+  if (urgencia) ficha.urgencia = urgencia;
+  return ficha;
+}
+
+/**
+ * PURO. Próximo passo a perguntar a partir de `desde`, pulando o que a ficha
+ * do site já respondeu. Passo sem campo (pergunta só para o vendedor) nunca é
+ * pulado — não há como saber se a ficha o responde.
+ */
+export function proximoPassoPendente(passos: PassoDoRoteiro[], desde: number, dados: DadosDoRoteiro): number {
+  let i = desde;
+  while (i < passos.length) {
+    const campo = passos[i].campo;
+    if (!campo || dados[campo] === undefined || dados[campo] === null) break;
+    i += 1;
+  }
+  return i;
+}
+

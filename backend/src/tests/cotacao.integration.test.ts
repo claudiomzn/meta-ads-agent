@@ -201,7 +201,7 @@ describe('planoDeCotacao — qual operadora cotar (site multimarcas, 01/10/2026)
   });
 
   it('⭐ o que o lead DISSE vence a página', () => {
-    expect(planoDeCotacao({ ...pf, operadora: 'Hapvida' }, 'SAM-G')).toEqual({});
+    expect(planoDeCotacao({ ...pf, operadora: 'Hapvida' }, 'SAM-G')).toEqual({ operadoras: ['hapvida'] });
   });
 
   it('⭐ vende sem tabela (SulAmérica, Bradesco, hospitais): vai ao vendedor', () => {
@@ -212,6 +212,12 @@ describe('planoDeCotacao — qual operadora cotar (site multimarcas, 01/10/2026)
     // dito pelo lead no modo generativo, em qualquer grafia
     expect(semTabela(planoDeCotacao({ ...pf, operadora: 'sulamerica' }, null))).toBe('SulAmérica');
     expect(semTabela(planoDeCotacao({ ...pf, operadora: 'Bradesco Saúde' }, 'HAP-G'))).toBe('Bradesco Saúde');
+  });
+
+  it('⭐ operadora dita pelo nome cota as MESMAS tabelas da página dela', () => {
+    expect(opcoesDoPlano(planoDeCotacao({ ...pf, operadora: 'Samel' }, null))).toEqual({ operadoras: ['samel', 'samel empresarial'] });
+    expect(opcoesDoPlano(planoDeCotacao({ ...pf, operadora: 'Proasa' }, null))).toEqual({ operadoras: ['proasa', 'adventista'] });
+    expect(opcoesDoPlano(planoDeCotacao({ ...pf, operadora: 'Hapvida' }, 'SAM-G'))).toEqual({ operadoras: ['hapvida'] });
   });
 
   it('operadora que ele NÃO vende segue o caminho de antes ("não trabalho com")', () => {
