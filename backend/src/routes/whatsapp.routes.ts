@@ -3,7 +3,7 @@ import { Router, Request, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { WhatsappService, creditPaidRecharge, DEFAULT_BUSINESS } from '../services/whatsapp/whatsapp.service.js';
 import { resolveTransport } from '../services/whatsapp/transport.js';
-import { periodo, somarFunil } from '../services/whatsapp/funil.js';
+import { chaveDoTelefone, origemDaVenda, periodo, somarFunil } from '../services/whatsapp/funil.js';
 import {
   evolutionConfigured,
   connectInstance,
@@ -50,6 +50,24 @@ router.get('/funil-por-campanha', authMiddleware, async (req: AuthRequest, res: 
     _count: { _all: true },
   });
   res.json({ de: p.de.toISOString(), ate: p.ate.toISOString(), campanhas: somarFunil(linhas) });
+});
+
+// GET /api/whatsapp/origem-do-telefone?telefone=92999991234
+// De qual canal/campanha veio a conversa deste número — para o app
+// pré-selecionar a campanha ao registrar uma venda. Todos os negócios da conta:
+// a venda é do usuário, não de um bot. Nunca loga o telefone.
+router.get('/origem-do-telefone', authMiddleware, async (req: AuthRequest, res: Response) => {
+  const telefone = String(req.query.telefone ?? '');
+  const chave = chaveDoTelefone(telefone);
+  if (!chave) return res.status(400).json({ error: 'Telefone inválido. Use DDD + número.' });
+  // Pré-filtro no banco pelos 8 finais; o DDD é conferido em origemDaVenda.
+  const conversas = await prisma.whatsappConversation.findMany({
+    where: { userId: req.userId!, leadPhone: { endsWith: chave.slice(2) } },
+    select: { leadPhone: true, origemCanal: true, origemCampanhaId: true, origemRef: true, label: true, createdAt: true },
+    orderBy: { createdAt: 'desc' },
+    take: 20,
+  });
+  res.json({ origem: origemDaVenda(telefone, conversas) });
 });
 
 router.get('/usage', authMiddleware, async (req: AuthRequest, res: Response) => {
