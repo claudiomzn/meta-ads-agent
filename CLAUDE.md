@@ -16,17 +16,19 @@ O frontend de lá fala com este backend por `/meta-api` (proxy do Vite em dev; `
 
 | | |
 |---|---|
-| Serviço | **Render** — `meta-ads-agent-backend`, `rootDir: backend` |
+| Serviço | **Render** — `meta-ads-agent-backend`, sobe pelo **`backend/Dockerfile`** |
 | Banco | **Neon** — o banco é o `neondb`, **não** o `evolution` |
-| Build | `npm ci && npx prisma generate && npx tsc` |
-| Pré-deploy | **`npx prisma migrate deploy`** ← leia a seção de migrations |
+| Build | Dockerfile: `npm ci` → `prisma generate` → `tsc` → `npm prune --production` |
+| Boot | **`npx prisma migrate deploy && node dist/index.js`** ← leia a seção de migrations |
+
+> ⚠️ O `render.yaml` está **desatualizado** (diz runtime node, preDeploy e um banco `meta-ads-db` do Render). Não é o que roda — a verdade é o painel do Render e o Dockerfile. Ver o aviso no topo do arquivo.
 | Saúde | `GET /health` (só devolve `ok` + timestamp; **não diz a versão**) |
 
 Crons `node-cron` dentro do próprio processo (`src/index.ts`): métricas de hora em hora, fila a cada 2min, status + automações a cada 15min, agente noturno às 5h.
 
 ## Como publicar
 
-**Produção é a `main`, e merjar nela PUBLICA.** O Render observa a branch e faz o deploy sozinho. A migration roda no `preDeployCommand`, antes do serviço subir.
+**Produção é a `main`, e merjar nela PUBLICA.** O Render observa a branch e faz o deploy sozinho. As migrations pendentes rodam no **boot** do container (`prisma migrate deploy`, CMD do Dockerfile), antes do servidor subir: se uma falhar, o container não sobe — o bot fica fora do ar até corrigir.
 
 É o mesmo comportamento do frontend no `google-ads-agent`, onde a Vercel publica no merge para a `main`. A diferença que importa está lá: as **edge functions do Supabase não saem no push** — exigem `supabase functions deploy`. Aqui não há esse caso: tudo o que este repositório serve vai junto no deploy do Render.
 
@@ -49,9 +51,13 @@ npx vitest run <arquivo> --reporter=json --outputFile=/tmp/res.json
 
 ## ⚠️ Armadilhas que já custaram caro
 
-**O schema do Prisma tem drift: 34 campos (de 213) não existem em nenhuma migration.** Foram aplicados com `db push` e nunca entraram no histórico. Como o Render roda `prisma migrate deploy` no pré-deploy, **uma migration não idempotente derruba o deploy inteiro** ao colidir com coluna que já existe no banco.
+**Até 05/10/2026 o schema de produção era reescrito por `prisma db push --accept-data-loss` a cada boot** — não pelas migrations. Resultado: 37 colunas e 2 tabelas fora de qualquer migration, a cadeia não reconstruía um banco do zero, e um `schema.prisma` sem uma coluna (merge ruim, revert) **apagaria a coluna e os dados de produção** no próximo restart, em silêncio. Corrigido pelos PRs #29–#31 ("caminho X"): a cadeia foi consertada e o boot passou a usar `migrate deploy`.
 
-> **Regra:** toda migration nova usa `ADD COLUMN IF NOT EXISTS` e nunca assume o estado do banco. Vale a pena validar contra um Postgres descartável antes — ver `backend/scripts/check-script-migration.mjs`, que aplica o SQL **duas vezes** e confere tipos, defaults e backfill.
+> **Regras daqui pra frente:**
+> - **Mudança de schema só entra por migration nova.** Nunca `prisma db push` contra produção, nunca de volta no Dockerfile.
+> - **Toda migration é idempotente** (`ADD COLUMN IF NOT EXISTS`, `CREATE TABLE/INDEX IF NOT EXISTS`, constraint dentro de `DO $$ … EXCEPTION WHEN duplicate_object`). Sem `DROP` nem `ALTER COLUMN TYPE` sem conversa antes.
+> - **Valide antes do merge** com `node backend/scripts/check-drift-migration.mjs` (Postgres descartável: banco vazio + todas as migrations == `schema.prisma`; reaplicar não quebra; estado de produção + pendentes = no-op). Para uma migration só, `check-script-migration.mjs` aplica o SQL duas vezes.
+> - Migration que falha **derruba o boot**: o bot fica mudo até o próximo deploy.
 
 **A Meta responde erro com HTTP 200.** Todo `update_*` / `create_*` precisa validar `success`/`id` no retorno e lançar quando recusado. Descartar o retorno já fez a tela dizer "Pausado com sucesso" enquanto a campanha seguia gastando — inclusive nas automações.
 
