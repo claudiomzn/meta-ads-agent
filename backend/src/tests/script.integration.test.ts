@@ -562,3 +562,123 @@ describe('⭐ Ficha do site: o roteiro só pergunta o que falta', () => {
     expect(r1.body.reply).toBe(`${INTRO}\n\n${P1}`);
   });
 });
+
+// ── Simulador = ensaio (05/10/2026) ───────────────────────────────────────────
+// O simulador do painel rodava o fluxo REAL: mandou ao vendedor, pelo WhatsApp
+// de verdade, o aviso de um lead fictício — e um lead QUENTE de teste subiria
+// conversão para a Meta e o Google, contaria franquia e entraria no relatório.
+// Em produção a rota agora é sempre ensaio; aqui `ensaio: true` liga o modo.
+describe('⭐ Simulador é ensaio: nada sai do sistema', () => {
+  const RESPOSTAS = ['é pra mim', 'somos 2', '34 e 31', 'não tenho', 'quero contratar'];
+  const QUENTE = { tipo: 'pf', vidas: 2, idades: [34, 31], plano_atual: 'nenhum', urgencia: 'contratar' };
+  const FONE = '5511900050001';
+
+  // Integração de cotação ligada, para o aviso ao vendedor trazer a nota. A
+  // página da Bradesco não tem tabela: o Cote+ nem é chamado.
+  const COTE = { COTE_QUOTE_USER: 'roteiro@test.com', COTE_QUOTE_URL: 'https://cote.test/x', COTE_QUOTE_KEY: 'k' };
+  beforeAll(() => { Object.assign(process.env, COTE); });
+  afterAll(() => { for (const k of Object.keys(COTE)) delete process.env[k]; });
+
+  function ensaiar(businessId: string, from: string, text: string) {
+    return request(app)
+      .post('/api/whatsapp/simulate')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ businessId, from, text, ensaio: true });
+  }
+
+  it('⭐ com WhatsApp real configurado: nenhuma mensagem sai, nenhuma conversão sobe, franquia intacta', async () => {
+    await configRoteiro('ensaio-a');
+    // Bot ligado na Evolution e franquia diária ZERADA: no fluxo real, cada
+    // fala iria pelo WhatsApp e a conversa nasceria cobrável.
+    await prisma.whatsappConfig.update({
+      where: { userId_businessId: { userId, businessId: 'ensaio-a' } },
+      data: {
+        transport: 'evolution',
+        transportConfig: { baseUrl: 'http://evolution.invalid', apiKey: 'k', instance: 'i' },
+        dailyFreeConversations: 0,
+      },
+    });
+    respostasPorCampo(QUENTE);
+    const { EvolutionTransport } = await import('../services/whatsapp/transport.js');
+    const evolution = vi.spyOn(EvolutionTransport.prototype, 'sendText').mockResolvedValue();
+
+    let ultima = await ensaiar('ensaio-a', FONE, 'Quero o Bradesco Saúde (ref. BRA-G)');
+    for (const r of RESPOSTAS) ultima = await ensaiar('ensaio-a', FONE, r);
+    evolution.mockRestore();
+
+    expect(evolution).not.toHaveBeenCalled(); // nem ao lead, nem ao vendedor
+    expect(mockSendLead).not.toHaveBeenCalled(); // QUENTE de ensaio não é conversão
+
+    // O aviso que iria ao vendedor aparece na tela, marcado como teste.
+    expect(ultima.body.reply).toContain('🧪 TESTE — este aviso NÃO foi enviado ao vendedor.');
+    expect(ultima.body.reply).toContain('Veio para Bradesco Saúde');
+    // E as idades aparecem UMA vez — antes vinham no resumo e de novo na nota.
+    expect(ultima.body.reply.match(/Idades:/g)).toHaveLength(1);
+
+    // A conversa existe só com o prefixo de ensaio, nunca no número real.
+    expect(await lerConversa('ensaio-a', FONE)).toBeNull();
+    const conv = await lerConversa('ensaio-a', `teste:${FONE}`);
+    expect(conv?.state).toBe('handoff');
+    expect(conv?.label).toBe('QUENTE');
+    expect(conv?.billable).toBe(false);
+  });
+
+  it('⭐ ensaio fica fora do relatório, da origem da venda e da franquia do dia', async () => {
+    const hoje = new Date(Date.now() - 4 * 3_600_000).toISOString().slice(0, 10);
+    const funil = await request(app)
+      .get(`/api/whatsapp/funil-por-campanha?desde=${hoje}&ate=${hoje}`)
+      .set('Authorization', `Bearer ${token}`);
+    // O ensaio acima veio "do Google" (ref. BRA-G) e foi QUENTE: se contasse,
+    // haveria uma linha google aqui. As outras conversas google deste arquivo
+    // são de outros negócios — o filtro é por prefixo, então comparamos com e
+    // sem o ensaio no banco.
+    const totalComEnsaio = JSON.stringify(funil.body.campanhas);
+    await prisma.whatsappConversation.deleteMany({ where: { userId, leadPhone: { startsWith: 'teste:' } } });
+    const semEnsaio = await request(app)
+      .get(`/api/whatsapp/funil-por-campanha?desde=${hoje}&ate=${hoje}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(totalComEnsaio).toBe(JSON.stringify(semEnsaio.body.campanhas));
+
+    // Recria um ensaio e confere a origem da venda e o uso do dia.
+    respostasPorCampo(QUENTE);
+    await ensaiar('ensaio-a', FONE, 'Quero o Bradesco Saúde (ref. BRA-G)');
+    const origem = await request(app)
+      .get(`/api/whatsapp/origem-do-telefone?telefone=${FONE.slice(2)}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(origem.body.origem).toBeNull();
+    const uso = await request(app)
+      .get('/api/whatsapp/usage?businessId=ensaio-a')
+      .set('Authorization', `Bearer ${token}`);
+    expect(uso.body.todayConversations).toBe(0);
+  });
+
+  it('⭐ modo generativo (sem roteiro): mesmo ensaio — nada sai, nada sobe, o aviso vem na tela', async () => {
+    await configRoteiro('ensaio-ia', { scriptEnabled: false });
+    await prisma.whatsappConfig.update({
+      where: { userId_businessId: { userId, businessId: 'ensaio-ia' } },
+      data: { transport: 'evolution', transportConfig: { baseUrl: 'http://evolution.invalid', apiKey: 'k', instance: 'i' } },
+    });
+    mockNextReply.mockResolvedValueOnce({
+      reply: 'Perfeito, já passei para o corretor!', state: 'handoff', done: true,
+      label: 'QUENTE', summary: 'Quer contratar esta semana',
+    });
+    const { EvolutionTransport } = await import('../services/whatsapp/transport.js');
+    const evolution = vi.spyOn(EvolutionTransport.prototype, 'sendText').mockResolvedValue();
+
+    const r = await ensaiar('ensaio-ia', FONE, 'quero contratar plano');
+    evolution.mockRestore();
+
+    expect(mockNextReply).toHaveBeenCalledTimes(1); // prova que caiu no motor generativo
+    expect(evolution).not.toHaveBeenCalled();
+    expect(mockSendLead).not.toHaveBeenCalled();
+    expect(r.body.reply).toContain('Perfeito, já passei para o corretor!');
+    expect(r.body.reply).toContain('🧪 TESTE — este aviso NÃO foi enviado ao vendedor.');
+    expect(r.body.reply).toContain('Quer contratar esta semana');
+  });
+
+  it('sem `ensaio`, o simulador dos testes segue o fluxo real (é o que o resto da suíte usa)', async () => {
+    await configRoteiro('ensaio-b');
+    await enviar('ensaio-b', FONE, 'oi');
+    expect(await lerConversa('ensaio-b', FONE)).not.toBeNull();
+  });
+});

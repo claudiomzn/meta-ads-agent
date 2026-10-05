@@ -5,7 +5,7 @@
 import prisma from '../../lib/prisma.js';
 import { lookupContact } from './contacts.js';
 import { instanceName } from './evolution.manager.js';
-import { resolveTransport, type InboundMessage } from './transport.js';
+import { LogTransport, PREFIXO_ENSAIO, resolveTransport, type InboundMessage } from './transport.js';
 import { linhaDeOrigem, resolverOrigem } from './origem.js';
 import { resolverCampanhaDoAnuncio } from './origem.meta.js';
 import {
@@ -258,7 +258,11 @@ export class WhatsappService {
     const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
     const [todayCount, lastCharges] = await Promise.all([
       prisma.whatsappConversation.count({
-        where: { userId: this.userId, businessId: this.businessId, createdAt: { gte: startOfToday } },
+        where: {
+          userId: this.userId, businessId: this.businessId, createdAt: { gte: startOfToday },
+          // ensaio do simulador não consome a franquia — mesma regra do handleInbound
+          NOT: { leadPhone: { startsWith: PREFIXO_ENSAIO } },
+        },
       }),
       prisma.whatsappCharge.findMany({
         where: { userId: this.userId, businessId: this.businessId },
@@ -330,9 +334,13 @@ export class WhatsappService {
       // Franquia é por negócio — cada negócio tem sua própria cota diária.
       const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
       const todayCount = await prisma.whatsappConversation.count({
-        where: { userId: this.userId, businessId: this.businessId, createdAt: { gte: startOfToday } },
+        where: {
+          userId: this.userId, businessId: this.businessId, createdAt: { gte: startOfToday },
+          NOT: { leadPhone: { startsWith: PREFIXO_ENSAIO } },
+        },
       });
-      const billable = todayCount >= config.dailyFreeConversations;
+      // Ensaio do simulador nunca é cobrado nem consome a franquia do dia.
+      const billable = !msg.ensaio && todayCount >= config.dailyFreeConversations;
       // Origem: só aqui, na 1ª mensagem — é a única que traz o código do site
       // e o referral do anúncio. Nunca sobrescrita depois.
       const origem = resolverOrigem(msg.text, msg.anuncio ?? null);
@@ -358,7 +366,7 @@ export class WhatsappService {
       // já é contato conhecido e só registra. Nada é bloqueado ainda — é o log
       // destas linhas que vai dizer se o sinal é confiável o bastante para,
       // depois, o bot deixar de responder quem já está na agenda.
-      if (config.transport === 'evolution') {
+      if (config.transport === 'evolution' && !msg.ensaio) {
         const veredito = await lookupContact(instanceName(this.userId, this.businessId), msg.from);
         console.log(`[whatsapp:contato] lead ${msg.from} — conhecido=${veredito.known} (${veredito.reason})${veredito.name ? ` nome="${veredito.name}"` : ''} (userId ${this.userId}, negócio ${this.businessId})`);
       }
@@ -381,7 +389,7 @@ export class WhatsappService {
       const historyOut = ((conv.history as unknown as HistoryItem[]) ?? []).slice();
       historyOut.push({ role: 'user', text: msg.text, at: new Date().toISOString() });
       historyOut.push({ role: 'assistant', text: REPLY_OPT_OUT, at: new Date().toISOString() });
-      const transportOut = resolveTransport(config.transport, config.transportConfig as Record<string, unknown>);
+      const transportOut = this.transporte(config, msg);
       await transportOut.sendText(msg.from, REPLY_OPT_OUT);
       await prisma.whatsappConversation.update({
         where: { id: conv.id },
@@ -457,7 +465,7 @@ export class WhatsappService {
     const replyFinal = vaiCotar ? REPLY_COTACAO_AGORA : result.reply;
 
     // Envia a resposta pelo transporte configurado
-    const transport = resolveTransport(config.transport, config.transportConfig as Record<string, unknown>);
+    const transport = this.transporte(config, msg);
     await transport.sendText(msg.from, replyFinal);
 
     history.push({ role: 'assistant', text: replyFinal, at: new Date().toISOString() });
@@ -490,9 +498,11 @@ export class WhatsappService {
     }
 
     // Handoff: avisa o vendedor com o resumo
+    let avisoDeEnsaio = '';
     if (result.done && result.state === 'handoff' && config.handoffContact) {
       const resumo = [result.summary ?? '', notaVendedor, linhaDeOrigem(conv)].filter(Boolean).join('\n');
-      await this.notifyVendor(config.handoffContact, msg.from, resumo, transport);
+      const aviso = await this.notifyVendor(config.handoffContact, msg.from, resumo, transport, msg.ensaio);
+      if (msg.ensaio) avisoDeEnsaio = aviso;
     }
 
     // Lead QUALIFICADO (QUENTE) → envia a conversão de Lead server-side às DUAS
@@ -501,7 +511,9 @@ export class WhatsappService {
     //   • Meta CAPI (evento Lead)
     //   • Google Enhanced Conversions for Leads (upload pelo telefone)
     const isQualified = result.done && result.label === 'QUENTE';
-    const shouldReport = isQualified && !conv.capiLeadFired;
+    // Ensaio nunca sobe conversão: um lead de teste no Google/Meta ensinaria o
+    // lance a procurar gente que não existe.
+    const shouldReport = isQualified && !conv.capiLeadFired && !msg.ensaio;
     if (shouldReport) {
       await this.fireCapiLead(conv.id, msg.from, msg.ctwaClid);
       await this.fireGoogleLeadConversion(msg.from);
@@ -522,7 +534,8 @@ export class WhatsappService {
 
     // O simulador da tela mostra só o que volta aqui: com cotação, volta as
     // duas mensagens que o lead recebeu.
-    return { reply: textoCotacao ? `${replyFinal}\n\n${textoCotacao}` : replyFinal, state: result.state };
+    const respostaAoLead = textoCotacao ? `${replyFinal}\n\n${textoCotacao}` : replyFinal;
+    return { reply: avisoDeEnsaio ? `${respostaAoLead}\n\n${avisoDeEnsaio}` : respostaAoLead, state: result.state };
   }
 
   // ── Modo ROTEIRO FIXO ───────────────────────────────────────────────────────
@@ -579,7 +592,7 @@ export class WhatsappService {
     }
 
     const terminou = roteiroTerminou(passos, passoAtual);
-    const transport = resolveTransport(config.transport, config.transportConfig as Record<string, unknown>);
+    const transport = this.transporte(config, msg);
 
     for (const texto of aEnviar) {
       await transport.sendText(msg.from, texto);
@@ -589,7 +602,7 @@ export class WhatsappService {
     let fechamento = '';
     let rotulo: 'QUENTE' | 'FRIO' | undefined;
     if (terminou) {
-      const r = await this.fecharRoteiro(config, conv.id, msg.from, passos, dados, transport);
+      const r = await this.fecharRoteiro(config, conv.id, msg.from, passos, dados, transport, Boolean(msg.ensaio));
       fechamento = r.texto;
       rotulo = r.rotulo;
       for (const texto of r.enviados) history.push({ role: 'assistant', text: texto, at: new Date().toISOString() });
@@ -622,6 +635,7 @@ export class WhatsappService {
     passos: PassoDoRoteiro[],
     dados: DadosDoRoteiro,
     transport: ReturnType<typeof resolveTransport>,
+    ensaio = false,
   ): Promise<{ texto: string; enviados: string[]; rotulo: 'QUENTE' | 'FRIO' }> {
     const rotulo = rotuloDoLead(dados);
     const enviados: string[] = [];
@@ -644,6 +658,10 @@ export class WhatsappService {
     const semTabelaDe = semTabela(plano);
     const vaiCotar = Boolean(integracao) && podeCotarAutomaticamente(dadosLead) && !semTabelaDe;
 
+    // Mesma condição do montarResumoDoRoteiro: se o resumo já traz "Idades",
+    // a nota não repete a linha.
+    const resumoTemIdades = passos.some((p) => p.campo === 'idades') && 'idades' in dados;
+    const opcoesDaNota = { semLinhaDeIdades: resumoTemIdades };
     let notaVendedor = '';
     let textoFinal = '';
     if (vaiCotar && integracao && dadosLead) {
@@ -662,9 +680,9 @@ export class WhatsappService {
         console.error('[whatsapp:roteiro] falha ao enviar cotação ao lead:', e));
       enviados.push(textoAoLead);
       textoFinal = textoAoLead;
-      notaVendedor = montarNotaParaVendedor(dadosLead, cotacao, falha);
+      notaVendedor = montarNotaParaVendedor(dadosLead, cotacao, falha, undefined, opcoesDaNota);
     } else if (integracao && semTabelaDe) {
-      notaVendedor = montarNotaParaVendedor(dadosLead, null, undefined, semTabelaDe);
+      notaVendedor = montarNotaParaVendedor(dadosLead, null, undefined, semTabelaDe, opcoesDaNota);
     }
 
     // A ÚLTIMA frase que o lead ouve do bot, e ela sai AGORA — não na próxima
@@ -686,11 +704,14 @@ export class WhatsappService {
     if (config.handoffContact) {
       const resumo = [montarResumoDoRoteiro(passos, dados), notaVendedor, origem ? linhaDeOrigem(origem) : null]
         .filter(Boolean).join('\n');
-      await this.notifyVendor(config.handoffContact, leadPhone, resumo, transport);
+      const aviso = await this.notifyVendor(config.handoffContact, leadPhone, resumo, transport, ensaio);
+      // No ensaio, o aviso que iria para o vendedor volta na resposta da tela.
+      if (ensaio) textoFinal = textoFinal ? `${textoFinal}\n\n${aviso}` : aviso;
     }
 
     // Conversão de lead QUALIFICADO — só para quem disse que quer contratar.
-    if (rotulo === 'QUENTE') {
+    // Ensaio nunca sobe conversão.
+    if (rotulo === 'QUENTE' && !ensaio) {
       await this.fireCapiLead(convId, leadPhone, null);
       await this.fireGoogleLeadConversion(leadPhone);
     }
@@ -909,11 +930,20 @@ ou esperar a virada do dia, quando as conversas grátis renovam sozinhas.</p>
     lead: string,
     summary: string,
     transport: ReturnType<typeof resolveTransport>,
-  ) {
-    const text = `🔔 Novo lead qualificado!\nContato: ${lead}\n${summary}`;
+    ensaio = false,
+  ): Promise<string> {
+    const text = `${ensaio ? '🧪 TESTE — este aviso NÃO foi enviado ao vendedor.\n' : ''}🔔 Novo lead qualificado!\nContato: ${lead}\n${summary}`;
     await transport.sendText(contact, text).catch((e) =>
       console.error('[whatsapp] falha ao notificar vendedor:', e),
     );
+    return text;
+  }
+
+  /** Transporte da conversa: no ensaio do simulador, só registra — nada sai. */
+  private transporte(config: { transport: string; transportConfig: unknown }, msg: InboundMessage) {
+    return msg.ensaio
+      ? new LogTransport()
+      : resolveTransport(config.transport, config.transportConfig as Record<string, unknown>);
   }
 }
 

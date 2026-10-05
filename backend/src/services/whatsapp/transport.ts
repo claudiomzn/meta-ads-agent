@@ -19,7 +19,17 @@ export interface InboundMessage {
   ctwaClid?: string | null;
   /** Referral do anúncio CTWA (só vem na 1ª mensagem de quem clicou no anúncio). */
   anuncio?: DadosDoAnuncio | null;
+  /**
+   * Ensaio do simulador do painel (05/10/2026): o fluxo roda inteiro, mas nada
+   * sai daqui — nenhuma mensagem enviada a ninguém, nenhuma conversão, nada de
+   * franquia/saldo. O aviso ao vendedor volta na resposta, marcado como TESTE.
+   */
+  ensaio?: boolean;
 }
+
+/** Prefixo do leadPhone das conversas de ensaio: isola do número real e deixa
+ *  fácil excluir de franquia, relatório e busca de venda. */
+export const PREFIXO_ENSAIO = 'teste:';
 
 export interface WhatsappTransport {
   /** Nome do transporte ("evolution" | "meta" | "log"). */

@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { WhatsappService, creditPaidRecharge, DEFAULT_BUSINESS } from '../services/whatsapp/whatsapp.service.js';
-import { resolveTransport } from '../services/whatsapp/transport.js';
+import { PREFIXO_ENSAIO, resolveTransport } from '../services/whatsapp/transport.js';
 import { chaveDoTelefone, origemDaVenda, periodo, somarFunil } from '../services/whatsapp/funil.js';
 import {
   evolutionConfigured,
@@ -46,7 +46,8 @@ router.get('/funil-por-campanha', authMiddleware, async (req: AuthRequest, res: 
   if (!p) return res.status(400).json({ error: 'Período inválido. Use desde/ate no formato AAAA-MM-DD.' });
   const linhas = await prisma.whatsappConversation.groupBy({
     by: ['origemCanal', 'origemCampanhaId', 'label'],
-    where: { userId: req.userId!, createdAt: { gte: p.de, lt: p.ate } },
+    // Conversa de ensaio (simulador) não é lead: fica fora do relatório.
+    where: { userId: req.userId!, createdAt: { gte: p.de, lt: p.ate }, NOT: { leadPhone: { startsWith: PREFIXO_ENSAIO } } },
     _count: { _all: true },
   });
   res.json({ de: p.de.toISOString(), ate: p.ate.toISOString(), campanhas: somarFunil(linhas) });
@@ -62,7 +63,7 @@ router.get('/origem-do-telefone', authMiddleware, async (req: AuthRequest, res: 
   if (!chave) return res.status(400).json({ error: 'Telefone inválido. Use DDD + número.' });
   // Pré-filtro no banco pelos 8 finais; o DDD é conferido em origemDaVenda.
   const conversas = await prisma.whatsappConversation.findMany({
-    where: { userId: req.userId!, leadPhone: { endsWith: chave.slice(2) } },
+    where: { userId: req.userId!, leadPhone: { endsWith: chave.slice(2), not: { startsWith: PREFIXO_ENSAIO } } },
     select: { leadPhone: true, origemCanal: true, origemCampanhaId: true, origemRef: true, label: true, createdAt: true },
     orderBy: { createdAt: 'desc' },
     take: 20,
@@ -178,8 +179,19 @@ router.delete('/businesses/:businessId', authMiddleware, async (req: AuthRequest
 router.post('/simulate', authMiddleware, async (req: AuthRequest, res: Response) => {
   const { from, text } = req.body ?? {};
   if (!from || !text) return res.status(400).json({ error: 'from e text são obrigatórios' });
+  // Em produção o simulador é SEMPRE ensaio: não manda WhatsApp de verdade
+  // (nem ao lead, nem ao vendedor), não sobe conversão para Meta/Google, não
+  // conta franquia e não entra no funil/relatório. Antes ele rodava o fluxo
+  // real e avisou o vendedor de um lead fictício. Nos testes o fluxo real
+  // continua disponível (é o que a suíte exercita), e `ensaio: true` liga o modo.
+  const ensaio = process.env.NODE_ENV === 'test' ? req.body?.ensaio === true : true;
   const svc = new WhatsappService(req.userId!, resolveBusinessId(req));
-  const result = await svc.handleInbound({ from, text, transport: 'log' });
+  const result = await svc.handleInbound({
+    from: ensaio ? `${PREFIXO_ENSAIO}${from}` : from,
+    text,
+    transport: 'log',
+    ensaio,
+  });
   res.json(result ?? { skipped: 'bot desligado ou sem config' });
 });
 
