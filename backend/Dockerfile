@@ -26,13 +26,18 @@ RUN npm prune --production
 
 # Railway injeta PORT — app escuta em 0.0.0.0:PORT
 EXPOSE 3000
-# ⚠️ Schema em produção: hoje é o `db push` deste CMD que sincroniza o banco a
-# cada start (não as migrations — ver drift em CLAUDE.md). O `--accept-data-loss`
-# foi REMOVIDO: com ele, qualquer schema.prisma que chegasse sem uma coluna
-# (merge ruim, revert) fazia o boot APAGAR a coluna e os dados dela, calado.
-# Sem a flag, o `db push` RECUSA mudança destrutiva e o boot falha visível — o
-# banco fica intacto. Como produção já está sincronizada com o schema, `db push`
-# aqui é no-op no estado atual. Passo seguinte (caminho X): depois de baselinar
-# produção (prisma migrate resolve --applied das 7 migrations não registradas),
-# trocar este `db push` por `npx prisma migrate deploy`.
-CMD ["sh", "-c", "npx prisma db push && node dist/index.js"]
+# Schema em produção: agora pelas MIGRATIONS (caminho X). A cada start, o
+# `migrate deploy` aplica as migrations pendentes e para — não reescreve o
+# schema a partir do schema.prisma como o `db push` fazia (que foi a origem do
+# drift e do risco de perda de dados).
+#
+# 1º boot após esta troca: produção tinha 7 migrations registradas e o repo tem
+# 16; as 9 pendentes são TODAS idempotentes (IF NOT EXISTS / guardas), então o
+# migrate deploy as aplica como no-op sobre o schema que já existe e as registra
+# — produção se baselina sozinha, sem ninguém rodar nada à mão. Provado pelo
+# teste C de scripts/check-drift-migration.mjs (estado de produção + as 9
+# pendentes = no-op).
+#
+# Daqui pra frente: toda mudança de schema entra por uma migration nova
+# (prisma migrate dev no ambiente local), e o deploy a aplica aqui.
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
