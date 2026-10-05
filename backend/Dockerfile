@@ -26,4 +26,13 @@ RUN npm prune --production
 
 # Railway injeta PORT — app escuta em 0.0.0.0:PORT
 EXPOSE 3000
-CMD ["sh", "-c", "npx prisma db push --accept-data-loss && node dist/index.js"]
+# ⚠️ Schema em produção: hoje é o `db push` deste CMD que sincroniza o banco a
+# cada start (não as migrations — ver drift em CLAUDE.md). O `--accept-data-loss`
+# foi REMOVIDO: com ele, qualquer schema.prisma que chegasse sem uma coluna
+# (merge ruim, revert) fazia o boot APAGAR a coluna e os dados dela, calado.
+# Sem a flag, o `db push` RECUSA mudança destrutiva e o boot falha visível — o
+# banco fica intacto. Como produção já está sincronizada com o schema, `db push`
+# aqui é no-op no estado atual. Passo seguinte (caminho X): depois de baselinar
+# produção (prisma migrate resolve --applied das 7 migrations não registradas),
+# trocar este `db push` por `npx prisma migrate deploy`.
+CMD ["sh", "-c", "npx prisma db push && node dist/index.js"]
