@@ -1,3 +1,10 @@
+# ⚠️ DESATUALIZADO — NÃO é a configuração que está rodando (05/10/2026).
+# Produção sobe pelo backend/Dockerfile (CMD: `prisma migrate deploy && node
+# dist/index.js`) e o banco é o Neon, não o `meta-ads-db` abaixo. Prova: o
+# preDeployCommand daqui nunca rodou — produção tinha só 7 de 14 migrations
+# registradas até o PR #31. A verdade está no painel do Render.
+# Não altere `runtime`/`fromDatabase` sem conferir o painel: se este arquivo
+# estiver ligado como Blueprint, trocar o runtime pode recriar o serviço.
 services:
   - type: web
     name: meta-ads-agent-backend
