@@ -16,7 +16,21 @@ import pg from 'pg';
 
 const PORT = 5445;
 const MIG = 'prisma/migrations';
-const NOVAS = ['20260711000000_cria_whatsapp_charge', '20261005120000_registra_drift_do_schema'];
+// As 9 migrations que NÃO constam no _prisma_migrations de produção (as 7 que
+// nunca rodaram + as 2 novas). É exatamente o que o PRIMEIRO `migrate deploy`
+// vai aplicar quando o Dockerfile trocar de db push para migrate deploy — por
+// isso todas precisam ser idempotentes (no-op sobre o schema que já existe).
+const PENDENTES = [
+  '20260711000000_cria_whatsapp_charge',
+  '20260729200000_add_meta_connection_requests',
+  '20260729213000_add_meta_connection_verification_and_health',
+  '20260730150000_meta_request_portfolio_optional',
+  '20260814160000_add_campaign_meta_page',
+  '20260924230000_add_whatsapp_script_mode',
+  '20261001120000_add_whatsapp_conversation_origem',
+  '20261001150000_add_whatsapp_conversation_campanha',
+  '20261005120000_registra_drift_do_schema',
+];
 
 const dataDir = mkdtempSync(join(tmpdir(), 'driftcheck-pg-'));
 const epg = new EmbeddedPostgres({ databaseDir: dataDir, user: 'postgres', password: 'test', port: PORT, persistent: false });
@@ -47,24 +61,27 @@ try {
     console.log((e.stdout || '' + e.stderr || '').split('\n').map((l) => '      ' + l).join('\n'));
   }
 
-  // ── Teste B: idempotência das migrations novas ───────────────────────────────
-  console.log('B) reaplicar as migrations novas (idempotência):');
+  // ── Teste B: idempotência das migrations pendentes ───────────────────────────
+  console.log('B) reaplicar as migrations pendentes (idempotência):');
   await epg.createDatabase('b');
   const cb = await novoClient('b');
   await aplicarTodas(cb);
   ok(true, 'cadeia inteira aplicou numa vez');
-  try { for (const d of NOVAS) await cb.query(lerMig(d)); ok(true, 'reaplicar as 2 novas não quebrou'); }
+  try { for (const d of PENDENTES) await cb.query(lerMig(d)); ok(true, 'reaplicar as 9 pendentes não quebrou'); }
   catch (e) { ok(false, 'reaplicar quebrou: ' + e.message); }
   await cb.end();
 
-  // ── Teste C: simula produção (db push do schema) + migrations novas ──────────
-  console.log('C) banco no estado de produção (db push) + migrations novas:');
+  // ── Teste C: simula o 1º migrate deploy em produção ──────────────────────────
+  // Banco no estado de produção (schema atual via db push) + TODAS as 9 migrations
+  // pendentes em ordem. É exatamente o que o primeiro `migrate deploy` fará depois
+  // de o Dockerfile trocar db push por migrate deploy. Todas têm de ser no-op.
+  console.log('C) estado de produção + as 9 migrations pendentes (o 1º migrate deploy):');
   await epg.createDatabase('prod_sim');
   execSync('node_modules/.bin/prisma db push --skip-generate --accept-data-loss',
     { cwd: process.cwd(), encoding: 'utf8', stdio: ['ignore', 'ignore', 'ignore'],
       env: { ...process.env, DATABASE_URL: `postgresql://postgres:test@localhost:${PORT}/prod_sim` } });
   const cc = await novoClient('prod_sim');
-  try { for (const d of NOVAS) await cc.query(lerMig(d)); ok(true, 'migrations novas são no-op sobre o schema de produção'); }
+  try { for (const d of PENDENTES) await cc.query(lerMig(d)); ok(true, 'as 9 pendentes são no-op sobre o schema de produção'); }
   catch (e) { ok(false, 'migration quebrou sobre produção simulada: ' + e.message); }
   await cc.end();
 } finally {
