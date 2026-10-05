@@ -223,19 +223,28 @@ export function montarNotaParaVendedor(
   falha?: string,
   /** Operadora que o Luiz vende sem tabela no Cote+ — cotação é dele. */
   semTabelaDe?: string | null,
+  /** O roteiro fixo já manda "Idades: …" no resumo dele — repetir a linha
+   * deixava o aviso ao vendedor com as idades duas vezes. */
+  opcoes: { semLinhaDeIdades?: boolean } = {},
 ): string {
-  const idades = dados
-    ? `Idades: ${dados.idades.join(', ')} (${dados.tipo.toUpperCase()})${dados.operadora ? ` · pediu ${dados.operadora}` : ''}`
-    : 'Idades: não identificadas na conversa';
+  const idades = opcoes.semLinhaDeIdades
+    ? ''
+    : dados
+      ? `Idades: ${dados.idades.join(', ')} (${dados.tipo.toUpperCase()})${dados.operadora ? ` · pediu ${dados.operadora}` : ''}`
+      : 'Idades: não identificadas na conversa';
   if (cotacao?.ok && cotacao.texto) {
     const avisos = cotacao.avisos?.length ? `\n⚠️ ${cotacao.avisos.join(' · ')}` : '';
-    return `${idades}\n✅ Cotação enviada ao lead:\n${cotacao.texto}${avisos}`;
+    return juntar(idades, `✅ Cotação enviada ao lead:\n${cotacao.texto}${avisos}`);
   }
   if (cotacao?.ok && !cotacao.texto) {
-    return `${idades}\n⚠️ Sem plano com tabela vigente para cotar — o lead ficou esperando a sua cotação.${cotacao.avisos?.length ? ` ${cotacao.avisos.join(' · ')}` : ''}`;
+    return juntar(idades, `⚠️ Sem plano com tabela vigente para cotar — o lead ficou esperando a sua cotação.${cotacao.avisos?.length ? ` ${cotacao.avisos.join(' · ')}` : ''}`);
   }
-  if (semTabelaDe) return `${idades}\nℹ️ Veio para ${semTabelaDe}: sem tabela no Cote+, a cotação fica com você.`;
-  if (falha) return `${idades}\n⚠️ Cotação automática falhou (${falha}) — o lead ficou esperando a sua cotação.`;
-  if (dados && dados.tipo === 'cnpj') return `${idades}\nℹ️ Empresarial: cotação fica com você.`;
+  if (semTabelaDe) return juntar(idades, `ℹ️ Veio para ${semTabelaDe}: sem tabela no Cote+, a cotação fica com você.`);
+  if (falha) return juntar(idades, `⚠️ Cotação automática falhou (${falha}) — o lead ficou esperando a sua cotação.`);
+  if (dados && dados.tipo === 'cnpj') return juntar(idades, 'ℹ️ Empresarial: cotação fica com você.');
   return idades;
+}
+
+function juntar(...linhas: string[]): string {
+  return linhas.filter(Boolean).join('\n');
 }

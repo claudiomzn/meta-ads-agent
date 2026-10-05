@@ -182,6 +182,14 @@ describe('montarNotaParaVendedor — o vendedor nunca repete as perguntas', () =
   it('sem dados: diz que as idades não foram identificadas', () => {
     expect(montarNotaParaVendedor(null, null)).toContain('não identificadas');
   });
+
+  it('roteiro fixo (o resumo já traz as idades): a nota não repete a linha nem deixa quebra sobrando', () => {
+    const nota = montarNotaParaVendedor(dados, { ok: true, texto: 'Samel: R$ 900' }, undefined, undefined, { semLinhaDeIdades: true });
+    expect(nota).not.toContain('Idades');
+    expect(nota.startsWith('✅ Cotação enviada ao lead')).toBe(true);
+    expect(montarNotaParaVendedor(dados, null, undefined, 'Bradesco Saúde', { semLinhaDeIdades: true }))
+      .toBe('ℹ️ Veio para Bradesco Saúde: sem tabela no Cote+, a cotação fica com você.');
+  });
 });
 
 describe('a frase fixa', () => {
