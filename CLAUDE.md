@@ -20,9 +20,9 @@ O frontend de lá fala com este backend por `/meta-api` (proxy do Vite em dev; `
 | Banco | **Neon** — o banco é o `neondb`, **não** o `evolution` |
 | Build | Dockerfile: `npm ci` → `prisma generate` → `tsc` → `npm prune --production` |
 | Boot | **`npx prisma migrate deploy && node dist/index.js`** ← leia a seção de migrations |
+| Saúde | `GET /health` (só devolve `ok` + timestamp; **não diz a versão**) |
 
 > ⚠️ O `render.yaml` está **desatualizado** (diz runtime node, preDeploy e um banco `meta-ads-db` do Render). Não é o que roda — a verdade é o painel do Render e o Dockerfile. Ver o aviso no topo do arquivo.
-| Saúde | `GET /health` (só devolve `ok` + timestamp; **não diz a versão**) |
 
 Crons `node-cron` dentro do próprio processo (`src/index.ts`): métricas de hora em hora, fila a cada 2min, status + automações a cada 15min, agente noturno às 5h.
 
@@ -39,7 +39,7 @@ Conferir o que está no ar: `GET /health` responde `ok` + timestamp, mas **não 
 ```bash
 cd backend
 npm run dev     # tsx watch
-npm test        # vitest run — ~315 testes, 31 arquivos
+npm test        # vitest run — ~404 testes, 35 arquivos
 npx tsc --noEmit
 ```
 
