@@ -4,6 +4,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { WhatsappService, creditPaidRecharge, DEFAULT_BUSINESS } from '../services/whatsapp/whatsapp.service.js';
 import { PREFIXO_ENSAIO, resolveTransport } from '../services/whatsapp/transport.js';
 import { chaveDoTelefone, origemDaVenda, periodo, somarFunil } from '../services/whatsapp/funil.js';
+import { avaliarAtivacaoWhatsapp } from '../services/whatsapp/ativacao.js';
 import {
   evolutionConfigured,
   connectInstance,
@@ -69,6 +70,56 @@ router.get('/origem-do-telefone', authMiddleware, async (req: AuthRequest, res: 
     take: 20,
   });
   res.json({ origem: origemDaVenda(telefone, conversas) });
+});
+
+// GET /api/whatsapp/ativacao?businessId=…
+// Em que pé está o robô deste negócio: WhatsApp conectado, roteiro capaz de
+// gerar QUENTE, teste no simulador feito, primeiro QUENTE de verdade. É o que
+// o "Primeiros passos" do app mostra — com o motivo de cada passo pendente
+// (regra em services/whatsapp/ativacao.ts; o app só exibe).
+router.get('/ativacao', authMiddleware, async (req: AuthRequest, res: Response) => {
+  const userId = req.userId!;
+  const businessId = resolveBusinessId(req);
+  const config = await prisma.whatsappConfig.findUnique({ where: { userId_businessId: { userId, businessId } } });
+
+  // Conexão: só o WhatsApp gerenciado (Evolution central) dá para consultar.
+  // Falha na consulta vira estado 'error' — nunca 500 (ver /evolution/status).
+  let conexao: { estado: string; erro?: string | null } | null = null;
+  if (config?.transport === 'evolution' && evolutionConfigured()) {
+    try {
+      conexao = { estado: await getConnectionState(userId, businessId) };
+    } catch (e) {
+      conexao = { estado: 'error', erro: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+    }
+  }
+
+  const [ensaio, quente] = await Promise.all([
+    prisma.whatsappConversation.findFirst({
+      where: { userId, businessId, leadPhone: { startsWith: PREFIXO_ENSAIO }, state: 'handoff' },
+      orderBy: { updatedAt: 'asc' }, select: { updatedAt: true },
+    }),
+    prisma.whatsappConversation.findFirst({
+      where: { userId, businessId, label: 'QUENTE', NOT: { leadPhone: { startsWith: PREFIXO_ENSAIO } } },
+      orderBy: { updatedAt: 'asc' }, select: { updatedAt: true },
+    }),
+  ]);
+
+  res.json({
+    businessId,
+    passos: avaliarAtivacaoWhatsapp({
+      config: config && {
+        enabled: config.enabled,
+        handoffContact: config.handoffContact,
+        triggerKeyword: config.triggerKeyword,
+        scriptEnabled: config.scriptEnabled,
+        scriptSteps: config.scriptSteps,
+        questions: config.questions,
+      },
+      conexao,
+      ensaioConcluidoEm: ensaio?.updatedAt ?? null,
+      primeiroQuenteEm: quente?.updatedAt ?? null,
+    }),
+  });
 });
 
 router.get('/usage', authMiddleware, async (req: AuthRequest, res: Response) => {
