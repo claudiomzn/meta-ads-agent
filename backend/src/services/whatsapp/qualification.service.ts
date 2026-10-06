@@ -113,13 +113,16 @@ export async function nextReply(
   botMessages: number,
 ): Promise<QualResult> {
   // Trava dura: se passou do limite de mensagens, força handoff sem chamar a IA.
+  // SEM rótulo (06/10/2026): antes saía QUENTE, e quem só ficou de papo até o
+  // limite subia como lead qualificado para o Google e a Meta — o lance
+  // aprendia a buscar conversa longa, não intenção de compra. O vendedor
+  // recebe do mesmo jeito; a conversão só sobe com QUENTE de verdade.
   if (botMessages >= cfg.maxBotMessages) {
     return {
       reply: 'Vou te passar para um de nossos consultores para continuar o atendimento. 👍',
       state: 'handoff',
       done: true,
-      label: 'QUENTE',
-      summary: 'Lead atingiu o limite de mensagens do bot — encaminhado ao consultor.',
+      summary: 'Lead atingiu o limite de mensagens do bot sem se qualificar — encaminhado ao consultor.',
     };
   }
 

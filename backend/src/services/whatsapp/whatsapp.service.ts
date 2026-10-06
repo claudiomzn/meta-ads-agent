@@ -6,7 +6,7 @@ import prisma from '../../lib/prisma.js';
 import { lookupContact } from './contacts.js';
 import { instanceName } from './evolution.manager.js';
 import { LogTransport, PREFIXO_ENSAIO, resolveTransport, type InboundMessage } from './transport.js';
-import { linhaDeOrigem, resolverOrigem } from './origem.js';
+import { lerRefDoSite, linhaDeOrigem, resolverOrigem } from './origem.js';
 import { resolverCampanhaDoAnuncio } from './origem.meta.js';
 import {
   type CotacaoResultado,
@@ -123,6 +123,30 @@ const REPLY_OPT_OUT = 'Desculpa pelo incômodo! Não te mando mais mensagens por
 // A mensagem do lead casa com ALGUM dos gatilhos configurados? Lista vazia
 // (campo em branco) = sem restrição, atende todo mundo — comportamento de
 // sempre, preservado.
+/**
+ * O bot só ABRE conversa com quem nasceu de um anúncio (06/10/2026). Antes,
+ * com o gatilho em branco, qualquer número novo virava conversa — parente,
+ * fornecedor, cliente antigo — e o bot passava a responder aquele número para
+ * sempre. Foi assim que importunou contato pessoal do Luiz.
+ *
+ * Nasce de anúncio quem traz o referral do clique-para-WhatsApp da Meta ou o
+ * código do site "(ref. …)". O gatilho, quando configurado, é a outra porta
+ * (é o que pega o texto pronto do anúncio). Sem gatilho, o simulador do painel
+ * faz o papel do lead de anúncio — ele existe para testar justamente isso.
+ */
+export function podeAbrirConversa(
+  triggerField: string | null | undefined,
+  msg: Pick<InboundMessage, 'text' | 'anuncio' | 'simulado'>,
+): boolean {
+  if (msg.anuncio) return true;
+  if (lerRefDoSite(msg.text)) return true;
+  const temGatilho = parseTriggerKeywords(triggerField ?? '').length > 0;
+  return temGatilho ? matchesAnyTrigger(triggerField, msg.text) : Boolean(msg.simulado);
+}
+
+/** Conversa sem nenhuma mensagem por este tempo é encerrada em silêncio. */
+export const CONVERSA_EXPIRA_MS = 48 * 60 * 60 * 1000;
+
 export function matchesAnyTrigger(triggerField: string | null | undefined, messageText: string): boolean {
   const keywords = parseTriggerKeywords(triggerField ?? '');
   if (keywords.length === 0) return true;
@@ -321,11 +345,11 @@ export class WhatsappService {
       // gatilho, ignora em silêncio — ANTES de contar franquia/billable e de
       // chamar a IA: mensagem ignorada não pode consumir nada nem criar
       // conversa. Conversa já existente (ramo de baixo) nunca reavalia isto.
-      if (!matchesAnyTrigger(config.triggerKeyword, msg.text)) {
+      if (!podeAbrirConversa(config.triggerKeyword, msg)) {
         // Log inclui o texto RECEBIDO (truncado) — sem isso não dá pra saber se
         // o gatilho não bateu porque a mensagem realmente não continha a frase,
         // ou porque o texto extraído do payload não é o que o lead digitou.
-        console.log(`[whatsapp:trigger] msg sem nenhum gatilho de "${config.triggerKeyword}" ignorada — texto recebido: ${JSON.stringify(msg.text.slice(0, 200))} (userId ${this.userId}, negócio ${this.businessId}, lead ${msg.from})`);
+        console.log(`[whatsapp:trigger] msg que não veio de anúncio nem tem gatilho ("${config.triggerKeyword ?? ''}") ignorada — texto recebido: ${JSON.stringify(msg.text.slice(0, 200))} (userId ${this.userId}, negócio ${this.businessId}, lead ${msg.from})`);
         return null;
       }
 
@@ -370,6 +394,15 @@ export class WhatsappService {
         const veredito = await lookupContact(instanceName(this.userId, this.businessId), msg.from);
         console.log(`[whatsapp:contato] lead ${msg.from} — conhecido=${veredito.known} (${veredito.reason})${veredito.name ? ` nome="${veredito.name}"` : ''} (userId ${this.userId}, negócio ${this.businessId})`);
       }
+    }
+    // Conversa largada no meio (06/10/2026): o lead parou de responder e volta
+    // dias depois com outro assunto — o bot retomava o roteiro de onde parou.
+    // Passado o prazo, ela fecha em silêncio e o número fica com o vendedor.
+    if (!['closed', 'handoff', 'cold'].includes(conv.state)
+      && Date.now() - conv.updatedAt.getTime() > CONVERSA_EXPIRA_MS) {
+      await prisma.whatsappConversation.update({ where: { id: conv.id }, data: { state: 'closed' } });
+      console.log(`[whatsapp:expirou] conversa sem resposta há mais de 48h encerrada em silêncio (lead ${msg.from}, userId ${this.userId}, negócio ${this.businessId})`);
+      return null;
     }
     if (conv.state === 'closed' || conv.state === 'handoff' || conv.state === 'cold') {
       // Já encaminhado/encerrado — não responde mais (humano assume).

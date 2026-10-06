@@ -25,6 +25,12 @@ export interface InboundMessage {
    * franquia/saldo. O aviso ao vendedor volta na resposta, marcado como TESTE.
    */
   ensaio?: boolean;
+  /**
+   * Veio do simulador do painel, que faz o papel de um lead de anúncio. Sem
+   * gatilho configurado, só ele (além de anúncio/código do site) abre conversa
+   * — ver podeAbrirConversa.
+   */
+  simulado?: boolean;
 }
 
 /** Prefixo do leadPhone das conversas de ensaio: isola do número real e deixa
