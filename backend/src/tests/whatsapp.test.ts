@@ -377,7 +377,10 @@ describe('Palavra-gatilho por negócio', () => {
     expect(mockNextReply).toHaveBeenCalled();
   });
 
-  it('sem triggerKeyword configurado, qualquer 1ª mensagem cria conversa (comportamento atual)', async () => {
+  // Sem gatilho, só abre conversa quem nasceu de anúncio (06/10/2026). O
+  // simulador faz o papel de lead de anúncio; o webhook de verdade, com
+  // mensagem comum, é barrado — ver whatsapp.primeiroAtendimento.test.ts.
+  it('sem triggerKeyword configurado, o simulador (lead de anúncio) cria a conversa', async () => {
     await upsertConfig('trig-b', {}); // sem gatilho
 
     const res = await request(app).post('/api/whatsapp/simulate')

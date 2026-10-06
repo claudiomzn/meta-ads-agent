@@ -191,6 +191,7 @@ router.post('/simulate', authMiddleware, async (req: AuthRequest, res: Response)
     text,
     transport: 'log',
     ensaio,
+    simulado: true,
   });
   res.json(result ?? { skipped: 'bot desligado ou sem config' });
 });
