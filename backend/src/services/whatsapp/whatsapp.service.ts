@@ -549,7 +549,7 @@ export class WhatsappService {
     const shouldReport = isQualified && !conv.capiLeadFired && !msg.ensaio;
     if (shouldReport) {
       await this.fireCapiLead(conv.id, msg.from, msg.ctwaClid);
-      await this.fireGoogleLeadConversion(msg.from);
+      await this.fireGoogleLeadConversion(msg.from, conv.id);
     }
 
     await prisma.whatsappConversation.update({
@@ -746,7 +746,7 @@ export class WhatsappService {
     // Ensaio nunca sobe conversão.
     if (rotulo === 'QUENTE' && !ensaio) {
       await this.fireCapiLead(convId, leadPhone, null);
-      await this.fireGoogleLeadConversion(leadPhone);
+      await this.fireGoogleLeadConversion(leadPhone, convId);
     }
 
     console.log(`[whatsapp:roteiro] roteiro concluído (lead ${leadPhone}, rótulo ${rotulo}, cotou=${vaiCotar}) — bot em silêncio a partir daqui`);
@@ -922,7 +922,7 @@ ou esperar a virada do dia, quando as conversas grátis renovam sozinhas.</p>
   // por ela é decisão por campanha, tomada no Google Ads com dado na mão.
   private static readonly QUALIFIED_CONVERSION_ACTION = 'Lead Qualificado — AdsGenius';
 
-  private async fireGoogleLeadConversion(leadPhone: string) {
+  private async fireGoogleLeadConversion(leadPhone: string, convId: string) {
     try {
       const base = process.env.SUPABASE_URL;
       const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -937,6 +937,11 @@ ou esperar a virada do dia, quando as conversas grátis renovam sozinhas.</p>
         return;
       }
 
+      // Clique do anúncio que o site registrou (07/10/2026): com o gclid o
+      // Google liga o lead ao anúncio exato; só o telefone quase nunca casava.
+      // Lido AGORA, não na 1ª mensagem: o registro do site pode chegar depois.
+      const clique = await cliqueDaConversa(convId);
+
       const resp = await fetch(`${base}/functions/v1/upload-lead-conversion`, {
         method: 'POST',
         headers: {
@@ -948,10 +953,11 @@ ou esperar a virada do dia, quando as conversas grátis renovam sozinhas.</p>
           user_id: user.supabaseUserId,
           phone: leadPhone,
           conversion_action_name: WhatsappService.QUALIFIED_CONVERSION_ACTION,
+          ...clique,
         }),
       });
       const data = await resp.json().catch(() => ({}));
-      if (data?.ok) console.log(`[google-conv] Lead enviado (lead ${leadPhone})`);
+      if (data?.ok) console.log(`[google-conv] Lead enviado (lead ${leadPhone}${clique.gclid || clique.gbraid || clique.wbraid ? ', com o clique do anúncio' : ''})`);
       else console.warn(`[google-conv] Lead não enviado (lead ${leadPhone}):`, data?.error ?? data?.partial_failure_error ?? resp.status);
     } catch (e) {
       console.error('[google-conv] erro inesperado ao enviar conversão:', e);
@@ -978,6 +984,23 @@ ou esperar a virada do dia, quando as conversas grátis renovam sozinhas.</p>
       ? new LogTransport()
       : resolveTransport(config.transport, config.transportConfig as Record<string, unknown>);
   }
+}
+
+/**
+ * gclid/gbraid/wbraid do clique que o site registrou para esta conversa.
+ * Vazio quando a conversa não veio do site com código de clique (ou o
+ * registro não chegou): aí a conversão sobe só pelo telefone, como antes.
+ */
+export async function cliqueDaConversa(convId: string): Promise<{ gclid?: string; gbraid?: string; wbraid?: string }> {
+  const conv = await prisma.whatsappConversation.findUnique({ where: { id: convId }, select: { origemClique: true } });
+  if (!conv?.origemClique) return {};
+  const c = await prisma.cliqueDoSite.findUnique({ where: { codigo: conv.origemClique } });
+  if (!c) return {};
+  return {
+    ...(c.gclid ? { gclid: c.gclid } : {}),
+    ...(c.gbraid ? { gbraid: c.gbraid } : {}),
+    ...(c.wbraid ? { wbraid: c.wbraid } : {}),
+  };
 }
 
 // Credita o saldo pré-pago quando o Asaas confirma que uma recarga foi paga

@@ -4,6 +4,7 @@ dotenv.config({ override: true });
 import 'express-async-errors'; // captura erros async em Express 4 automaticamente
 import express from 'express';
 import cors from 'cors';
+import cliqueRoutes from './routes/clique.routes.js';
 import cron from 'node-cron';
 
 // ─── Log de ambiente para diagnóstico ────────────────────────────────────────
@@ -62,6 +63,11 @@ const allowedOrigins = [
   'https://adsgenius.net',
   process.env.FRONTEND_URL,
 ].filter(Boolean) as string[];
+
+// Rota pública do site (registro do clique do anúncio) ANTES do CORS global:
+// o CORS daqui recusa qualquer origem fora do app, e os sites dos clientes são
+// outros domínios. A rota tem a sua própria lista (ver clique.routes.ts).
+app.use('/api/clique', cliqueRoutes);
 
 app.use(cors({
   origin: (origin, callback) => {

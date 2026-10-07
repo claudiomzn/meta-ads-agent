@@ -16,17 +16,25 @@ export type CanalDeOrigem =
 // (2–4 letras) + canal (G/M/O/R/D) — e, desde 01/10/2026, o número da campanha
 // quando o link do anúncio o traz: "(ref. HAP-G-21345678901)". Ver
 // src/assets/js/site.js de lá: mudar o formato exige mudar os dois.
-const REF_DO_SITE = /\(ref\.\s*([A-Z]{2,4})-([GMORD])(?:-(\d{6,20}))?\)/;
+//
+// Desde 07/10/2026 pode vir no fim "~" + o código do clique (10 letras/números
+// minúsculos): "(ref. HAP-G-21345678901~k7xq9pz2ab)". O site registra esse
+// código com o gclid do anúncio (POST /api/clique) — ver resolverCliqueDoSite.
+// Opcional: código antigo, sem ele, continua valendo.
+const REF_DO_SITE = /\(ref\.\s*([A-Z]{2,4})-([GMORD])(?:-(\d{6,20}))?(?:~([a-z0-9]{10}))?\)/;
+
+/** Formato do código do clique — o mesmo que o site gera e o /api/clique aceita. */
+export const CODIGO_DO_CLIQUE = /^[a-z0-9]{10}$/;
 const CANAL_DO_SITE: Record<string, CanalDeOrigem> = {
   G: 'google', M: 'meta', O: 'organico', R: 'outro_site', D: 'direto',
 };
 
 export function lerRefDoSite(texto: string): {
-  ref: string; pagina: string; canal: CanalDeOrigem; campanhaId: string | null;
+  ref: string; pagina: string; canal: CanalDeOrigem; campanhaId: string | null; clique: string | null;
 } | null {
   const m = REF_DO_SITE.exec(texto ?? '');
   if (!m) return null;
-  return { ref: `${m[1]}-${m[2]}`, pagina: m[1], canal: CANAL_DO_SITE[m[2]], campanhaId: m[3] ?? null };
+  return { ref: `${m[1]}-${m[2]}`, pagina: m[1], canal: CANAL_DO_SITE[m[2]], campanhaId: m[3] ?? null, clique: m[4] ?? null };
 }
 
 export interface DadosDoAnuncio {
@@ -88,6 +96,8 @@ export interface OrigemDaConversa {
    * fica null aqui e é resolvida depois pela Meta (resolverCampanhaDoAnuncio).
    */
   origemCampanhaId: string | null;
+  /** Código do clique registrado pelo site (gclid guardado em CliqueDoSite). */
+  origemClique: string | null;
 }
 
 /** Anúncio CTWA tem prioridade: é prova direta. O código do site vem depois. */
@@ -101,6 +111,7 @@ export function resolverOrigem(textoDaMensagem: string, anuncio: DadosDoAnuncio 
     // A campanha do código do site só vale quando o site é a origem: se veio
     // do anúncio CTWA, a campanha é a DO ANÚNCIO, resolvida pela Meta.
     origemCampanhaId: anuncio ? null : site?.campanhaId ?? null,
+    origemClique: anuncio ? null : site?.clique ?? null,
   };
 }
 
