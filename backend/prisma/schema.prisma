@@ -553,6 +553,11 @@ model WhatsappConversation {
   // ID da campanha (Google ou Meta) que trouxe o lead. Do site vem no código
   // "(ref. HAP-G-<id>)"; do anúncio CTWA é resolvido na Meta pelo anúncio.
   origemCampanhaId String?
+  // Código do clique que o site registrou junto do gclid (07/10/2026) — o
+  // "~xxxxxxxxxx" do "(ref. …)". O gclid em si mora em CliqueDoSite e é lido
+  // só quando o lead vira QUENTE: o registro do site pode chegar segundos
+  // depois da 1ª mensagem.
+  origemClique String?
 
   // Marcada na criação: true se esta conversa nasceu depois de já ter batido o
   // limite diário de conversas grátis do usuário — cada mensagem do bot aqui
@@ -564,4 +569,21 @@ model WhatsappConversation {
 
   @@unique([userId, businessId, leadPhone])
   @@index([userId, businessId, state])
+}
+
+// Clique em anúncio registrado pelo site no momento em que o visitante toca
+// no botão do WhatsApp (07/10/2026). O código vai no "(ref. …)" da mensagem;
+// o gclid fica aqui — longo demais para a mensagem, e é ele que deixa o
+// Google ligar o lead QUENTE ao anúncio exato. Público (sem login), por isso
+// os formatos são validados na rota e nada aqui identifica a pessoa.
+model CliqueDoSite {
+  codigo    String   @id
+  gclid     String?
+  gbraid    String?
+  wbraid    String?
+  // Domínio do site que registrou (Origin), para diagnóstico.
+  site      String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
 }

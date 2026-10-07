@@ -39,7 +39,7 @@ Conferir o que está no ar: `GET /health` responde `ok` + timestamp, mas **não 
 ```bash
 cd backend
 npm run dev     # tsx watch
-npm test        # vitest run — ~404 testes, 35 arquivos
+npm test        # vitest run — ~445 testes, 38 arquivos
 npx tsc --noEmit
 ```
 
