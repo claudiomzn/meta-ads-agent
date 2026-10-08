@@ -97,6 +97,16 @@ Veio de um problema real: o bot gerava conversa fora de contexto com o lead. Sep
 - ⚠️ **Não mexer na conta do revisor do Meta** (`revisor.meta@adsgenius.net`): o App Review em andamento usa ela.
 - App Meta: **AdGenius** `976210158289852`. Só `ads_read` aprovada; `ads_management`, `pages_show_list` e `pages_read_engagement` foram recusadas em 12/09 (o vídeo não mostrou criação ao vivo).
 
+## Uso de modelo (pedido do Luiz, 08/10/2026)
+
+A cota semanal é finita e uma sessão longa no Opus esgotou-a em 4 dias. Regra:
+
+- **Sonnet** é o padrão para o que é mecânico ou bem especificado: gravar nota no cofre, ajuste de texto/tela, changelog, conferência de deploy, rodar testes, PR pequeno com o que fazer já claro.
+- **Opus** só quando a tarefa exige julgamento: investigar causa de defeito, mexer em conversão/cobrança/migration, revisar diff arriscado, decisão de arquitetura.
+- Uma sessão Opus que chega a uma parte mecânica **delega** ao Sonnet (subagente com `model: "sonnet"` ou sessão no Mac com `model: "claude-sonnet-5-5"`) em vez de fazer ela mesma.
+- Ao sugerir a próxima sessão ao Luiz, diga qual modelo escolher.
+- **Uma sessão por assunto.** Sessão longa reenvia o histórico inteiro a cada mensagem — é o que mais gasta.
+
 ## Convenções
 
 - **Branch + PR**, nunca commit direto. Branch de trabalho atual do bot: `feat/bot-roteiro-fixo` (já merjada).
