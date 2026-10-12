@@ -319,6 +319,22 @@ describe('handoffEm — o marco que o lembrete usa', () => {
     expect(depois?.state).toBe('handoff');
     expect(depois?.handoffEm).not.toBeNull();
   });
+
+  it('⭐ o aviso que o vendedor recebe no handoff ensina a responder', async () => {
+    mockNextReply.mockResolvedValue({
+      reply: 'Vou te passar para o consultor!', state: 'handoff', done: true,
+      label: 'QUENTE', summary: 'Tipo: Empresa (CNPJ)',
+    });
+    await prisma.whatsappConversation.create({
+      data: { userId, businessId: 'default', leadPhone: '559291111010', state: 'qualifying', label: null },
+    });
+    await new WhatsappService(userId).handleInbound({ from: '559291111010', text: 'quero contratar', transport: 'log' });
+    const aviso = enviadas.find((e) => e.to === VENDEDOR);
+    expect(aviso?.text).toContain('Contato: 559291111010');
+    expect(aviso?.text.endsWith(
+      '👉 Quando tiver o resultado, responda ESTE aviso: fechou 1200 · perdeu preço · em negociação',
+    )).toBe(true);
+  });
 });
 
 describe('lembrete de retorno (dias 2, 5 e 10)', () => {

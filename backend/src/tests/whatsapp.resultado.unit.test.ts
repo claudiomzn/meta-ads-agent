@@ -13,6 +13,8 @@ import {
   interpretarRespostaDoVendedor,
   janelaDeAtendimento,
   JANELA_PADRAO,
+  LINHA_COMO_RESPONDER,
+  montarAvisoAoVendedor,
   lembreteDevido,
   lerValorEmCentavos,
   reais,
@@ -256,5 +258,39 @@ describe('a venda que sai daqui é a MESMA da tela de Vendas', () => {
     // 2026-10-13T02:00:00Z é ainda dia 12 em Manaus (22h).
     expect(hojeEmManaus(new Date('2026-10-13T02:00:00Z'))).toBe('2026-10-12');
     expect(hojeEmManaus(new Date('2026-10-13T13:00:00Z'))).toBe('2026-10-13');
+  });
+});
+
+describe('aviso ao vendedor ensina a responder (12/10/2026)', () => {
+  it('⭐ termina com a linha de como responder', () => {
+    const aviso = montarAvisoAoVendedor('559291111001', 'Tipo: Empresa (CNPJ)\nPessoas: 3');
+    expect(aviso).toBe(
+      '🔔 Novo lead qualificado!\nContato: 559291111001\nTipo: Empresa (CNPJ)\nPessoas: 3\n\n'
+      + '👉 Quando tiver o resultado, responda ESTE aviso: fechou 1200 · perdeu preço · em negociação',
+    );
+  });
+
+  it('⭐ os três exemplos da linha são exatamente o que o bot entende de volta', () => {
+    expect(interpretarRespostaDoVendedor('fechou 1200')).toMatchObject({ resultado: 'venda', valorCents: 120000 });
+    expect(interpretarRespostaDoVendedor('perdeu preço')).toMatchObject({ resultado: 'perdido', motivo: 'preco' });
+    expect(interpretarRespostaDoVendedor('em negociação')).toMatchObject({ resultado: 'negociando' });
+    expect(LINHA_COMO_RESPONDER).toContain('fechou 1200 · perdeu preço · em negociação');
+  });
+
+  it('⭐ citar o aviso NOVO ainda acha o lead (o "1200" do exemplo não vira telefone)', () => {
+    const aviso = montarAvisoAoVendedor('559291111002', 'Tipo: Empresa (CNPJ)');
+    expect(telefoneDoAvisoCitado(aviso)).toBe('559291111002');
+  });
+
+  it('no ensaio, o aviso vem marcado como TESTE e com a mesma linha', () => {
+    const aviso = montarAvisoAoVendedor('teste:559291111001', 'Resumo', true);
+    expect(aviso.startsWith('🧪 TESTE')).toBe(true);
+    expect(aviso.endsWith(LINHA_COMO_RESPONDER)).toBe(true);
+  });
+
+  it('resumo vazio não deixa linha em branco solta no meio', () => {
+    expect(montarAvisoAoVendedor('559291111001', '  ')).toBe(
+      `🔔 Novo lead qualificado!\nContato: 559291111001\n\n${LINHA_COMO_RESPONDER}`,
+    );
   });
 });

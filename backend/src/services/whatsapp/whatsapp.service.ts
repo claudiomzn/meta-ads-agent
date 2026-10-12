@@ -37,6 +37,7 @@ import {
   type DadosDoRoteiro,
 } from './script.service.js';
 import { ehOVendedor, tratarRespostaDoVendedor } from './resultado.service.js';
+import { montarAvisoAoVendedor } from './resultado.js';
 import { CapiService } from '../capi.service.js';
 import { sendMail } from '../email.service.js';
 import { asaasConfigured, ensureAsaasCustomer, createOverageCharge as createRechargeCharge } from '../asaas.service.js';
@@ -1003,7 +1004,9 @@ ou esperar a virada do dia, quando as conversas grátis renovam sozinhas.</p>
     transport: ReturnType<typeof resolveTransport>,
     ensaio = false,
   ): Promise<string> {
-    const text = `${ensaio ? '🧪 TESTE — este aviso NÃO foi enviado ao vendedor.\n' : ''}🔔 Novo lead qualificado!\nContato: ${lead}\n${summary}`;
+    // Texto em resultado.ts: a linha "Contato:" é o que a resposta citada do
+    // vendedor usa para achar o lead, então o formato mora junto de quem o lê.
+    const text = montarAvisoAoVendedor(lead, summary, ensaio);
     await transport.sendText(contact, text).catch((e) =>
       console.error('[whatsapp] falha ao notificar vendedor:', e),
     );

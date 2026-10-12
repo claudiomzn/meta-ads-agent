@@ -370,3 +370,25 @@ export function comoChamarOLead(lead: { nome?: string | null; leadPhone: string 
 export function reais(cents: number): string {
   return (cents / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+
+// ── O aviso que o vendedor recebe ───────────────────────────────────────────
+
+/**
+ * Última linha do aviso de lead (12/10/2026): ensina o vendedor a responder.
+ *
+ * Sem ela o registro pelo WhatsApp existia e ninguém usava — o aviso parecia
+ * só um aviso. "Responda ESTE aviso" é de propósito: a citação carrega a
+ * linha "Contato:", e é ela que diz sem dúvida a qual lead a resposta se
+ * refere (ver escolherLead), mesmo com vários leads abertos ao mesmo tempo.
+ * Os exemplos são exatamente as três formas que interpretarRespostaDoVendedor
+ * entende.
+ */
+export const LINHA_COMO_RESPONDER =
+  '👉 Quando tiver o resultado, responda ESTE aviso: fechou 1200 · perdeu preço · em negociação';
+
+/** PURA. Texto do aviso de lead qualificado enviado ao vendedor. */
+export function montarAvisoAoVendedor(lead: string, resumo: string, ensaio = false): string {
+  const teste = ensaio ? '🧪 TESTE — este aviso NÃO foi enviado ao vendedor.\n' : '';
+  const corpo = resumo.trim() ? `\n${resumo.trim()}` : '';
+  return `${teste}🔔 Novo lead qualificado!\nContato: ${lead}${corpo}\n\n${LINHA_COMO_RESPONDER}`;
+}
