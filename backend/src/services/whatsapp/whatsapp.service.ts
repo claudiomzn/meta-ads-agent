@@ -3,6 +3,7 @@
 // envia pelo transporte → dispara conversão (1ª msg) → handoff se qualificado.
 
 import prisma from '../../lib/prisma.js';
+import { cliqueDaConversa } from './clique.js';
 import { lookupContact } from './contacts.js';
 import { instanceName } from './evolution.manager.js';
 import { LogTransport, PREFIXO_ENSAIO, resolveTransport, type InboundMessage } from './transport.js';
@@ -35,6 +36,7 @@ import {
   type PassoDoRoteiro,
   type DadosDoRoteiro,
 } from './script.service.js';
+import { ehOVendedor, tratarRespostaDoVendedor } from './resultado.service.js';
 import { CapiService } from '../capi.service.js';
 import { sendMail } from '../email.service.js';
 import { asaasConfigured, ensureAsaasCustomer, createOverageCharge as createRechargeCharge } from '../asaas.service.js';
@@ -143,6 +145,8 @@ export function podeAbrirConversa(
   const temGatilho = parseTriggerKeywords(triggerField ?? '').length > 0;
   return temGatilho ? matchesAnyTrigger(triggerField, msg.text) : Boolean(msg.simulado);
 }
+
+export { cliqueDaConversa };
 
 /** Conversa sem nenhuma mensagem por este tempo é encerrada em silêncio. */
 export const CONVERSA_EXPIRA_MS = 48 * 60 * 60 * 1000;
@@ -331,6 +335,19 @@ export class WhatsappService {
     const config = await this.getConfig();
     if (!config || !config.enabled) return null;
 
+    // ── O VENDEDOR respondendo o aviso de um lead (12/10/2026) ──────────────
+    // ANTES de carregar/criar conversa, de propósito: o número do vendedor não
+    // é lead. Até aqui a mensagem dele caía em podeAbrirConversa e era
+    // ignorada em silêncio; se virasse conversa, ele entraria no funil, na
+    // franquia diária e receberia o roteiro de qualificação.
+    //
+    // Este caminho NUNCA fala com o lead — só com o número cadastrado como
+    // vendedor, e só quando a mensagem é um desfecho ("fechou 1200",
+    // "perdeu preço"). Qualquer outra coisa que ele escreva: silêncio.
+    if (ehOVendedor(config.handoffContact, msg.from)) {
+      return await tratarRespostaDoVendedor(this.userId, this.businessId, config, msg);
+    }
+
     // Carrega ou cria a conversa deste lead. Escopada por (userId, businessId,
     // leadPhone): o mesmo número pode falar com dois negócios da mesma conta,
     // e cada um vê uma conversa independente.
@@ -369,7 +386,15 @@ export class WhatsappService {
       // e o referral do anúncio. Nunca sobrescrita depois.
       const origem = resolverOrigem(msg.text, msg.anuncio ?? null);
       conv = await prisma.whatsappConversation.create({
-        data: { userId: this.userId, businessId: this.businessId, leadPhone: msg.from, state: 'greeting', billable, ...origem },
+        data: {
+          userId: this.userId, businessId: this.businessId, leadPhone: msg.from,
+          state: 'greeting', billable,
+          // Nome que o WhatsApp mostra: é por ele que o vendedor reconhece o
+          // lead no aviso e no lembrete, e é como ele responde ("fechou 1200
+          // João").
+          leadNome: msg.nomeDoContato ?? null,
+          ...origem,
+        },
       });
       // Anúncio CTWA: a campanha sai da Meta, em segundo plano — o lead não
       // espera a Graph API para receber a resposta do bot.
@@ -557,6 +582,10 @@ export class WhatsappService {
       data: {
         state: result.state,
         label: result.label ?? conv.label,
+        // Marco do handoff: base do relógio dos lembretes ao vendedor. Só na
+        // TRANSIÇÃO — `updatedAt` não serve (se move a cada escrita, inclusive
+        // a do próprio lembrete).
+        ...(result.state === 'handoff' && conv.state !== 'handoff' ? { handoffEm: new Date() } : {}),
         questionsAsked: conv.questionsAsked + (result.state === 'qualifying' ? 1 : 0),
         botMessages: conv.botMessages + 1,
         history: history as unknown as object,
@@ -646,6 +675,9 @@ export class WhatsappService {
       data: {
         state: terminou ? 'handoff' : (passoAtual === 0 ? 'greeting' : 'qualifying'),
         label: rotulo,
+        // Ver o comentário no fluxo generativo: marco do handoff, só na
+        // transição, para o lembrete contar os dias 2/5/10 de um ponto fixo.
+        ...(terminou ? { handoffEm: new Date() } : {}),
         scriptStep: passoAtual,
         scriptRetried: repetiu,
         scriptData: dados as unknown as object,
@@ -986,22 +1018,6 @@ ou esperar a virada do dia, quando as conversas grátis renovam sozinhas.</p>
   }
 }
 
-/**
- * gclid/gbraid/wbraid do clique que o site registrou para esta conversa.
- * Vazio quando a conversa não veio do site com código de clique (ou o
- * registro não chegou): aí a conversão sobe só pelo telefone, como antes.
- */
-export async function cliqueDaConversa(convId: string): Promise<{ gclid?: string; gbraid?: string; wbraid?: string }> {
-  const conv = await prisma.whatsappConversation.findUnique({ where: { id: convId }, select: { origemClique: true } });
-  if (!conv?.origemClique) return {};
-  const c = await prisma.cliqueDoSite.findUnique({ where: { codigo: conv.origemClique } });
-  if (!c) return {};
-  return {
-    ...(c.gclid ? { gclid: c.gclid } : {}),
-    ...(c.gbraid ? { gbraid: c.gbraid } : {}),
-    ...(c.wbraid ? { wbraid: c.wbraid } : {}),
-  };
-}
 
 // Credita o saldo pré-pago quando o Asaas confirma que uma recarga foi paga
 // (chamado pelo webhook — ver whatsapp.routes.ts). Idempotente: cobrança que
