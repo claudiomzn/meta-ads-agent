@@ -2,10 +2,14 @@
 // a venda da TELA de Vendas já ia: a tabela `closed_sales` no Supabase, a
 // conversão "Venda — AdsGenius" no Google e o evento Purchase na Meta.
 //
-// ⭐ Mesma tabela e mesmo event_id da tela (`venda_<saleId>`), de propósito: a
-// venda registrada pelo vendedor tem de contar UMA vez só, mesmo que depois o
-// Luiz registre a mesma venda na tela — e o agente mede lucro lendo
-// `closed_sales`, não um lugar novo que só este fluxo conhece.
+// Mesma tabela e mesmo formato de event_id da tela (`venda_<saleId>`): o
+// agente mede lucro lendo `closed_sales`, não um lugar novo que só este fluxo
+// conhece, e reenviar ESTA venda nunca conta duas vezes.
+//
+// ⚠️ O que isto NÃO evita: a mesma venda registrada aqui E depois digitada de
+// novo na tela vira duas linhas (ids diferentes, dois eventos). Não há chave
+// comum entre as duas portas. Por isso o aviso de novidades diz ao cliente que
+// a venda informada pelo WhatsApp já entra na tela, sem registrar de novo.
 //
 // Nada aqui é fatal: falha de rede não pode derrubar o atendimento. Quem
 // chama recebe o que subiu e o que não, e CONTA AO VENDEDOR — a regra do
@@ -17,6 +21,8 @@ import { idDoEventoDaVenda } from './venda.id.js';
 
 export interface VendaParaRegistrar {
   userId: string;
+  /** Conversa do lead — dá o event_id da Meta quando não há linha na tela. */
+  convId: string;
   /** Telefone do lead (comprador). */
   telefone: string;
   valorCents: number;
@@ -26,14 +32,26 @@ export interface VendaParaRegistrar {
   campanhaGoogleId?: string | null;
   /** gclid/gbraid/wbraid do clique do site, quando houver. */
   clique?: { gclid?: string; gbraid?: string; wbraid?: string };
+  /** Click id do anúncio CTWA da Meta, quando o lead veio de um. */
+  ctwaClid?: string | null;
 }
 
+export type SituacaoNaPlataforma = 'enviada' | 'falhou' | 'nao_conectada';
+
 export interface ResultadoDoRegistro {
-  /** Id da linha em `closed_sales`. null = não foi possível gravar lá. */
+  /**
+   * A venda na TELA de Vendas (`closed_sales`):
+   *   • 'gravada'   — está lá;
+   *   • 'sem_conta' — não há onde gravar (sem conta Google conectada, sem SSO):
+   *                   não adianta tentar de novo;
+   *   • 'falhou'    — falha passageira (rede, recusa do banco): o chamador
+   *                   destrava o lead para o vendedor mandar de novo.
+   */
+  tela: 'gravada' | 'sem_conta' | 'falhou';
   saleId: string | null;
-  google: 'enviada' | 'falhou' | 'nao_tentada';
-  meta: 'enviada' | 'falhou' | 'nao_tentada';
-  /** Motivo curto para o log/aviso — nunca o erro cru. */
+  google: SituacaoNaPlataforma;
+  meta: SituacaoNaPlataforma;
+  /** Motivo curto para o aviso — nunca o erro cru. */
   detalhe?: string;
 }
 
@@ -42,6 +60,10 @@ export interface ResultadoDoRegistro {
 export function hojeEmManaus(agora = new Date()): string {
   return new Date(agora.getTime() - 4 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
+
+/** event_id da Meta quando a venda NÃO tem linha na tela (cliente só-Meta).
+ *  Estável por conversa: o lead só vende uma vez, e reenvio não duplica. */
+export const idDoEventoSemTela = (convId: string) => `venda_conv_${convId}`;
 
 function supabaseConfig(): { base: string; key: string } | null {
   const base = process.env.SUPABASE_URL;
@@ -58,50 +80,60 @@ function headers(key: string): Record<string, string> {
  * Conta do Google Ads do cliente, lida da conexão dele.
  *
  * ⚠️ Sem fallback para GOOGLE_ADS_CUSTOMER_ID: esse padrão já fez campanha de
- * cliente nascer dentro da conta do fundador. Sem conta resolvida, a venda
- * fica registrada só aqui e o vendedor é avisado.
+ * cliente nascer dentro da conta do fundador.
  */
 async function contaDoCliente(base: string, key: string, supabaseUserId: string): Promise<string | null> {
   const url = `${base}/rest/v1/google_ads_connections?user_id=eq.${encodeURIComponent(supabaseUserId)}&select=active_customer_id&limit=1`;
   const resp = await fetch(url, { headers: headers(key) });
-  if (!resp.ok) return null;
+  if (!resp.ok) throw new Error(`conexão Google ilegível (HTTP ${resp.status})`);
   const linhas = (await resp.json().catch(() => [])) as Array<{ active_customer_id?: string | null }>;
   return linhas[0]?.active_customer_id ?? null;
+}
+
+/** Onde a venda pode morar na tela: a conta do cliente, ou o porquê de não haver. */
+async function destinoNaTela(
+  userId: string,
+): Promise<{ cfg: { base: string; key: string }; supabaseUserId: string; customerId: string } | { semConta: string }> {
+  const cfg = supabaseConfig();
+  if (!cfg) return { semConta: 'AdsGenius não configurado neste servidor' };
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { supabaseUserId: true } });
+  if (!user?.supabaseUserId) return { semConta: 'conta sem login unificado do AdsGenius' };
+  const customerId = await contaDoCliente(cfg.base, cfg.key, user.supabaseUserId);
+  if (!customerId) return { semConta: 'nenhuma conta Google Ads conectada' };
+  return { cfg, supabaseUserId: user.supabaseUserId, customerId };
 }
 
 /**
  * Grava a venda em `closed_sales` e sobe a conversão às duas plataformas.
  *
  * A ordem importa: sem a linha em `closed_sales` não existe `saleId`, e sem
- * `saleId` não há como deduplicar o evento nas plataformas — então nada sobe.
- * Venda registrada só aqui é melhor que venda contada duas vezes lá.
+ * `saleId` o Google não tem como deduplicar — então o Google só recebe venda
+ * gravada. A Meta é diferente: cliente que só anuncia na Meta (o público do
+ * clique-para-WhatsApp) não tem conta Google e por isso não tem linha na tela,
+ * mas a venda dele tem de chegar à Meta — com um id estável da conversa.
  */
 export async function registrarVendaNasPlataformas(v: VendaParaRegistrar): Promise<ResultadoDoRegistro> {
-  const cfg = supabaseConfig();
-  if (!cfg) {
-    return { saleId: null, google: 'nao_tentada', meta: 'nao_tentada', detalhe: 'Supabase não configurado' };
+  let destino: Awaited<ReturnType<typeof destinoNaTela>>;
+  try {
+    destino = await destinoNaTela(v.userId);
+  } catch (e) {
+    console.error('[venda:vendedor] falha ao ler a conexão do cliente:', e instanceof Error ? e.message : 'erro');
+    return { tela: 'falhou', saleId: null, google: 'falhou', meta: 'falhou', detalhe: 'o AdsGenius não respondeu' };
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: v.userId }, select: { supabaseUserId: true },
-  });
-  if (!user?.supabaseUserId) {
-    return { saleId: null, google: 'nao_tentada', meta: 'nao_tentada', detalhe: 'conta sem SSO do AdsGenius' };
-  }
-
-  const customerId = await contaDoCliente(cfg.base, cfg.key, user.supabaseUserId);
-  if (!customerId) {
-    return { saleId: null, google: 'nao_tentada', meta: 'nao_tentada', detalhe: 'nenhuma conta Google Ads conectada' };
+  if ('semConta' in destino) {
+    const meta = await enviarAMeta(v, idDoEventoSemTela(v.convId));
+    return { tela: 'sem_conta', saleId: null, google: 'nao_conectada', meta, detalhe: destino.semConta };
   }
 
   let saleId: string | null = null;
   try {
-    const resp = await fetch(`${cfg.base}/rest/v1/closed_sales`, {
+    const resp = await fetch(`${destino.cfg.base}/rest/v1/closed_sales`, {
       method: 'POST',
-      headers: { ...headers(cfg.key), Prefer: 'return=representation' },
+      headers: { ...headers(destino.cfg.key), Prefer: 'return=representation' },
       body: JSON.stringify({
-        user_id: user.supabaseUserId,
-        customer_id: customerId,
+        user_id: destino.supabaseUserId,
+        customer_id: destino.customerId,
         // Só campanha do GOOGLE entra aqui: closed_sales.campaign_id é lido
         // pela medição de lucro por campanha do Google. Id de campanha da
         // Meta neste campo viraria receita atribuída a uma campanha que não
@@ -112,25 +144,26 @@ export async function registrarVendaNasPlataformas(v: VendaParaRegistrar): Promi
         closed_at: hojeEmManaus(),
       }),
     });
-    if (!resp.ok) {
+    if (resp.ok) {
+      const linhas = (await resp.json().catch(() => [])) as Array<{ id?: string }>;
+      saleId = linhas[0]?.id ?? null;
+    } else {
       console.error(`[venda:vendedor] closed_sales recusou a venda (HTTP ${resp.status})`);
-      return { saleId: null, google: 'nao_tentada', meta: 'nao_tentada', detalhe: 'o AdsGenius recusou a gravação' };
     }
-    const linhas = (await resp.json().catch(() => [])) as Array<{ id?: string }>;
-    saleId = linhas[0]?.id ?? null;
   } catch (e) {
     console.error('[venda:vendedor] falha ao gravar em closed_sales:', e instanceof Error ? e.message : 'erro');
-    return { saleId: null, google: 'nao_tentada', meta: 'nao_tentada', detalhe: 'o AdsGenius não respondeu' };
   }
   if (!saleId) {
-    return { saleId: null, google: 'nao_tentada', meta: 'nao_tentada', detalhe: 'o AdsGenius não devolveu o id da venda' };
+    // Nada subiu: com a linha ausente, a venda tem de poder ser mandada de
+    // novo — quem chama destrava o lead e pede ao vendedor para repetir.
+    return { tela: 'falhou', saleId: null, google: 'falhou', meta: 'falhou', detalhe: 'o AdsGenius não gravou a venda' };
   }
 
   const [google, meta] = await Promise.all([
-    enviarAoGoogle(cfg.base, cfg.key, user.supabaseUserId, saleId, v),
-    enviarAMeta(v, saleId),
+    enviarAoGoogle(destino.cfg.base, destino.cfg.key, destino.supabaseUserId, saleId, v),
+    enviarAMeta(v, idDoEventoDaVenda(saleId)),
   ]);
-  return { saleId, google, meta };
+  return { tela: 'gravada', saleId, google, meta };
 }
 
 async function enviarAoGoogle(
@@ -158,19 +191,23 @@ async function enviarAoGoogle(
   }
 }
 
-async function enviarAMeta(v: VendaParaRegistrar, saleId: string): Promise<'enviada' | 'falhou'> {
+async function enviarAMeta(v: VendaParaRegistrar, eventId: string): Promise<SituacaoNaPlataforma> {
   try {
-    const capi = new CapiService(v.userId);
-    const res = await capi.sendPurchase({
+    // Cliente que não usa Meta não é "falha" — é "não conectada", como na
+    // tela. Senão todo cliente só-Google receberia aviso de erro a cada venda.
+    const conectada = await prisma.mCPConnection.findUnique({ where: { userId: v.userId }, select: { id: true } });
+    if (!conectada) return 'nao_conectada';
+    const res = await new CapiService(v.userId).sendPurchase({
       phone: v.telefone,
-      eventId: idDoEventoDaVenda(saleId),
+      eventId,
       value: v.valorCents / 100,
+      ctwaClid: v.ctwaClid ?? null,
     });
     if (res.ok) {
-      console.log(`[venda:vendedor] venda ${saleId} enviada à Meta`);
+      console.log(`[venda:vendedor] venda ${eventId} enviada à Meta${v.ctwaClid ? ' com o clique do anúncio' : ''}`);
       return 'enviada';
     }
-    console.warn(`[venda:vendedor] Meta recusou a venda ${saleId}: ${res.error}`);
+    console.warn(`[venda:vendedor] Meta recusou a venda ${eventId}: ${res.error}`);
     return 'falhou';
   } catch (e) {
     console.error('[venda:vendedor] erro ao enviar a venda à Meta:', e instanceof Error ? e.message : 'erro');

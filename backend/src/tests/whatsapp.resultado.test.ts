@@ -10,12 +10,12 @@ import { PrismaClient } from '@prisma/client';
 // CAPI: CLASSE de verdade, não `vi.fn().mockImplementation` — mock acessado
 // com `new` que não é construtível deixa o TypeError ser engolido pelo
 // try/catch da produção e o teste passa sempre (ver CLAUDE.md).
-const purchases: Array<{ phone: string; eventId: string; value: number }> = [];
+const purchases: Array<{ phone: string; eventId: string; value: number; ctwaClid?: string | null }> = [];
 vi.mock('../services/capi.service.js', () => ({
   CapiService: class {
     constructor(public userId: string) {}
     async sendLead() { return { ok: true }; }
-    async sendPurchase(input: { phone: string; eventId: string; value: number }) {
+    async sendPurchase(input: { phone: string; eventId: string; value: number; ctwaClid?: string | null }) {
       purchases.push(input);
       return { ok: true };
     }
@@ -67,6 +67,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await prisma.mCPConnection.deleteMany({ where: { userId } });
   await prisma.whatsappConversation.deleteMany({ where: { userId } });
   await prisma.vendedorPendencia.deleteMany({ where: { userId } });
   await prisma.whatsappConfig.deleteMany({ where: { userId } });
@@ -79,6 +80,11 @@ beforeEach(async () => {
   purchases.length = 0;
   await prisma.whatsappConversation.deleteMany({ where: { userId } });
   await prisma.vendedorPendencia.deleteMany({ where: { userId } });
+  await prisma.mCPConnection.upsert({
+    where: { userId },
+    create: { userId, metaAccessToken: 'x', adAccountIds: '[]', connected: true },
+    update: {},
+  });
   // Supabase + edge function: conexão do Google, insert em closed_sales e o
   // upload da venda. Nenhuma rede de verdade.
   fetchMock = vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
@@ -104,6 +110,7 @@ function respostaJson(body: unknown) {
 async function leadEmAberto(opts: {
   phone?: string; nome?: string | null; label?: string; handoffDiasAtras?: number;
   origemCanal?: string | null; origemCampanhaId?: string | null; resumo?: string | null;
+  ctwaClid?: string | null;
 } = {}) {
   const dias = opts.handoffDiasAtras ?? 0;
   return prisma.whatsappConversation.create({
@@ -116,6 +123,7 @@ async function leadEmAberto(opts: {
       handoffEm: new Date(Date.now() - dias * 24 * 3600 * 1000),
       origemCanal: opts.origemCanal ?? 'google',
       origemCampanhaId: opts.origemCampanhaId ?? '21345678901',
+      ctwaClid: opts.ctwaClid ?? null,
     },
   });
 }
@@ -151,7 +159,7 @@ describe('"fechou <valor>" registra a venda', () => {
       sale_id: 'venda-uuid-1',
       phone: '559291111001',
     });
-    expect(purchases).toEqual([{ phone: '559291111001', eventId: 'venda_venda-uuid-1', value: 1200 }]);
+    expect(purchases).toEqual([{ phone: '559291111001', eventId: 'venda_venda-uuid-1', value: 1200, ctwaClid: null }]);
 
     const depois = await prisma.whatsappConversation.findUnique({ where: { id: conv.id } });
     expect(depois).toMatchObject({ resultado: 'venda', vendaValorCents: 120000, vendaSaleId: 'venda-uuid-1' });
@@ -195,28 +203,62 @@ describe('"fechou <valor>" registra a venda', () => {
     expect(fetchMock.mock.calls.filter((c) => String(c[0]).includes('closed_sales'))).toHaveLength(0);
   });
 
-  it('⭐ falha ao gravar no AdsGenius NÃO vira "sucesso": o vendedor é avisado', async () => {
-    fetchMock.mockImplementation(async (url: string) => {
+  it('⭐ falha ao gravar no AdsGenius: NÃO diz "registrada", DESTRAVA o lead e a repetição grava', async () => {
+    const falha = vi.fn(async (url: string) => {
       const u = String(url);
       if (u.includes('google_ads_connections')) return respostaJson([{ active_customer_id: '4131358962' }]);
       if (u.includes('closed_sales')) return { ok: false, status: 500, json: async () => ({}), text: async () => '' } as unknown as Response;
       throw new Error('não deveria enviar conversão sem a venda gravada');
     });
-    await leadEmAberto();
+    vi.stubGlobal('fetch', falha);
+    const conv = await leadEmAberto();
     const r = await doVendedor('fechou 1200', AVISO_DO_JOAO);
-    expect(r?.reply).toContain('⚠️');
-    expect(r?.reply).toContain('A venda está registrada no app');
+    expect(r?.reply).toContain('Não consegui registrar a venda de João Silva agora');
+    expect(r?.reply).toContain('Mande de novo');
+    expect(r?.reply).not.toContain('registrada');
     expect(purchases).toHaveLength(0);
+    expect((await prisma.whatsappConversation.findUnique({ where: { id: conv.id } }))?.resultado).toBeNull();
+
+    // O AdsGenius volta: a mesma mensagem agora grava (antes: "já estava registrada").
+    vi.stubGlobal('fetch', fetchMock);
+    const r2 = await doVendedor('fechou 1200', AVISO_DO_JOAO);
+    expect(r2?.reply).toBe('✅ Venda de R$ 1.200,00 registrada para João Silva');
   });
 
-  it('⭐ sem conta Google conectada, não cai na conta da casa: avisa e registra só aqui', async () => {
+  it('⭐ sem conta Google: não cai na conta da casa, diz que NÃO entrou na tela — e a Meta recebe mesmo assim', async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (String(url).includes('google_ads_connections')) return respostaJson([]);
       throw new Error('não deveria gravar venda sem conta resolvida');
     });
+    const conv = await leadEmAberto({ ctwaClid: 'ctwa-123' });
+    const r = await doVendedor('fechou 1200', AVISO_DO_JOAO);
+    expect(r?.reply).toBe(
+      '✅ Venda de R$ 1.200,00 registrada para João Silva\n'
+      + '⚠️ Ficou anotada só aqui no robô — não entrou na tela Vendas (nenhuma conta Google Ads conectada). Enviada à Meta.',
+    );
+    // Cliente só-Meta (o público do clique-para-WhatsApp): o Purchase sai com
+    // id estável da conversa e com o clique do anúncio.
+    expect(purchases).toEqual([{ phone: '559291111001', eventId: `venda_conv_${conv.id}`, value: 1200, ctwaClid: 'ctwa-123' }]);
+  });
+
+  it('⭐ cliente sem Meta conectada: a Meta não aparece como falha a cada venda', async () => {
+    await prisma.mCPConnection.deleteMany({ where: { userId } });
     await leadEmAberto();
     const r = await doVendedor('fechou 1200', AVISO_DO_JOAO);
-    expect(r?.reply).toContain('nenhuma conta Google Ads conectada');
+    expect(r?.reply).toBe('✅ Venda de R$ 1.200,00 registrada para João Silva');
+    expect(purchases).toHaveLength(0);
+  });
+
+  it('⭐ venda de lead do anúncio CTWA sobe à Meta com o clique', async () => {
+    await leadEmAberto({ ctwaClid: 'ctwa-999' });
+    await doVendedor('fechou 1200', AVISO_DO_JOAO);
+    expect(purchases[0]).toMatchObject({ eventId: 'venda_venda-uuid-1', ctwaClid: 'ctwa-999' });
+  });
+
+  it('⭐ "fechou 2 vidas por 1200" grava R$ 1.200, não R$ 2', async () => {
+    await leadEmAberto();
+    const r = await doVendedor('fechou 2 vidas por 1200', AVISO_DO_JOAO);
+    expect(r?.reply).toBe('✅ Venda de R$ 1.200,00 registrada para João Silva');
   });
 });
 
@@ -264,6 +306,44 @@ describe('a qual lead, e quem pode falar', () => {
     const r2 = await doVendedor('2');
     expect(r2?.reply).toBe('✅ Venda de R$ 1.200,00 registrada para João Silva');
     expect(corpoDoFetch('/rest/v1/closed_sales')).toMatchObject({ client_name: 'João Silva' });
+  });
+
+  it('⭐ citar o aviso de um lead JÁ vendido não grava a venda no único lead aberto', async () => {
+    const joao = await leadEmAberto({ phone: '559291111001', nome: 'João Silva' });
+    await prisma.whatsappConversation.update({
+      where: { id: joao.id },
+      data: { resultado: 'venda', resultadoEm: new Date(), vendaValorCents: 120000 },
+    });
+    const maria = await leadEmAberto({ phone: '559291111002', nome: 'Maria Souza' });
+    const r = await doVendedor('fechou 1200', AVISO_DO_JOAO);
+    expect(r?.reply).toBe('Essa venda de R$ 1.200,00 de João Silva já estava registrada — não registrei de novo. 👍');
+    expect((await prisma.whatsappConversation.findUnique({ where: { id: maria.id } }))?.resultado).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('⭐ nome que NÃO é do único lead aberto: pergunta, não grava nele', async () => {
+    const maria = await leadEmAberto({ phone: '559291111002', nome: 'Maria Souza' });
+    const r = await doVendedor('fechou 1200 Pedro');
+    expect(r?.reply).toContain('Qual destes leads?');
+    expect((await prisma.whatsappConversation.findUnique({ where: { id: maria.id } }))?.resultado).toBeNull();
+  });
+
+  it('⭐ esperando o valor do João, citar o aviso da MARIA registra na Maria', async () => {
+    const joao = await leadEmAberto({ phone: '559291111001', nome: 'João Silva' });
+    const maria = await leadEmAberto({ phone: '559291111002', nome: 'Maria Souza' });
+    expect((await doVendedor('fechou', AVISO_DO_JOAO))?.reply).toContain('Por quanto?');
+    const r = await doVendedor('fechou 1500', '🔔 Novo lead qualificado!\nContato: 559291111002');
+    expect(r?.reply).toBe('✅ Venda de R$ 1.500,00 registrada para Maria Souza');
+    expect((await prisma.whatsappConversation.findUnique({ where: { id: maria.id } }))?.resultado).toBe('venda');
+    expect((await prisma.whatsappConversation.findUnique({ where: { id: joao.id } }))?.resultado).toBeNull();
+  });
+
+  it('⭐ responder citando o LEMBRETE identifica o lead (o lembrete traz o Contato)', async () => {
+    await leadEmAberto({ phone: '559291111001', nome: 'João Silva' });
+    await leadEmAberto({ phone: '559291111002', nome: 'Maria Souza' });
+    const lembrete = 'Lead Maria Souza (empresa, 3 vidas) segue em aberto. Fechou, perdeu ou em negociação?\nContato: 559291111002';
+    const r = await doVendedor('perdeu preço', lembrete);
+    expect(r?.reply).toBe('📕 Anotei: Maria Souza perdido (preço).');
   });
 
   it('⭐ nome na própria mensagem dispensa a pergunta', async () => {
@@ -358,7 +438,7 @@ describe('lembrete de retorno (dias 2, 5 e 10)', () => {
     expect(await enviarLembretesPendentes(dentroDoHorario)).toBe(1);
     expect(enviadas).toEqual([{
       to: VENDEDOR,
-      text: 'Lead João Silva (empresa, 3 vidas) segue em aberto. Fechou, perdeu ou em negociação?',
+      text: 'Lead João Silva (empresa, 3 vidas) segue em aberto. Fechou, perdeu ou em negociação?\nContato: 559291111001',
     }]);
     expect((await prisma.whatsappConversation.findUnique({ where: { id: conv.id } }))?.lembretesEnviados).toBe(1);
 
@@ -377,11 +457,42 @@ describe('lembrete de retorno (dias 2, 5 e 10)', () => {
     const conv = await leadComHandoffEm(diasAtras(5), { lembretesEnviados: 1 });
     expect(await enviarLembretesPendentes(dentroDoHorario)).toBe(1);
 
-    await prisma.whatsappConversation.update({ where: { id: conv.id }, data: { handoffEm: diasAtras(10) } });
-    expect(await enviarLembretesPendentes(dentroDoHorario)).toBe(1);
+    // Seis dias depois (dia 11 do handoff — o dia 10 cai num domingo, fora do
+    // horário), de novo dentro do horário: segunda, 9h em Manaus.
+    const dia10 = new Date(dentroDoHorario.getTime() + 6 * 24 * 3600 * 1000);
+    expect(await enviarLembretesPendentes(dia10)).toBe(1);
     expect((await prisma.whatsappConversation.findUnique({ where: { id: conv.id } }))?.lembretesEnviados).toBe(3);
 
-    expect(await enviarLembretesPendentes(dentroDoHorario)).toBe(0);
+    expect(await enviarLembretesPendentes(new Date(dia10.getTime() + 24 * 3600 * 1000))).toBe(0);
+  });
+
+  it('⭐ lembretes ATRASADOS não saem em fila: um só, já o mais adiantado', async () => {
+    // Bot ficou fora do ar: handoff há 11 dias e nenhum lembrete enviado.
+    const conv = await leadComHandoffEm(diasAtras(11));
+    expect(await enviarLembretesPendentes(dentroDoHorario)).toBe(1);
+    expect((await prisma.whatsappConversation.findUnique({ where: { id: conv.id } }))?.lembretesEnviados).toBe(3);
+    // Uma hora depois não sai mais nada (antes: o 2º e o 3º em horas seguidas).
+    expect(await enviarLembretesPendentes(new Date(dentroDoHorario.getTime() + 3600 * 1000))).toBe(0);
+    expect(enviadas).toHaveLength(1);
+  });
+
+  it('⭐ conversas que nunca saem não tomam o lugar das devidas (varredura paginada)', async () => {
+    // 500 leads devidos de um negócio com o bot DESLIGADO, criados antes...
+    await prisma.whatsappConfig.upsert({
+      where: { userId_businessId: { userId, businessId: 'desligado' } },
+      create: { userId, businessId: 'desligado', businessName: 'Off', product: 'x', enabled: false, handoffContact: VENDEDOR },
+      update: { enabled: false },
+    });
+    await prisma.whatsappConversation.createMany({
+      data: Array.from({ length: 500 }, (_, i) => ({
+        userId, businessId: 'desligado', leadPhone: `55929000${String(i).padStart(4, '0')}`,
+        state: 'handoff', label: 'QUENTE', handoffEm: diasAtras(3),
+      })),
+    });
+    // ...e um devido do negócio ligado, criado depois.
+    await leadComHandoffEm(diasAtras(3));
+    expect(await enviarLembretesPendentes(dentroDoHorario)).toBe(1);
+    await prisma.whatsappConfig.deleteMany({ where: { userId, businessId: 'desligado' } });
   });
 
   it('⭐ para quando há desfecho — e segue para quem está "em negociação"', async () => {

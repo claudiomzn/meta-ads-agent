@@ -40,11 +40,24 @@ export function normalizar(texto: string): string {
     .trim();
 }
 
-// As três portas. Ordem importa na leitura: "perdeu" e "em negociação" são
-// checados ANTES de "fechou" porque "nao fechou" é perda, não venda.
+// As três portas. Ordem de leitura (achada em revisão, 12/10/2026):
+//   1. negociação EXPLÍCITA ("ainda não fechou", "vai pensar") — senão o
+//      "nao fechou" de dentro dela marcava como perdido e calava o lembrete;
+//   2. perda — antes de venda, porque "não fechou" e "fechou com outro"
+//      contêm "fechou" e virariam VENDA, com valor e conversão subindo;
+//   3. negociação genérica;
+//   4. venda.
+const GATILHOS_NEGOCIACAO_PRIORITARIA = [
+  'ainda nao fechou', 'nao fechou ainda', 'ainda nao decidiu', 'ainda pensando',
+  'vai pensar', 'ta pensando', 'esta pensando',
+];
 const GATILHOS_PERDA = [
   'perdeu', 'perdi', 'perdido', 'perdemos',
   'nao fechou', 'nao fechei', 'nao vai fechar', 'nao quis', 'desistiu', 'recusou',
+  // "fechou com outro, 300 mais barato" era lido como VENDA de R$ 300.
+  'fechou com outr', 'fechou com a concorr', 'foi para outr', 'foi pra outr',
+  // "sem venda" casava com o gatilho "venda" e o bot perguntava o valor.
+  'sem venda', 'nao teve venda', 'nao vendeu', 'nao vendi',
 ];
 const GATILHOS_NEGOCIACAO = [
   'em negociacao', 'negociacao', 'negociando', 'negocia',
@@ -53,7 +66,9 @@ const GATILHOS_NEGOCIACAO = [
 const GATILHOS_VENDA = ['fechou', 'fechei', 'fechado', 'fechamos', 'vendi', 'venda', 'vendido'];
 
 /** Palavras do gatilho que NÃO são pista de lead — removidas antes de sobrar a pista. */
-const TODOS_OS_GATILHOS = [...GATILHOS_PERDA, ...GATILHOS_NEGOCIACAO, ...GATILHOS_VENDA];
+const TODOS_OS_GATILHOS = [
+  ...GATILHOS_NEGOCIACAO_PRIORITARIA, ...GATILHOS_PERDA, ...GATILHOS_NEGOCIACAO, ...GATILHOS_VENDA,
+];
 
 const MOTIVOS: Array<{ motivo: MotivoPerda; frases: string[] }> = [
   { motivo: 'ja_tem_plano', frases: ['ja tem plano', 'ja tem', 'ja possui', 'ja contratou', 'tem plano', 'ja fechou com outro', 'fechou com outro'] },
@@ -85,18 +100,16 @@ export const MOTIVO_LEGIVEL: Record<MotivoPerda, string> = {
 const VALOR_MAX_CENTS = 1_000_000_00;
 
 /**
- * PURA. Valor em centavos escrito como brasileiro escreve: `1200`,
- * `1.200,00`, `1200,50`, `R$ 1.200`, `1200.50`.
- *
- * null quando não há número utilizável — e aí o bot pergunta o valor em vez
- * de gravar venda sem valor (que não ensina nada ao lance e é recusada pelo
- * check de `closed_sales.amount_brl > 0`).
+ * Piso: abaixo disto não é valor de venda, é outro número da frase lido no
+ * lugar errado. Achado em revisão (12/10/2026): "fechou 2 vidas por 1200"
+ * gravava R$ 2,00 e subia isso como valor da compra ao Google e à Meta. Na
+ * dúvida o bot PERGUNTA o valor — pergunta custa uma mensagem, valor errado
+ * contamina a medição de lucro.
  */
-export function lerValorEmCentavos(texto: string): number | null {
-  const t = normalizar(texto).replace(/r\$/g, ' ');
-  // Primeiro grupo que começa com dígito e segue com dígitos, ponto ou vírgula.
-  const bruto = t.match(/\d[\d.,]*/)?.[0];
-  if (!bruto) return null;
+export const VALOR_MIN_CENTS = 10_00;
+
+/** Número escrito como brasileiro escreve ("1.200,50", "1200.5", "1,2") → float. */
+function numeroBrasileiro(bruto: string): number {
   const temPonto = bruto.includes('.');
   const temVirgula = bruto.includes(',');
   let normal = bruto;
@@ -115,10 +128,39 @@ export function lerValorEmCentavos(texto: string): number | null {
       ? bruto                            // "1200.50" — decimal
       : bruto.replace(/\./g, '');        // "1.200" / "1.200.000" — milhar
   }
-  const valor = Number(normal);
-  if (!Number.isFinite(valor) || valor <= 0) return null;
-  const cents = Math.round(valor * 100);
-  return cents > 0 && cents <= VALOR_MAX_CENTS ? cents : null;
+  return Number(normal);
+}
+
+/**
+ * Número seguido de uma destas palavras NÃO é o valor da venda — é quantas
+ * vidas, a idade, o prazo. "fechou 2 vidas por 1200" → o valor é o 1200.
+ */
+const NAO_E_VALOR = /^\s*(vidas?|pessoas?|benefici\w*|titular\w*|dependentes?|anos?|meses|mes|parcelas?|x\b)/;
+
+/**
+ * PURA. Valor em centavos escrito como brasileiro escreve: `1200`,
+ * `1.200,00`, `1200,50`, `R$ 1.200`, `1200.50`, `3 mil`, `1,2k`.
+ *
+ * null quando não há número utilizável — e aí o bot pergunta o valor em vez
+ * de gravar venda sem valor (que não ensina nada ao lance e é recusada pelo
+ * check de `closed_sales.amount_brl > 0`).
+ */
+export function lerValorEmCentavos(texto: string): number | null {
+  const t = normalizar(texto).replace(/r\$/g, ' ');
+  const numeros = /\d[\d.,]*/g;
+  let m: RegExpExecArray | null;
+  while ((m = numeros.exec(t)) !== null) {
+    const bruto = m[0].replace(/[.,]+$/, ''); // pontuação de fim de frase
+    const resto = t.slice(m.index + m[0].length);
+    if (NAO_E_VALOR.test(resto)) continue;
+    // "3 mil", "1,2k" — sem isto viravam R$ 3,00 e R$ 1,20.
+    const multiplicador = /^\s*(mil\b|k\b)/.test(resto) ? 1000 : 1;
+    const valor = numeroBrasileiro(bruto) * multiplicador;
+    if (!Number.isFinite(valor) || valor <= 0) return null;
+    const cents = Math.round(valor * 100);
+    return cents >= VALOR_MIN_CENTS && cents <= VALOR_MAX_CENTS ? cents : null;
+  }
+  return null;
 }
 
 /** Sobra da mensagem depois de tirar gatilho, valor e pontuação: a pista de
@@ -151,6 +193,9 @@ export function interpretarRespostaDoVendedor(texto: string): RespostaDoVendedor
   const t = normalizar(cru);
   const pista = extrairPista(cru);
 
+  if (GATILHOS_NEGOCIACAO_PRIORITARIA.some((g) => t.includes(g))) {
+    return { resultado: 'negociando', pista };
+  }
   if (GATILHOS_PERDA.some((g) => t.includes(g))) {
     const motivoTexto = cru;
     return { resultado: 'perdido', motivo: categorizarMotivo(cru), motivoTexto, pista };
@@ -194,6 +239,31 @@ export function telefoneDoAvisoCitado(citacao: string | null | undefined): strin
 const MAX_CANDIDATOS = 3;
 
 /**
+ * Palavras que sobram na pista e NÃO são nome de lead. Sem esta lista,
+ * "fechou 1200 hoje" com um lead aberto viraria pergunta à toa — e com ela
+ * "fechou 1200 Pedro" (Pedro não está entre os abertos) vira pergunta, não
+ * venda gravada em quem estiver aberto.
+ */
+const NAO_E_NOME = new Set([
+  'hoje', 'ontem', 'agora', 'ainda', 'amanha', 'depois', 'semana', 'mes', 'mensal', 'anual', 'ano', 'anos',
+  'ele', 'ela', 'dele', 'dela', 'esse', 'essa', 'este', 'esta', 'aquele', 'aquela',
+  'cliente', 'plano', 'planos', 'empresa', 'cnpj', 'familia', 'titular', 'vida', 'vidas', 'pessoa', 'pessoas',
+  'reais', 'real', 'mil', 'valor', 'total', 'por', 'pra', 'pro', 'que', 'sim', 'nao', 'blz', 'beleza',
+  'obrigado', 'obrigada', 'top', 'show', 'boa', 'bom', 'dia', 'tarde', 'noite', 'tem', 'mais', 'menos',
+  'barato', 'cotacao', 'proposta', 'contrato', 'assinou', 'assinado', 'pagou', 'pago', 'boleto', 'pix',
+  'cartao', 'primeira', 'parcela', 'graças', 'gracas', 'deus', 'aqui', 'ja', 'tudo', 'certo',
+]);
+
+function palavrasDeNome(pista: string): string[] {
+  return normalizar(pista)
+    .split(/\s+/)
+    .filter((p) => p.length >= 3 && !/\d/.test(p) && !NAO_E_NOME.has(p));
+}
+
+const porTelefone = (leads: LeadAberto[], chave: string | null) =>
+  leads.filter((a) => chave && chaveDoTelefone(a.leadPhone) === chave);
+
+/**
  * PURA. Qual lead o vendedor respondeu — na ordem: citação do WhatsApp, pista
  * no texto (telefone ou nome que casa com UM só), lead aberto único.
  *
@@ -201,43 +271,57 @@ const MAX_CANDIDATOS = 3;
  * `candidatos` para o bot perguntar de volta. Chutar aqui grava a venda no
  * lead errado e sobe a conversão com o clique errado — estraga o dado que o
  * cliente paga para ter.
+ *
+ * ⚠️ O atalho "um lead aberto só → é ele" vem POR ÚLTIMO (achado em revisão,
+ * 12/10/2026). Antes vinha primeiro: o vendedor citava o aviso do João (já
+ * vendido) ou escrevia "fechou 1200 Pedro", e a venda caía na Maria, a única
+ * aberta. Citação ou pista que apontam para OUTRO lead vencem o atalho.
+ *
+ * `exigirIdentificacao` desliga o atalho — para listas em que "o único" não
+ * quer dizer nada (ex.: leads já resolvidos).
  */
 export function escolherLead(entrada: {
   citacao?: string | null;
   pista?: string;
   abertos: LeadAberto[];
+  exigirIdentificacao?: boolean;
 }): EscolhaDeLead {
   const abertos = entrada.abertos;
   if (abertos.length === 0) return {};
-  if (abertos.length === 1) return { lead: abertos[0] };
+  const candidatos = { candidatos: abertos.slice(0, MAX_CANDIDATOS) };
 
   const citado = telefoneDoAvisoCitado(entrada.citacao);
   if (citado) {
     const chave = chaveDoTelefone(citado);
-    const porCitacao = abertos.filter((a) => chave && chaveDoTelefone(a.leadPhone) === chave);
-    if (porCitacao.length === 1) return { lead: porCitacao[0] };
+    const achados = porTelefone(abertos, chave);
+    if (achados.length === 1) return { lead: achados[0] };
+    // Citou o aviso de um lead que NÃO está nesta lista: é outro lead. Nada
+    // de cair no único aberto.
+    if (chave) return {};
   }
 
   const pista = normalizar(entrada.pista ?? '');
-  if (pista) {
-    const digitos = pista.replace(/\D/g, '');
-    if (digitos.length >= 8) {
-      const chave = chaveDoTelefone(digitos);
-      const porNumero = abertos.filter((a) => chave && chaveDoTelefone(a.leadPhone) === chave);
-      if (porNumero.length === 1) return { lead: porNumero[0] };
-    }
-    // Nome: cada palavra da pista com 3+ letras que apareça no nome do lead.
-    const palavras = pista.split(/\s+/).filter((p) => p.length >= 3 && !/^\d+$/.test(p));
-    if (palavras.length) {
-      const porNome = abertos.filter((a) => {
-        const nome = normalizar(a.nome ?? '');
-        return Boolean(nome) && palavras.some((p) => nome.includes(p));
-      });
-      if (porNome.length === 1) return { lead: porNome[0] };
-    }
+  const digitos = pista.replace(/\D/g, '');
+  if (digitos.length >= 8) {
+    const chave = chaveDoTelefone(digitos);
+    const achados = porTelefone(abertos, chave);
+    if (achados.length === 1) return { lead: achados[0] };
+    if (chave && achados.length === 0) return {};
   }
 
-  return { candidatos: abertos.slice(0, MAX_CANDIDATOS) };
+  const palavras = palavrasDeNome(pista);
+  if (palavras.length) {
+    const porNome = abertos.filter((a) => {
+      const nome = normalizar(a.nome ?? '');
+      return Boolean(nome) && palavras.some((p) => nome.includes(p));
+    });
+    if (porNome.length === 1) return { lead: porNome[0] };
+    // Nome que não casa com ninguém (ou com vários): pergunta. Nunca o único.
+    return entrada.exigirIdentificacao ? {} : candidatos;
+  }
+
+  if (abertos.length === 1 && !entrada.exigirIdentificacao) return { lead: abertos[0] };
+  return entrada.exigirIdentificacao ? {} : candidatos;
 }
 
 /** PURA. Resolve a resposta do vendedor à pergunta "qual deles?": o número da
@@ -257,7 +341,7 @@ export function escolherEntreCandidatos(texto: string, candidatos: LeadAberto[])
     const achado = candidatos.filter((c) => chave && chaveDoTelefone(c.leadPhone) === chave);
     if (achado.length === 1) return achado[0];
   }
-  const palavras = t.split(/\s+/).filter((p) => p.length >= 3 && !/^\d+$/.test(p));
+  const palavras = palavrasDeNome(t);
   const porNome = candidatos.filter((c) => {
     const nome = normalizar(c.nome ?? '');
     return Boolean(nome) && palavras.some((p) => nome.includes(p));
@@ -280,7 +364,11 @@ export interface ConversaParaLembrete {
   /** Base do relógio: o handoff (ou a data em que virou "em negociação"). */
   handoffEm: Date | null;
   lembretesEnviados: number;
+  ultimoLembreteEm?: Date | null;
 }
+
+/** Nunca dois lembretes do mesmo lead em menos que isto. */
+const INTERVALO_MIN_LEMBRETE_MS = 20 * 60 * 60 * 1000;
 
 /**
  * PURA. Qual lembrete está devido agora (1, 2 ou 3), ou null.
@@ -294,10 +382,19 @@ export function lembreteDevido(c: ConversaParaLembrete, agora: Date): number | n
   if (c.label !== 'QUENTE') return null;
   if (c.resultado === 'venda' || c.resultado === 'perdido') return null;
   if (!c.handoffEm) return null;
-  const passo = c.lembretesEnviados;
-  if (passo >= DIAS_DE_LEMBRETE.length) return null;
+  if (c.lembretesEnviados >= DIAS_DE_LEMBRETE.length) return null;
+  if (c.ultimoLembreteEm && agora.getTime() - c.ultimoLembreteEm.getTime() < INTERVALO_MIN_LEMBRETE_MS) {
+    return null;
+  }
   const dias = (agora.getTime() - c.handoffEm.getTime()) / DIA_MS;
-  return dias >= DIAS_DE_LEMBRETE[passo] ? passo + 1 : null;
+  // O lembrete MAIS ADIANTADO já vencido, não o próximo da fila (achado em
+  // revisão): depois de bot desligado ou fora do ar por dias, os três
+  // atrasados saíam em três horas seguidas para o mesmo lead. Um basta.
+  let devido: number | null = null;
+  for (let i = c.lembretesEnviados; i < DIAS_DE_LEMBRETE.length; i++) {
+    if (dias >= DIAS_DE_LEMBRETE[i]) devido = i + 1;
+  }
+  return devido;
 }
 
 // ── Horário de atendimento ──────────────────────────────────────────────────

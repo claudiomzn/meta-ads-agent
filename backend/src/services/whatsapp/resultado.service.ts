@@ -17,7 +17,9 @@ import { LogTransport, PREFIXO_ENSAIO, resolveTransport, type InboundMessage, ty
 import { chaveDoTelefone } from './funil.js';
 import {
   comoChamarOLead,
+  DIAS_DE_LEMBRETE,
   lerValorEmCentavos,
+  telefoneDoAvisoCitado,
   dentroDoAtendimento,
   escolherEntreCandidatos,
   escolherLead,
@@ -29,7 +31,7 @@ import {
   type MotivoPerda,
   type RespostaDoVendedor,
 } from './resultado.js';
-import { registrarVendaNasPlataformas } from './venda.externa.js';
+import { registrarVendaNasPlataformas, type ResultadoDoRegistro } from './venda.externa.js';
 import { cliqueDaConversa } from './clique.js';
 
 /** A mensagem veio do número cadastrado como vendedor? */
@@ -53,6 +55,9 @@ const PENDENCIA_VALIDA_MS = 24 * 60 * 60 * 1000;
 interface ConversaAberta extends LeadAberto {
   origemCanal: string | null;
   origemCampanhaId: string | null;
+  /** null ou 'negociando' — é para onde a trava volta se a gravação falhar. */
+  resultado: string | null;
+  ctwaClid: string | null;
 }
 
 async function leadsAbertos(userId: string, businessId: string): Promise<ConversaAberta[]> {
@@ -70,12 +75,13 @@ async function leadsAbertos(userId: string, businessId: string): Promise<Convers
     take: LEADS_ABERTOS_MAX,
     select: {
       id: true, leadPhone: true, leadNome: true, handoffEm: true,
-      origemCanal: true, origemCampanhaId: true,
+      origemCanal: true, origemCampanhaId: true, resultado: true, ctwaClid: true,
     },
   });
   return linhas.map((l) => ({
     id: l.id, leadPhone: l.leadPhone, nome: l.leadNome, handoffEm: l.handoffEm,
     origemCanal: l.origemCanal, origemCampanhaId: l.origemCampanhaId,
+    resultado: l.resultado, ctwaClid: l.ctwaClid,
   }));
 }
 
@@ -97,17 +103,20 @@ export async function tratarRespostaDoVendedor(
   // com um número é o valor da venda daquele lead.
   if (pendencia && esperandoValor(pendencia.resposta) && pendencia.candidatoIds.length === 1) {
     const lead = abertos.find((a) => a.id === pendencia.candidatoIds[0]);
-    if (lead) {
+    // Citou o aviso de OUTRO lead: a mensagem é sobre ele, não sobre o que
+    // esperava valor (achado em revisão — a venda da Maria caía no João).
+    const citado = chaveDoTelefone(telefoneDoAvisoCitado(msg.citacao) ?? '');
+    const citouOutro = Boolean(lead && citado && citado !== chaveDoTelefone(lead.leadPhone));
+    if (lead && !citouOutro) {
       const nova = interpretarRespostaDoVendedor(msg.text);
       if (nova && !esperandoValor(nova)) {
         await apagarPendencia(userId, businessId);
         return await aplicar(userId, businessId, config, msg, lead, nova);
       }
+      // lerValorEmCentavos já recusa valor abaixo de R$ 10: à espera de valor,
+      // um "2" é "o segundo da lista" ou dedo escorregado, não venda de R$ 2.
       const valorCents = lerValorEmCentavos(msg.text);
-      // Piso de R$ 10 no número solto: à espera de valor, um "2" é muito mais
-      // provavelmente "o segundo da lista" ou dedo escorregado que uma venda
-      // de dois reais — e valor errado contamina a medição de lucro.
-      if (valorCents !== null && valorCents >= VALOR_MINIMO_SOLTO_CENTS) {
+      if (valorCents !== null) {
         await apagarPendencia(userId, businessId);
         return await aplicar(userId, businessId, config, msg, lead, { resultado: 'venda', valorCents, pista: '' });
       }
@@ -144,13 +153,13 @@ export async function tratarRespostaDoVendedor(
     return await aplicar(userId, businessId, config, msg, lead, resposta);
   }
 
-  // Nenhum lead EM ABERTO casou. Antes de dizer "não achei", olha os que já
-  // têm desfecho: o vendedor repetindo "fechou 1200" (ou citando um aviso
-  // antigo) precisa ouvir que aquilo JÁ está registrado — "não encontrei"
-  // soaria como se nada tivesse sido gravado, e ele registraria de novo.
+  // Nenhum lead EM ABERTO casou sem dúvida. Antes de perguntar ou dizer "não
+  // achei", olha os que já têm desfecho: o vendedor repetindo "fechou 1200"
+  // (ou citando um aviso antigo) precisa ouvir que aquilo JÁ está registrado
+  // — "não encontrei" soaria como se nada tivesse sido gravado.
+  const jaResolvido = await leadJaResolvido(userId, businessId, msg.citacao, resposta.pista);
+  if (jaResolvido) return await responder(config, msg, textoDoJaResolvido(jaResolvido));
   if (!escolha.candidatos?.length) {
-    const jaResolvido = await leadJaResolvido(userId, businessId, msg.citacao, resposta.pista);
-    if (jaResolvido) return await responder(config, msg, textoDoJaResolvido(jaResolvido));
     return await responder(config, msg, 'Não encontrei nenhum lead em aberto para registrar. 🤔');
   }
 
@@ -164,9 +173,6 @@ export async function tratarRespostaDoVendedor(
     `Qual destes leads? Responda com o número (ou o nome):\n${lista}`,
   );
 }
-
-/** Piso do valor aceito como "número solto" na resposta seguinte a "fechou". */
-const VALOR_MINIMO_SOLTO_CENTS = 1000;
 
 /** "fechou" sem valor: ainda falta o número para poder registrar. */
 function esperandoValor(r: RespostaDoVendedor): boolean {
@@ -204,7 +210,9 @@ async function leadJaResolvido(
   const abertos: LeadAberto[] = linhas.map((l) => ({
     id: l.id, leadPhone: l.leadPhone, nome: l.leadNome, handoffEm: l.handoffEm,
   }));
-  const escolha = escolherLead({ citacao, pista, abertos });
+  // `exigirIdentificacao`: o único resolvido dos últimos 30 dias não é, por
+  // ser único, o lead de que o vendedor está falando.
+  const escolha = escolherLead({ citacao, pista, abertos, exigirIdentificacao: true });
   // Só quando NÃO há dúvida — aqui também não se chuta.
   const achado = escolha.lead ? linhas.find((l) => l.id === escolha.lead!.id) : undefined;
   if (!achado) return null;
@@ -314,30 +322,60 @@ async function registrarVenda(
   const clique = await cliqueDaConversa(lead.id);
   const envio = await registrarVendaNasPlataformas({
     userId,
+    convId: lead.id,
     telefone: lead.leadPhone,
     valorCents,
     nome: lead.nome,
     // Campanha só quando a origem é GOOGLE — ver venda.externa.ts.
     campanhaGoogleId: lead.origemCanal === 'google' ? lead.origemCampanhaId : null,
     clique,
+    ctwaClid: lead.ctwaClid,
   });
+
+  if (envio.tela === 'falhou') {
+    // Nada foi gravado em lugar nenhum: DESTRAVA o lead (volta ao que era)
+    // para o vendedor poder mandar de novo. Achado em revisão: a trava ficava
+    // e o bot ainda dizia "registrada no app" — a venda sumia para sempre e a
+    // repetição respondia "já estava registrada".
+    await prisma.whatsappConversation.update({
+      where: { id: lead.id },
+      data: { resultado: lead.resultado, resultadoEm: null, vendaValorCents: null },
+    });
+    return await responder(
+      config, msg,
+      `⚠️ Não consegui registrar a venda de ${nome} agora${envio.detalhe ? ` (${envio.detalhe})` : ''}. Mande de novo daqui a pouco.`,
+    );
+  }
 
   await prisma.whatsappConversation.update({
     where: { id: lead.id },
     data: { vendaSaleId: envio.saleId, vendaRegistradaEm: new Date() },
   });
+  return await responder(config, msg, textoDaVendaRegistrada(nome, valorCents, envio));
+}
 
+/**
+ * PURA. Confirmação ao vendedor — diz exatamente onde a venda está e o que
+ * não subiu. Nunca "sucesso" quando a plataforma recusou (CLAUDE.md), e
+ * nunca "está na tela Vendas" quando não está.
+ */
+export function textoDaVendaRegistrada(
+  nome: string, valorCents: number,
+  envio: Pick<ResultadoDoRegistro, 'tela' | 'google' | 'meta' | 'detalhe'>,
+): string {
   const linha = `✅ Venda de R$ ${reais(valorCents)} registrada para ${nome}`;
-  // Nunca "sucesso" quando a plataforma recusou (CLAUDE.md): o vendedor fica
-  // sabendo que a venda está anotada e o que não subiu.
-  const foram = [
-    envio.google === 'enviada' ? 'Google' : null,
-    envio.meta === 'enviada' ? 'Meta' : null,
+  const falharam = [
+    envio.google === 'falhou' ? 'Google' : null,
+    envio.meta === 'falhou' ? 'Meta' : null,
   ].filter(Boolean);
-  const aviso = foram.length === 2
-    ? ''
-    : `\n⚠️ ${foram.length ? `Enviada ao ${foram[0]}, mas não` : 'Não'} subiu às plataformas${envio.detalhe ? ` (${envio.detalhe})` : ''}. A venda está registrada no app.`;
-  return await responder(config, msg, `${linha}${aviso}`);
+  if (envio.tela === 'sem_conta') {
+    const meta = envio.meta === 'enviada' ? ' Enviada à Meta.' : envio.meta === 'falhou' ? ' A Meta não aceitou o envio.' : '';
+    return `${linha}\n⚠️ Ficou anotada só aqui no robô — não entrou na tela Vendas${envio.detalhe ? ` (${envio.detalhe})` : ''}.${meta}`;
+  }
+  if (falharam.length) {
+    return `${linha}\n⚠️ Está na tela Vendas, mas não subiu ao ${falharam.join(' nem à ')}.`;
+  }
+  return linha;
 }
 
 async function responder(
@@ -407,7 +445,10 @@ async function apagarPendencia(userId: string, businessId: string): Promise<void
  *  fluxo de cima entende de volta. */
 export function textoDoLembrete(lead: { nome: string | null; leadPhone: string; resumo: string | null }): string {
   const detalhe = detalheDoResumo(lead.resumo);
-  return `Lead ${comoChamarOLead(lead)}${detalhe} segue em aberto. Fechou, perdeu ou em negociação?`;
+  // A linha "Contato:" é a mesma do aviso: o vendedor que RESPONDE este
+  // lembrete citando-o identifica o lead sem dúvida (achado em revisão — sem
+  // ela, a resposta ao lembrete virava "Qual destes leads?").
+  return `Lead ${comoChamarOLead(lead)}${detalhe} segue em aberto. Fechou, perdeu ou em negociação?\nContato: ${lead.leadPhone}`;
 }
 
 /** PURA. Dois dados do resumo, entre parênteses — o vendedor reconhece o lead
@@ -426,6 +467,31 @@ export function detalheDoResumo(resumo: string | null | undefined): string {
   return partes.length ? ` (${partes.slice(0, 2).join(', ')})` : '';
 }
 
+const PAGINA_LEMBRETES = 500;
+
+function paginaDeLembretes(limite: Date, cursor?: string) {
+  return prisma.whatsappConversation.findMany({
+    where: {
+      state: 'handoff',
+      label: 'QUENTE',
+      // Lead em aberto tem `resultado` NULO, e NULL nunca satisfaz uma
+      // comparação de desigualdade — daí o OR explícito.
+      OR: [{ resultado: null }, { resultado: { notIn: ['venda', 'perdido'] } }],
+      handoffEm: { lte: limite },
+      lembretesEnviados: { lt: DIAS_DE_LEMBRETE.length },
+      NOT: { leadPhone: { startsWith: PREFIXO_ENSAIO } },
+    },
+    select: {
+      id: true, userId: true, businessId: true, leadPhone: true, leadNome: true,
+      summary: true, state: true, label: true, resultado: true, handoffEm: true,
+      lembretesEnviados: true, ultimoLembreteEm: true,
+    },
+    orderBy: { id: 'asc' },
+    take: PAGINA_LEMBRETES,
+    ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+  });
+}
+
 /**
  * Varre todos os negócios e manda os lembretes devidos. Chamado pelo cron de
  * hora em hora (ver index.ts).
@@ -434,24 +500,18 @@ export function detalheDoResumo(resumo: string | null | undefined): string {
  * ensaio. Não fala com o lead em nenhuma hipótese — só com o vendedor.
  */
 export async function enviarLembretesPendentes(agora = new Date()): Promise<number> {
-  const candidatas = await prisma.whatsappConversation.findMany({
-    where: {
-      state: 'handoff',
-      label: 'QUENTE',
-      // Mesmo cuidado do registro da venda: lead em aberto tem `resultado`
-      // NULO, e NULL nunca satisfaz uma comparação de desigualdade.
-      OR: [{ resultado: null }, { resultado: { notIn: ['venda', 'perdido'] } }],
-      handoffEm: { not: null },
-      lembretesEnviados: { lt: 3 },
-      NOT: { leadPhone: { startsWith: PREFIXO_ENSAIO } },
-    },
-    select: {
-      id: true, userId: true, businessId: true, leadPhone: true, leadNome: true,
-      summary: true, state: true, label: true, resultado: true, handoffEm: true,
-      lembretesEnviados: true,
-    },
-    take: 500,
-  });
+  // Só o que pode estar devido (handoff há 2 dias ou mais), em páginas e em
+  // ordem fixa. Achado em revisão: com `take: 500` sem ordem, conversas que
+  // nunca saem (bot desligado, sem vendedor) ocupavam a página e os lembretes
+  // devidos de outros negócios ficavam de fora.
+  const limite = new Date(agora.getTime() - DIAS_DE_LEMBRETE[0] * 24 * 60 * 60 * 1000);
+  const candidatas: Awaited<ReturnType<typeof paginaDeLembretes>> = [];
+  for (let cursor: string | undefined; ;) {
+    const pagina = await paginaDeLembretes(limite, cursor);
+    candidatas.push(...pagina);
+    if (pagina.length < PAGINA_LEMBRETES) break;
+    cursor = pagina[pagina.length - 1].id;
+  }
   if (!candidatas.length) return 0;
 
   // Uma config por negócio, não por conversa.
@@ -459,9 +519,11 @@ export async function enviarLembretesPendentes(agora = new Date()): Promise<numb
   let enviados = 0;
 
   for (const c of candidatas) {
-    if (c.resultado === 'perdido') continue; // defensivo: `not: 'venda'` deixa passar
     const devido = lembreteDevido(
-      { state: c.state, label: c.label, resultado: c.resultado, handoffEm: c.handoffEm, lembretesEnviados: c.lembretesEnviados },
+      {
+        state: c.state, label: c.label, resultado: c.resultado, handoffEm: c.handoffEm,
+        lembretesEnviados: c.lembretesEnviados, ultimoLembreteEm: c.ultimoLembreteEm,
+      },
       agora,
     );
     if (!devido) continue;

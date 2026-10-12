@@ -21,7 +21,7 @@ import {
   telefoneDoAvisoCitado,
   type LeadAberto,
 } from '../services/whatsapp/resultado.js';
-import { detalheDoResumo, textoDoLembrete } from '../services/whatsapp/resultado.service.js';
+import { detalheDoResumo, textoDaVendaRegistrada, textoDoLembrete } from '../services/whatsapp/resultado.service.js';
 import { hojeEmManaus } from '../services/whatsapp/venda.externa.js';
 import { idDoEventoDaVenda } from '../services/whatsapp/venda.id.js';
 
@@ -211,7 +211,9 @@ describe('lembrete nos dias 2, 5 e 10', () => {
       nome: 'João Silva', leadPhone: '559291111001',
       resumo: 'Tipo: Empresa (CNPJ)\nPessoas: 3\nIntenção: quer contratar nos próximos dias',
     });
-    expect(texto).toBe('Lead João Silva (empresa, 3 vidas) segue em aberto. Fechou, perdeu ou em negociação?');
+    expect(texto).toBe(
+      'Lead João Silva (empresa, 3 vidas) segue em aberto. Fechou, perdeu ou em negociação?\nContato: 559291111001',
+    );
   });
 
   it('resumo sem dado utilizável não inventa parênteses', () => {
@@ -292,5 +294,100 @@ describe('aviso ao vendedor ensina a responder (12/10/2026)', () => {
     expect(montarAvisoAoVendedor('559291111001', '  ')).toBe(
       `🔔 Novo lead qualificado!\nContato: 559291111001\n\n${LINHA_COMO_RESPONDER}`,
     );
+  });
+});
+
+describe('achados da revisão de código (12/10/2026)', () => {
+  describe('palavras que enganavam o gatilho', () => {
+    it('⭐ "fechou com outro" é PERDA, não venda de R$ 300', () => {
+      expect(interpretarRespostaDoVendedor('fechou com outro, 300 mais barato')).toMatchObject({ resultado: 'perdido' });
+      expect(interpretarRespostaDoVendedor('fechou com a concorrência')).toMatchObject({ resultado: 'perdido' });
+    });
+    it('⭐ "sem venda" é perda, não pergunta de valor', () => {
+      expect(interpretarRespostaDoVendedor('sem venda')).toMatchObject({ resultado: 'perdido' });
+      expect(interpretarRespostaDoVendedor('não teve venda')).toMatchObject({ resultado: 'perdido' });
+    });
+    it('⭐ "ainda não fechou, tá pensando" é negociação — não perda que cala o lembrete', () => {
+      expect(interpretarRespostaDoVendedor('ainda não fechou, tá pensando')).toMatchObject({ resultado: 'negociando' });
+      expect(interpretarRespostaDoVendedor('não fechou ainda')).toMatchObject({ resultado: 'negociando' });
+      expect(interpretarRespostaDoVendedor('vai pensar')).toMatchObject({ resultado: 'negociando' });
+    });
+  });
+
+  describe('valor lido do número certo', () => {
+    it.each([
+      ['fechou 2 vidas por 1200', 120000],
+      ['fechou 3 pessoas, 980', 98000],
+      ['fechou 3 mil', 300000],
+      ['fechou 1,2k', 120000],
+      ['fechou 1.5 mil', 150000],
+      ['fechou 1200.', 120000],
+    ])('%s → %d centavos', (texto, cents) => expect(lerValorEmCentavos(texto)).toBe(cents));
+
+    it('⭐ abaixo de R$ 10 não é valor de venda: o bot pergunta', () => {
+      expect(lerValorEmCentavos('fechou 2')).toBeNull();
+      expect(lerValorEmCentavos('fechou 9,99')).toBeNull();
+      expect(lerValorEmCentavos('fechou 10')).toBe(1000);
+    });
+  });
+
+  describe('o atalho do "único lead aberto" não contradiz o que o vendedor disse', () => {
+    const maria: LeadAberto = { id: 'c2', leadPhone: '559291111002', nome: 'Maria Souza', handoffEm: null };
+
+    it('⭐ citação de outro lead → nenhum (não é a Maria)', () => {
+      expect(escolherLead({ citacao: 'Contato: 559291111001', abertos: [maria] })).toEqual({});
+    });
+    it('⭐ telefone de outro lead → nenhum', () => {
+      expect(escolherLead({ pista: '92 91111-001', abertos: [maria] })).toEqual({});
+    });
+    it('⭐ nome de outra pessoa → pergunta, não grava na Maria', () => {
+      expect(escolherLead({ pista: 'pedro', abertos: [maria] })).toEqual({ candidatos: [maria] });
+    });
+    it('palavra comum na resposta ("hoje") não vira nome: o único continua sendo ele', () => {
+      expect(escolherLead({ pista: 'hoje', abertos: [maria] })).toEqual({ lead: maria });
+    });
+    it('⭐ exigirIdentificacao: o único da lista não é escolhido por ser único', () => {
+      expect(escolherLead({ abertos: [maria], exigirIdentificacao: true })).toEqual({});
+      expect(escolherLead({ pista: 'maria', abertos: [maria], exigirIdentificacao: true })).toEqual({ lead: maria });
+    });
+  });
+
+  describe('lembrete', () => {
+    const base = {
+      state: 'handoff', label: 'QUENTE' as string | null, resultado: null as string | null,
+      handoffEm: new Date('2026-10-01T13:00:00Z'), lembretesEnviados: 0,
+    };
+    const dias = (n: number) => new Date(base.handoffEm.getTime() + n * 24 * 3600 * 1000);
+
+    it('⭐ atrasado: pula direto para o mais adiantado já vencido', () => {
+      expect(lembreteDevido({ ...base }, dias(11))).toBe(3);
+      expect(lembreteDevido({ ...base }, dias(6))).toBe(2);
+    });
+    it('⭐ nunca dois lembretes do mesmo lead em menos de 20h', () => {
+      expect(lembreteDevido({ ...base, lembretesEnviados: 1, ultimoLembreteEm: dias(4.5) }, dias(5))).toBeNull();
+      expect(lembreteDevido({ ...base, lembretesEnviados: 1, ultimoLembreteEm: dias(4) }, dias(5))).toBe(2);
+    });
+  });
+
+  describe('confirmação ao vendedor diz onde a venda está', () => {
+    it('tudo certo: uma linha', () => {
+      expect(textoDaVendaRegistrada('João', 120000, { tela: 'gravada', google: 'enviada', meta: 'enviada' }))
+        .toBe('✅ Venda de R$ 1.200,00 registrada para João');
+    });
+    it('cliente sem Meta: "não conectada" não é falha', () => {
+      expect(textoDaVendaRegistrada('João', 120000, { tela: 'gravada', google: 'enviada', meta: 'nao_conectada' }))
+        .toBe('✅ Venda de R$ 1.200,00 registrada para João');
+    });
+    it('⭐ plataforma recusou: está na tela, mas diz o que não subiu', () => {
+      expect(textoDaVendaRegistrada('João', 120000, { tela: 'gravada', google: 'falhou', meta: 'enviada' }))
+        .toBe('✅ Venda de R$ 1.200,00 registrada para João\n⚠️ Está na tela Vendas, mas não subiu ao Google.');
+    });
+    it('⭐ sem conta: NUNCA diz que está na tela Vendas', () => {
+      const t = textoDaVendaRegistrada('João', 120000, {
+        tela: 'sem_conta', google: 'nao_conectada', meta: 'enviada', detalhe: 'nenhuma conta Google Ads conectada',
+      });
+      expect(t).toContain('não entrou na tela Vendas');
+      expect(t).not.toContain('Está na tela Vendas');
+    });
   });
 });
