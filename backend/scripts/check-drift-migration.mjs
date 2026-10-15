@@ -16,10 +16,10 @@ import pg from 'pg';
 
 const PORT = 5445;
 const MIG = 'prisma/migrations';
-// As 9 migrations que NÃO constam no _prisma_migrations de produção (as 7 que
-// nunca rodaram + as 2 novas). É exatamente o que o PRIMEIRO `migrate deploy`
-// vai aplicar quando o Dockerfile trocar de db push para migrate deploy — por
-// isso todas precisam ser idempotentes (no-op sobre o schema que já existe).
+// As migrations que NÃO constam no _prisma_migrations de produção (as que
+// nunca rodaram, as da correção do drift e as criadas desde então). Todas
+// precisam ser idempotentes: são o que o `migrate deploy` do boot aplica em
+// cima de um schema que já tem as colunas (ver o drift no CLAUDE.md).
 const PENDENTES = [
   '20260711000000_cria_whatsapp_charge',
   '20260729200000_add_meta_connection_requests',
@@ -30,6 +30,8 @@ const PENDENTES = [
   '20261001120000_add_whatsapp_conversation_origem',
   '20261001150000_add_whatsapp_conversation_campanha',
   '20261005120000_registra_drift_do_schema',
+  '20261007120000_clique_do_site',
+  '20261012120000_resultado_do_lead_e_lembretes',
 ];
 
 const dataDir = mkdtempSync(join(tmpdir(), 'driftcheck-pg-'));
@@ -67,21 +69,21 @@ try {
   const cb = await novoClient('b');
   await aplicarTodas(cb);
   ok(true, 'cadeia inteira aplicou numa vez');
-  try { for (const d of PENDENTES) await cb.query(lerMig(d)); ok(true, 'reaplicar as 9 pendentes não quebrou'); }
+  try { for (const d of PENDENTES) await cb.query(lerMig(d)); ok(true, `reaplicar as ${PENDENTES.length} pendentes não quebrou`); }
   catch (e) { ok(false, 'reaplicar quebrou: ' + e.message); }
   await cb.end();
 
   // ── Teste C: simula o 1º migrate deploy em produção ──────────────────────────
-  // Banco no estado de produção (schema atual via db push) + TODAS as 9 migrations
+  // Banco no estado de produção (schema atual via db push) + TODAS as migrations
   // pendentes em ordem. É exatamente o que o primeiro `migrate deploy` fará depois
   // de o Dockerfile trocar db push por migrate deploy. Todas têm de ser no-op.
-  console.log('C) estado de produção + as 9 migrations pendentes (o 1º migrate deploy):');
+  console.log(`C) estado de produção + as ${PENDENTES.length} migrations pendentes (o migrate deploy do boot):`);
   await epg.createDatabase('prod_sim');
   execSync('node_modules/.bin/prisma db push --skip-generate --accept-data-loss',
     { cwd: process.cwd(), encoding: 'utf8', stdio: ['ignore', 'ignore', 'ignore'],
       env: { ...process.env, DATABASE_URL: `postgresql://postgres:test@localhost:${PORT}/prod_sim` } });
   const cc = await novoClient('prod_sim');
-  try { for (const d of PENDENTES) await cc.query(lerMig(d)); ok(true, 'as 9 pendentes são no-op sobre o schema de produção'); }
+  try { for (const d of PENDENTES) await cc.query(lerMig(d)); ok(true, `as ${PENDENTES.length} pendentes são no-op sobre o schema de produção`); }
   catch (e) { ok(false, 'migration quebrou sobre produção simulada: ' + e.message); }
   await cc.end();
 } finally {

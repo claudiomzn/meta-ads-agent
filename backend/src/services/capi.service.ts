@@ -49,6 +49,12 @@ export interface PurchaseEventInput {
   currency?: string;
   /** Momento da venda (epoch em segundos). Padrão: agora. */
   eventTime?: number;
+  /**
+   * Click id do anúncio clique-para-WhatsApp, quando a venda veio de um lead
+   * CTWA (12/10/2026). Só com o telefone a Meta raramente liga a venda ao
+   * anúncio — é o mesmo motivo do gclid no Google.
+   */
+  ctwaClid?: string | null;
   testEventCode?: string;
 }
 

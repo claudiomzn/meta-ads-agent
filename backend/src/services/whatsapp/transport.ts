@@ -31,6 +31,19 @@ export interface InboundMessage {
    * — ver podeAbrirConversa.
    */
   simulado?: boolean;
+  /**
+   * Texto da mensagem CITADA (o "responder" do WhatsApp), quando houver
+   * (12/10/2026). É o que diz a QUAL lead o vendedor está respondendo: ele
+   * cita o próprio aviso "🔔 Novo lead qualificado! Contato: …" e o app lê o
+   * número de lá, em vez de adivinhar — ver resultado.ts.
+   */
+  citacao?: string | null;
+  /**
+   * Nome que o WhatsApp mostra para quem enviou (pushName). Serve para o
+   * vendedor reconhecer o lead no aviso e no lembrete ("Lead João"), e não
+   * substitui nada do que o roteiro coletou.
+   */
+  nomeDoContato?: string | null;
   /** Id da mensagem no WhatsApp (key.id) — para não contar a própria mensagem
    *  como "conversa anterior" ao consultar o histórico do número. */
   mensagemId?: string | null;
@@ -66,11 +79,15 @@ export class LogTransport implements WhatsappTransport {
     console.log(`[whatsapp:log] → ${to}: ${text}`);
   }
 
-  // Aceita um formato simples para testes manuais: { from, text }
+  // Aceita um formato simples para testes manuais: { from, text, citacao? }
   parseInbound(payload: unknown): InboundMessage | null {
-    const p = payload as { from?: string; text?: string } | null;
+    const p = payload as { from?: string; text?: string; citacao?: string; pushName?: string } | null;
     if (!p?.from || !p?.text) return null;
-    return { from: String(p.from), text: String(p.text), transport: this.name };
+    return {
+      from: String(p.from), text: String(p.text), transport: this.name,
+      citacao: p.citacao ? String(p.citacao) : null,
+      nomeDoContato: p.pushName ? String(p.pushName) : null,
+    };
   }
 }
 
@@ -122,7 +139,16 @@ export class EvolutionTransport implements WhatsappTransport {
     const data = raw as {
       key?: { remoteJid?: string; fromMe?: boolean; id?: string };
       messageTimestamp?: unknown;
-      message?: { conversation?: string; extendedTextMessage?: { text?: string } };
+      pushName?: string;
+      message?: {
+        conversation?: string;
+        extendedTextMessage?: {
+          text?: string;
+          contextInfo?: {
+            quotedMessage?: { conversation?: string; extendedTextMessage?: { text?: string } };
+          };
+        };
+      };
     } | undefined;
     if (!data?.key?.remoteJid) return null;
 
@@ -146,8 +172,16 @@ export class EvolutionTransport implements WhatsappTransport {
       console.warn('[whatsapp:origem] mensagem com cara de anúncio sem ctwaClid/sourceId reconhecível — chaves:',
         JSON.stringify(Object.keys((raw ?? {}) as object)), JSON.stringify(Object.keys((data.message ?? {}) as object)));
     }
+    // Mensagem citada ("responder"): só o TEXTO interessa — é dele que sai o
+    // "Contato: …" do nosso próprio aviso ao vendedor.
+    const citada = data.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+    const citacao = citada?.conversation ?? citada?.extendedTextMessage?.text ?? null;
+
     return {
-      from, text, transport: this.name, ctwaClid: anuncio?.ctwaClid ?? null, anuncio,
+      from, text, transport: this.name,
+      ctwaClid: anuncio?.ctwaClid ?? null, anuncio,
+      citacao,
+      nomeDoContato: typeof data.pushName === 'string' && data.pushName.trim() ? data.pushName.trim() : null,
       mensagemId: data.key.id ?? null,
       enviadaEm: momentoDoWhatsapp(data.messageTimestamp),
     };

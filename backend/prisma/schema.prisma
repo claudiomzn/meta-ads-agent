@@ -559,6 +559,32 @@ model WhatsappConversation {
   // depois da 1ª mensagem.
   origemClique String?
 
+  // ── Desfecho do lead (12/10/2026) — a resposta do vendedor no WhatsApp ──
+  // O app media CUSTO e parava no lead; quem sabia se virou venda era o
+  // vendedor, e esse dado morria na conversa dele. Aqui ele entra respondendo
+  // o próprio aviso ("fechou 1200", "perdeu preço") — ver resultado.ts.
+  // null = ainda em aberto; 'negociando' NÃO é desfecho (só rezera o relógio
+  // do lembrete).
+  resultado         String?   // venda | perdido | negociando
+  resultadoEm       DateTime?
+  // Nome do lead (pushName do WhatsApp). Serve para o vendedor reconhecer de
+  // quem o bot está falando no aviso e no lembrete.
+  leadNome          String?
+  // ⭐ Venda: `vendaSaleId` é a trava de "uma vez só por lead" — é o id da
+  // linha em closed_sales (Supabase) e o sufixo do event_id das duas
+  // plataformas (venda_<saleId>), então reenvio nunca conta duas vezes.
+  vendaValorCents   Int?
+  vendaSaleId       String?
+  vendaRegistradaEm DateTime?
+  motivoPerda       String?   // preco | carencia | ja_tem_plano | nao_respondeu | outro
+  motivoPerdaTexto  String?   // o que o vendedor escreveu, cru
+  // Lembretes de retorno já enviados (0 a 3 — dias 2, 5 e 10 do handoff).
+  lembretesEnviados Int       @default(0)
+  ultimoLembreteEm  DateTime?
+  // Momento do handoff: base do relógio dos lembretes. `updatedAt` não serve
+  // (se move a cada escrita, inclusive a do próprio lembrete).
+  handoffEm         DateTime?
+
   // Marcada na criação: true se esta conversa nasceu depois de já ter batido o
   // limite diário de conversas grátis do usuário — cada mensagem do bot aqui
   // dentro conta no acumulado de excedente (ver WhatsappConfig).
@@ -569,6 +595,34 @@ model WhatsappConversation {
 
   @@unique([userId, businessId, leadPhone])
   @@index([userId, businessId, state])
+  // O cron de lembrete varre todos os usuários buscando lead QUENTE entregue
+  // e sem desfecho — sem este índice é varredura de tabela a cada hora.
+  @@index([state, label, resultado, handoffEm])
+}
+
+// Pergunta "qual deles?" pendente para um vendedor (12/10/2026).
+//
+// Quando a resposta do vendedor não diz a qual lead se refere (sem citação e
+// com vários leads abertos), o bot pergunta de volta e guarda AQUI o que ele
+// já havia dito, mais a lista exibida. A resposta seguinte ("2", "o João")
+// termina o registro. Uma linha por vendedor/negócio: pergunta nova substitui
+// a anterior — vendedor com duas perguntas em aberto não saberia qual está
+// respondendo.
+model VendedorPendencia {
+  id         String @id @default(cuid())
+  userId     String
+  businessId String @default("default")
+
+  /// RespostaDoVendedor já interpretada (resultado, valor, motivo).
+  resposta   Json
+  /// Ids das conversas oferecidas, na ORDEM em que foram listadas: é o que dá
+  /// sentido a responder "2".
+  candidatos Json
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([userId, businessId])
 }
 
 // Clique em anúncio registrado pelo site no momento em que o visitante toca

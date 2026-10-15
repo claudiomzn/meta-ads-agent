@@ -280,12 +280,26 @@ cron.schedule('0 5 * * *', async () => {
   }
 });
 
+// De hora em hora (minuto 40, fora do minuto cheio dos outros crons): cobra do
+// vendedor o desfecho dos leads QUENTES que seguem em aberto — dias 2, 5 e 10
+// do handoff, e só dentro do horário de atendimento da config (ver
+// resultado.ts). Nunca toca em conversa de ensaio e nunca fala com o lead.
+cron.schedule('40 * * * *', async () => {
+  try {
+    const { enviarLembretesPendentes } = await import('./services/whatsapp/resultado.service.js');
+    const enviados = await enviarLembretesPendentes();
+    if (enviados > 0) console.log(`[Cron] ${enviados} lembrete(s) de retorno enviados aos vendedores`);
+  } catch (err) {
+    console.error('[Cron] Falha ao enviar lembretes de retorno:', err);
+  }
+});
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`✅ Backend rodando em http://0.0.0.0:${PORT}`);
   console.log(`   NODE_ENV: ${process.env.NODE_ENV}`);
-  console.log(`   Crons: métricas (1h) | status + automações (15min) | agente noturno (5h)`);
+  console.log(`   Crons: métricas (1h) | status + automações (15min) | lembrete ao vendedor (1h) | agente noturno (5h)`);
 
   // Self-heal: garante que os webhooks das instâncias gerenciadas usam a URL
   // atual (com segredo). Não-bloqueante — falha aqui não impede o servidor.
