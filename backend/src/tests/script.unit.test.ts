@@ -10,7 +10,6 @@ import {
   roteiroTerminou,
   rotuloDoLead,
   montarResumoDoRoteiro,
-  dadosParaCotacao,
   gravarCampo,
   validarValor,
   lerFichaDoSite,
@@ -172,18 +171,6 @@ describe('montarResumoDoRoteiro — o que o vendedor lê antes de ligar', () => 
 
   it('roteiro sem nenhum dado coletado devolve string vazia, não lixo', () => {
     expect(montarResumoDoRoteiro(passos, {})).toBe('');
-  });
-});
-
-describe('dadosParaCotacao — a ponte para a cotação automática', () => {
-  it('entrega o formato que a validação da cotação espera', () => {
-    expect(dadosParaCotacao({ tipo: 'pf', vidas: 2, idades: [34, 31] })).toEqual({
-      tipo: 'pf', vidas: 2, idades: [34, 31], operadora: null,
-    });
-  });
-
-  it('ausência vira null/[] — nunca um valor inventado', () => {
-    expect(dadosParaCotacao({})).toEqual({ tipo: null, vidas: null, idades: [], operadora: null });
   });
 });
 

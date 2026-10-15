@@ -380,81 +380,50 @@ describe('⭐ Origem da conversa', () => {
 // disto, todo lead recebia a cotação do leque padrão (Samel), inclusive quem
 // clicou em "Cotar Hapvida". E SulAmérica/Bradesco, que o Luiz vende sem
 // tabela no Cote+, não podem receber promessa de cotação nem "não trabalho com".
-describe('⭐ Roteiro + cotação: a página do site decide a operadora', () => {
+// Sem cotação ao lead (Luiz, 15/10/2026): "o bot faz o atendimento inicial e
+// passa para o corretor fazer o orçamento. Faz isso em todas." Antes, na conta
+// com a integração Cote+, o lead QUENTE recebia preços na hora — de todas as
+// operadoras quando ninguém sabia qual plano ele queria.
+describe('⭐ Sem cotação ao lead: o robô pergunta, encerra e passa ao corretor', () => {
   const COTE_URL = 'https://cote.test/functions/v1/cotacao-externa';
   const RESPOSTAS = ['é pra mim', 'somos 2', '34 e 31', 'não tenho', 'quero contratar'];
   const QUENTE = { tipo: 'pf', vidas: 2, idades: [34, 31], plano_atual: 'nenhum', urgencia: 'contratar' };
   const fetchOriginal = globalThis.fetch;
-  const pedidosAoCote: { operadoras: string[] }[] = [];
+  let chamadasAoCote = 0;
 
+  // A integração continua configurada no ambiente, como está no Render: o
+  // teste prova que, mesmo assim, ninguém pede cotação.
   beforeAll(() => {
-    process.env.COTE_QUOTE_USER = 'roteiro@test.com';
-    process.env.COTE_QUOTE_URL = COTE_URL;
-    process.env.COTE_QUOTE_KEY = 'chave-teste';
-    process.env.COTE_QUOTE_OPERATOR = 'samel';
+    Object.assign(process.env, { COTE_QUOTE_USER: 'roteiro@test.com', COTE_QUOTE_URL: COTE_URL, COTE_QUOTE_KEY: 'k' });
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      if (String(url) === COTE_URL) {
-        const corpo = JSON.parse(String(init?.body));
-        pedidosAoCote.push(corpo);
-        return new Response(JSON.stringify({ ok: true, texto: `Cotação ${corpo.operadoras.join('+')}: R$ 500`, planos: [{}] }), { status: 200 });
-      }
+      if (String(url) === COTE_URL) { chamadasAoCote++; return new Response('{}', { status: 200 }); }
       return fetchOriginal(url, init);
     }) as typeof fetch;
   });
-
   afterAll(() => {
     globalThis.fetch = fetchOriginal;
-    delete process.env.COTE_QUOTE_USER;
-    delete process.env.COTE_QUOTE_URL;
-    delete process.env.COTE_QUOTE_KEY;
-    delete process.env.COTE_QUOTE_OPERATOR;
+    for (const k of ['COTE_QUOTE_USER', 'COTE_QUOTE_URL', 'COTE_QUOTE_KEY']) delete process.env[k];
   });
+  beforeEach(() => { chamadasAoCote = 0; });
 
-  beforeEach(() => { pedidosAoCote.length = 0; });
-
-  async function rodar(businessId: string, fone: string, primeira: string) {
-    await configRoteiro(businessId);
-    respostasPorCampo(QUENTE);
-    await enviar(businessId, fone, primeira);
-    for (const r of RESPOSTAS) await enviar(businessId, fone, r);
-    return lerConversa(businessId, fone);
-  }
-
-  it('⭐ veio da página da Hapvida: cota Hapvida, não o leque padrão', async () => {
-    const conv = await rodar('cot-hap', '5511900030001', 'Olá! Quero uma cotação do plano Hapvida.\n\n(ref. HAP-G)');
-    expect(pedidosAoCote).toHaveLength(1);
-    expect(pedidosAoCote[0].operadoras).toEqual(['hapvida']);
-    expect(falasDoBot(conv)).toContain('Cotação hapvida: R$ 500');
-  });
-
-  it('página do plano adventista: cota Proasa e Adventista (Plural) juntas', async () => {
-    await rodar('cot-adv', '5511900030002', 'Quero o plano adventista (ref. ADV-G)');
-    expect(pedidosAoCote[0].operadoras).toEqual(['proasa', 'adventista']);
-  });
-
-  it('⭐ página da Bradesco: não chama o Cote+, não promete cotação e o vendedor sabe por quê', async () => {
+  it('⭐ lead QUENTE do site com plano escolhido: nenhum preço, só o encerramento — e o corretor recebe tudo', async () => {
     const { LogTransport } = await import('../services/whatsapp/transport.js');
     const enviados = vi.spyOn(LogTransport.prototype, 'sendText');
-    const conv = await rodar('cot-bra', '5511900030003', 'Olá! Quero uma cotação do plano Bradesco Saúde.\n\n(ref. BRA-G)');
-    expect(pedidosAoCote).toHaveLength(0);
+    await configRoteiro('sem-cot');
+    respostasPorCampo(QUENTE);
+    await enviar('sem-cot', '5511900030001', 'Olá! Quero uma cotação do plano Hapvida.\n\n(ref. HAP-G)');
+    for (const r of RESPOSTAS) await enviar('sem-cot', '5511900030001', r);
+    const conv = await lerConversa('sem-cot', '5511900030001');
+
+    expect(chamadasAoCote).toBe(0);
     const falas = falasDoBot(conv).join('\n');
-    expect(falas).not.toContain('Vou te passar uma cotação agora');
-    expect(falas).not.toMatch(/não trabalho com/i);
+    expect(falas).not.toMatch(/R\$|cotação agora/i);
     expect(falas).toContain(FECHAMENTO);
+    expect(conv?.label).toBe('QUENTE');
     const paraVendedor = enviados.mock.calls.filter(([to]) => to === '+551199999999').map(([, txt]) => txt).join('\n');
-    expect(paraVendedor).toContain('Veio para Bradesco Saúde: sem tabela no Cote+, a cotação fica com você.');
     expect(paraVendedor).toContain('34, 31');
+    expect(paraVendedor).not.toMatch(/R\$/);
     enviados.mockRestore();
-  });
-
-  it('página de hospital (Santa Júlia) vai ao vendedor, como SulAmérica/Bradesco', async () => {
-    await rodar('cot-sju', '5511900030004', 'Quero plano com atendimento no Hospital Santa Júlia (ref. SJU-G)');
-    expect(pedidosAoCote).toHaveLength(0);
-  });
-
-  it('sem página (anúncio Meta, conversa direta): leque padrão, como sempre', async () => {
-    await rodar('cot-pad', '5511900030005', 'oi, quero cotação');
-    expect(pedidosAoCote[0].operadoras).toEqual(['samel']);
   });
 });
 
@@ -462,36 +431,10 @@ describe('⭐ Roteiro + cotação: a página do site decide a operadora', () => 
 // quase tudo. Antes, o bot perguntava as 5 de novo — o lead respondia DUAS
 // vezes, que é o jeito mais rápido de perdê-lo.
 describe('⭐ Ficha do site: o roteiro só pergunta o que falta', () => {
-  const COTE_URL = 'https://cote.test/functions/v1/cotacao-externa';
-  const fetchOriginal = globalThis.fetch;
-  const pedidosAoCote: { operadoras: string[]; idades: number[] }[] = [];
   const CHAT = 'Olá! Quero uma cotação de plano de saúde.\n• Nome: Maria Souza\n• Para: Eu e minha família\n• Operadora: Hapvida\n• Pessoas: 1 pessoa\n• Quando: o quanto antes\n\n(ref. HAP-G-21345678901)';
   const SIMULADOR_COMPLETO = 'Olá! Quero uma cotação de plano de saúde.\n• Para: Só para mim\n• Pessoas: 2 (idades: 34, 31)\n• Operadora: Samel\n• Plano atual: Não tenho\n• Nome: João\n\n(ref. SAM-D)';
 
-  beforeAll(() => {
-    process.env.COTE_QUOTE_USER = 'roteiro@test.com';
-    process.env.COTE_QUOTE_URL = COTE_URL;
-    process.env.COTE_QUOTE_KEY = 'chave-teste';
-    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      if (String(url) === COTE_URL) {
-        const corpo = JSON.parse(String(init?.body));
-        pedidosAoCote.push(corpo);
-        return new Response(JSON.stringify({ ok: true, texto: `Cotação ${corpo.operadoras.join('+')}: R$ 500`, planos: [{}] }), { status: 200 });
-      }
-      return fetchOriginal(url, init);
-    }) as typeof fetch;
-  });
-
-  afterAll(() => {
-    globalThis.fetch = fetchOriginal;
-    delete process.env.COTE_QUOTE_USER;
-    delete process.env.COTE_QUOTE_URL;
-    delete process.env.COTE_QUOTE_KEY;
-  });
-
-  beforeEach(() => { pedidosAoCote.length = 0; });
-
-  it('⭐ balão de chat: pergunta só idades e plano atual, e cota a operadora escolhida', async () => {
+  it('⭐ balão de chat: pergunta só idades e plano atual', async () => {
     await configRoteiro('ficha-chat');
     respostasPorCampo({ idades: [34], plano_atual: 'nenhum' });
     const r1 = await enviar('ficha-chat', '5511900040001', CHAT);
@@ -507,9 +450,6 @@ describe('⭐ Ficha do site: o roteiro só pergunta o que falta', () => {
     for (const repetida of [P1, P2, P5]) expect(falas).not.toContain(repetida);
     expect(conv?.state).toBe('handoff');
     expect(conv?.label).toBe('QUENTE'); // "o quanto antes"
-    expect(pedidosAoCote).toHaveLength(1);
-    expect(pedidosAoCote[0].operadoras).toEqual(['hapvida']);
-    expect(pedidosAoCote[0].idades).toEqual([34]);
     expect(mockLerResposta).toHaveBeenCalledTimes(2); // só as 2 perguntas feitas
   });
 
@@ -521,12 +461,9 @@ describe('⭐ Ficha do site: o roteiro só pergunta o que falta', () => {
     await enviar('ficha-sim', '5511900040002', 'só pesquisando');
     const conv = await lerConversa('ficha-sim', '5511900040002');
     expect(conv?.label).toBe('FRIO');
-    // Samel dita pelo nome cota as mesmas tabelas da página da Samel.
-    expect(pedidosAoCote[0].operadoras).toEqual(['samel', 'samel empresarial']);
-    expect(pedidosAoCote[0].idades).toEqual([34, 31]);
   });
 
-  it('ficha que responde tudo fecha na 1ª mensagem: cota e passa ao vendedor', async () => {
+  it('ficha que responde tudo fecha na 1ª mensagem e passa ao vendedor', async () => {
     await configRoteiro('ficha-tudo');
     respostasPorCampo({});
     await enviar('ficha-tudo', '5511900040003', `${SIMULADOR_COMPLETO.replace('\n• Nome', '\n• Quando: o quanto antes\n• Nome')}`);
@@ -536,7 +473,7 @@ describe('⭐ Ficha do site: o roteiro só pergunta o que falta', () => {
     expect(mockLerResposta).not.toHaveBeenCalled();
     const falas = falasDoBot(conv);
     for (const p of [P1, P2, P3, P4, P5]) expect(falas).not.toContain(p);
-    expect(falas).toContain('Cotação samel+samel empresarial: R$ 500');
+    expect(falas).toContain(FECHAMENTO);
   });
 
   it('mensagem comum continua com o roteiro inteiro', async () => {
@@ -556,12 +493,6 @@ describe('⭐ Simulador é ensaio: nada sai do sistema', () => {
   const RESPOSTAS = ['é pra mim', 'somos 2', '34 e 31', 'não tenho', 'quero contratar'];
   const QUENTE = { tipo: 'pf', vidas: 2, idades: [34, 31], plano_atual: 'nenhum', urgencia: 'contratar' };
   const FONE = '5511900050001';
-
-  // Integração de cotação ligada, para o aviso ao vendedor trazer a nota. A
-  // página da Bradesco não tem tabela: o Cote+ nem é chamado.
-  const COTE = { COTE_QUOTE_USER: 'roteiro@test.com', COTE_QUOTE_URL: 'https://cote.test/x', COTE_QUOTE_KEY: 'k' };
-  beforeAll(() => { Object.assign(process.env, COTE); });
-  afterAll(() => { for (const k of Object.keys(COTE)) delete process.env[k]; });
 
   function ensaiar(businessId: string, from: string, text: string) {
     return request(app)
@@ -595,7 +526,6 @@ describe('⭐ Simulador é ensaio: nada sai do sistema', () => {
 
     // O aviso que iria ao vendedor aparece na tela, marcado como teste.
     expect(ultima.body.reply).toContain('🧪 TESTE — este aviso NÃO foi enviado ao vendedor.');
-    expect(ultima.body.reply).toContain('Veio para Bradesco Saúde');
     // E as idades aparecem UMA vez — antes vinham no resumo e de novo na nota.
     expect(ultima.body.reply.match(/Idades:/g)).toHaveLength(1);
 
