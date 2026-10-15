@@ -4,7 +4,7 @@
 
 import prisma from '../../lib/prisma.js';
 import { cliqueDaConversa } from './clique.js';
-import { lookupContact } from './contacts.js';
+import { historicoDoNumero, lookupContact } from './contacts.js';
 import { instanceName } from './evolution.manager.js';
 import { LogTransport, PREFIXO_ENSAIO, resolveTransport, type InboundMessage } from './transport.js';
 import { lerRefDoSite, linhaDeOrigem, resolverOrigem } from './origem.js';
@@ -148,6 +148,9 @@ export function podeAbrirConversa(
 }
 
 export { cliqueDaConversa };
+
+/** Mensagem que o lead enviou há mais que isto é reentrega, não lead chegando. */
+export const MENSAGEM_VELHA_MS = 15 * 60 * 1000;
 
 /** Conversa sem nenhuma mensagem por este tempo é encerrada em silêncio. */
 export const CONVERSA_EXPIRA_MS = 48 * 60 * 60 * 1000;
@@ -336,6 +339,17 @@ export class WhatsappService {
     const config = await this.getConfig();
     if (!config || !config.enabled) return null;
 
+    // Mensagem velha reentregue (15/10/2026): quando o WhatsApp reconecta, a
+    // Evolution pode repassar mensagens de horas ou dias atrás como se fossem
+    // novas — e o bot respondia cliente que nem estava falando com ele. Quem
+    // escreveu há mais de 15 minutos já está na tela do vendedor; o bot cala.
+    // Vale também para o vendedor: um "fechou 1200" reentregue horas depois
+    // não pode registrar a venda de novo.
+    if (!msg.ensaio && msg.enviadaEm && Date.now() - msg.enviadaEm > MENSAGEM_VELHA_MS) {
+      console.log(`[whatsapp:velha] mensagem enviada em ${new Date(msg.enviadaEm).toISOString()} chegou agora — ignorada (lead ${msg.from}, userId ${this.userId}, negócio ${this.businessId})`);
+      return null;
+    }
+
     // ── O VENDEDOR respondendo o aviso de um lead (12/10/2026) ──────────────
     // ANTES de carregar/criar conversa, de propósito: o número do vendedor não
     // é lead. Até aqui a mensagem dele caía em podeAbrirConversa e era
@@ -369,6 +383,22 @@ export class WhatsappService {
         // ou porque o texto extraído do payload não é o que o lead digitou.
         console.log(`[whatsapp:trigger] msg que não veio de anúncio nem tem gatilho ("${config.triggerKeyword ?? ''}") ignorada — texto recebido: ${JSON.stringify(msg.text.slice(0, 200))} (userId ${this.userId}, negócio ${this.businessId}, lead ${msg.from})`);
         return null;
+      }
+
+      // Só CLIENTE NOVO (15/10/2026): cliente antigo também clica no anúncio
+      // ou no botão do site, e chegava aqui como lead. Quem já tem conversa
+      // com este WhatsApp é do vendedor — o bot não abre conversa com ele.
+      // Sem resposta da Evolution (null), segue: calar por falha de consulta
+      // perderia o lead novo, e a porta do anúncio acima já filtrou o resto.
+      if (config.transport === 'evolution' && !msg.ensaio && !msg.simulado) {
+        const historico = await historicoDoNumero(instanceName(this.userId, this.businessId), msg.from, msg);
+        if (historico.existente) {
+          console.log(`[whatsapp:cliente-antigo] ${historico.reason} — bot não abre conversa (lead ${msg.from}, userId ${this.userId}, negócio ${this.businessId})`);
+          return null;
+        }
+        if (historico.existente === null) {
+          console.warn(`[whatsapp:cliente-antigo] histórico indisponível (${historico.reason}) — tratado como número novo (lead ${msg.from}, userId ${this.userId}, negócio ${this.businessId})`);
+        }
       }
 
       // Limite diário: as primeiras N conversas NOVAS do dia são grátis; a

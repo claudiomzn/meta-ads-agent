@@ -1,3 +1,4 @@
+import { momentoDoWhatsapp } from './transport.js';
 // "Esse número já é um contato conhecido?" — pergunta à Evolution antes de o
 // bot atender um lead NOVO.
 //
@@ -77,5 +78,88 @@ export async function lookupContact(instance: string, phone: string): Promise<Co
     return judgeContacts(await resp.json(), digits);
   } catch (e) {
     return { known: null, reason: `falha na consulta: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
+// ── "Este número já conversava com você antes?" (15/10/2026) ─────────────────
+//
+// Caso real: o bot mandou mensagem para clientes antigos do Luiz. A porta
+// "nasceu de anúncio" (06/10) não basta: cliente antigo também clica no
+// anúncio ou no botão do site — e aí chega com referral/código como um lead
+// novo. O que distingue cliente novo de antigo é o HISTÓRICO da conversa: quem
+// é novo não tem mensagem nenhuma antes desta.
+//
+// Diferente da agenda (acima, em observação): o histórico não depende de nome
+// salvo nem de pushName (que todo mundo tem). Conta como conversa anterior:
+//   • qualquer mensagem ENVIADA por este WhatsApp para o número (fromMe) —
+//     alguém já falou com ele; e
+//   • mensagem DELE com mais de 10 minutos antes desta (as do mesmo minuto são
+//     o próprio lead mandando "oi" e "quero cotação" em seguida).
+// A própria mensagem que chegou (mesmo key.id) nunca conta.
+
+export type HistoricoVeredito = {
+  /** true = já conversavam; false = número novo; null = não deu pra saber. */
+  existente: boolean | null;
+  reason: string;
+};
+
+type MensagemDoHistorico = {
+  key?: { id?: string; fromMe?: boolean; remoteJid?: string };
+  messageTimestamp?: unknown;
+};
+
+const JANELA_DO_MESMO_CONTATO_MS = 10 * 60 * 1000;
+
+/** PURA: decide a partir do que a Evolution devolveu em /chat/findMessages. */
+export function julgarHistorico(
+  found: unknown,
+  opts: { mensagemId?: string | null; enviadaEm?: number | null; agora: number },
+): HistoricoVeredito {
+  if (found === null || found === undefined) return { existente: null, reason: 'sem resposta da Evolution' };
+
+  // v2: { messages: { records: [...] } }; outras: { records }, { messages: [...] } ou o array direto.
+  const f = found as { messages?: unknown; records?: unknown };
+  const lista: MensagemDoHistorico[] | null = Array.isArray(found) ? found as MensagemDoHistorico[]
+    : Array.isArray(f.records) ? f.records as MensagemDoHistorico[]
+      : Array.isArray(f.messages) ? f.messages as MensagemDoHistorico[]
+        : Array.isArray((f.messages as { records?: unknown } | undefined)?.records)
+          ? (f.messages as { records: MensagemDoHistorico[] }).records
+          : null;
+  if (!lista) return { existente: null, reason: 'formato de resposta desconhecido' };
+
+  const referencia = opts.enviadaEm ?? opts.agora;
+  for (const m of lista) {
+    if (opts.mensagemId && m.key?.id === opts.mensagemId) continue;
+    if (m.key?.fromMe) return { existente: true, reason: 'já houve mensagem enviada para este número' };
+    const em = momentoDoWhatsapp(m.messageTimestamp);
+    if (em != null && referencia - em > JANELA_DO_MESMO_CONTATO_MS) {
+      return { existente: true, reason: `o número já tinha escrito em ${new Date(em).toISOString().slice(0, 10)}` };
+    }
+  }
+  return { existente: false, reason: `${lista.length} mensagem(ns) no histórico, nenhuma anterior a esta conversa` };
+}
+
+/** Consulta o histórico do número na Evolution. Nunca lança: falha vira null. */
+export async function historicoDoNumero(
+  instance: string,
+  phone: string,
+  opts: { mensagemId?: string | null; enviadaEm?: number | null },
+): Promise<HistoricoVeredito> {
+  const base = (process.env.EVOLUTION_URL ?? '').replace(/\/$/, '');
+  const apikey = process.env.EVOLUTION_API_KEY ?? '';
+  if (!base || !apikey || !instance) return { existente: null, reason: 'Evolution não configurada' };
+
+  const digits = phone.replace(/\D/g, '');
+  try {
+    const resp = await fetch(`${base}/chat/findMessages/${instance}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey },
+      body: JSON.stringify({ where: { key: { remoteJid: `${digits}@s.whatsapp.net` } }, limit: 50 }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!resp.ok) return { existente: null, reason: `Evolution respondeu ${resp.status}` };
+    return julgarHistorico(await resp.json(), { ...opts, agora: Date.now() });
+  } catch (e) {
+    return { existente: null, reason: `falha na consulta: ${e instanceof Error ? e.message : String(e)}` };
   }
 }
