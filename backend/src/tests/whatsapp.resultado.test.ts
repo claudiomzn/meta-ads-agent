@@ -22,13 +22,6 @@ vi.mock('../services/capi.service.js', () => ({
   },
 }));
 
-// IA nunca é chamada: o fluxo do vendedor não passa por ela, e a conversa do
-// lead é criada direto no banco.
-const mockNextReply = vi.fn();
-vi.mock('../services/whatsapp/qualification.service.js', () => ({
-  nextReply: (...args: unknown[]) => mockNextReply(...args),
-}));
-
 import { WhatsappService } from '../services/whatsapp/whatsapp.service.js';
 import { enviarLembretesPendentes } from '../services/whatsapp/resultado.service.js';
 import { LogTransport } from '../services/whatsapp/transport.js';
@@ -386,29 +379,29 @@ describe('a qual lead, e quem pode falar', () => {
 });
 
 describe('handoffEm — o marco que o lembrete usa', () => {
+  // O bot só fala por roteiro (15/10/2026): a conversa vai ao vendedor quando
+  // a última pergunta é respondida. Pergunta sem campo — avança sem IA.
+  async function noUltimoPasso(leadPhone: string) {
+    await prisma.whatsappConfig.update({
+      where: { userId_businessId: { userId, businessId: 'default' } },
+      data: { scriptSteps: [{ pergunta: 'Qual o seu nome?', campo: null }] },
+    });
+    return prisma.whatsappConversation.create({
+      data: { userId, businessId: 'default', leadPhone, state: 'qualifying', label: null, botMessages: 1, scriptStep: 0 },
+    });
+  }
+
   it('⭐ é gravado quando a conversa vai para o vendedor', async () => {
-    mockNextReply.mockResolvedValue({
-      reply: 'Vou te passar para o consultor!', state: 'handoff', done: true,
-      label: 'QUENTE', summary: 'Tipo: Empresa (CNPJ)',
-    });
-    const conv = await prisma.whatsappConversation.create({
-      data: { userId, businessId: 'default', leadPhone: '559291111009', state: 'qualifying', label: null },
-    });
-    await new WhatsappService(userId).handleInbound({ from: '559291111009', text: 'quero contratar', transport: 'log' });
+    const conv = await noUltimoPasso('559291111009');
+    await new WhatsappService(userId).handleInbound({ from: '559291111009', text: 'João', transport: 'log' });
     const depois = await prisma.whatsappConversation.findUnique({ where: { id: conv.id } });
     expect(depois?.state).toBe('handoff');
     expect(depois?.handoffEm).not.toBeNull();
   });
 
   it('⭐ o aviso que o vendedor recebe no handoff ensina a responder', async () => {
-    mockNextReply.mockResolvedValue({
-      reply: 'Vou te passar para o consultor!', state: 'handoff', done: true,
-      label: 'QUENTE', summary: 'Tipo: Empresa (CNPJ)',
-    });
-    await prisma.whatsappConversation.create({
-      data: { userId, businessId: 'default', leadPhone: '559291111010', state: 'qualifying', label: null },
-    });
-    await new WhatsappService(userId).handleInbound({ from: '559291111010', text: 'quero contratar', transport: 'log' });
+    await noUltimoPasso('559291111010');
+    await new WhatsappService(userId).handleInbound({ from: '559291111010', text: 'Maria', transport: 'log' });
     const aviso = enviadas.find((e) => e.to === VENDEDOR);
     expect(aviso?.text).toContain('Contato: 559291111010');
     expect(aviso?.text.endsWith(

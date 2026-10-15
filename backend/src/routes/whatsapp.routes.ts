@@ -113,6 +113,8 @@ router.get('/ativacao', authMiddleware, async (req: AuthRequest, res: Response) 
         triggerKeyword: config.triggerKeyword,
         scriptEnabled: config.scriptEnabled,
         scriptSteps: config.scriptSteps,
+        scriptIntro: config.scriptIntro,
+        scriptClosing: config.scriptClosing,
         questions: config.questions,
       },
       conexao,

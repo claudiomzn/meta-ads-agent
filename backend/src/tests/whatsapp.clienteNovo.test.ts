@@ -88,7 +88,7 @@ afterEach(() => {
 
 async function config(businessId: string) {
   await request(app).post('/api/whatsapp/config').set('Authorization', `Bearer ${token}`)
-    .send({ businessName: 'Corretora', product: 'Plano de saúde', enabled: true, businessId });
+    .send({ businessName: 'Corretora', product: 'Plano de saúde', enabled: true, businessId, questions: ['Qual o seu nome?'] });
   // Limite 0: responde sem chamar a IA. Transporte Evolution de verdade.
   await prisma.whatsappConfig.update({
     where: { userId_businessId: { userId, businessId } },

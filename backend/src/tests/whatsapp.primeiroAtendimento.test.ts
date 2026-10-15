@@ -67,7 +67,7 @@ beforeEach(() => { mockSendLead.mockClear(); });
 
 async function config(businessId: string, extra: Record<string, unknown> = {}, direto: Record<string, unknown> = {}) {
   await request(app).post('/api/whatsapp/config').set('Authorization', `Bearer ${token}`)
-    .send({ businessName: 'Corretora', product: 'Plano de saúde', enabled: true, businessId, ...extra });
+    .send({ businessName: 'Corretora', product: 'Plano de saúde', enabled: true, businessId, questions: ['Qual o seu nome?'], ...extra });
   if (Object.keys(direto).length) {
     await prisma.whatsappConfig.update({ where: { userId_businessId: { userId, businessId } }, data: direto });
   }
@@ -121,18 +121,9 @@ describe('⭐ Brecha 1: gatilho em branco não abre conversa com qualquer um', (
   });
 });
 
-describe('⭐ Brecha 2: estourar o limite de mensagens não vira QUENTE', () => {
-  it('vai ao vendedor SEM rótulo e sem conversão para Google/Meta', async () => {
-    await config('pa-2', {}, { maxBotMessages: 0, handoffContact: '+5592999990000' });
-    const r = await receber('pa-2', '5592900000201', 'oi (ref. SAM-G)');
-    expect(r?.state).toBe('handoff');
-    const conv = await conversa('pa-2', '5592900000201');
-    expect(conv?.state).toBe('handoff');
-    expect(conv?.label).toBeNull();
-    expect(conv?.capiLeadFired).toBe(false);
-    expect(mockSendLead).not.toHaveBeenCalled();
-  });
-});
+// Brecha 2 (limite de mensagens do modo IA virando QUENTE) deixou de existir
+// com o modo IA (15/10/2026): o bot só fala por roteiro — ver
+// whatsapp.soRoteiro.test.ts.
 
 describe('⭐ Brecha 3: conversa largada no meio expira em 48h', () => {
   it('lead que volta depois de 3 dias: bot fica mudo e a conversa fecha', async () => {

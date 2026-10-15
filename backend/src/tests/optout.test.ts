@@ -82,15 +82,6 @@ describe('estados que silenciam o bot', () => {
     expect(svc).toContain("conv.state === 'closed' || conv.state === 'handoff' || conv.state === 'cold'");
   });
 
-  it('a IA é instruída a encerrar quando o assunto não é plano de saúde', () => {
-    const qual = readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), '../services/whatsapp/qualification.service.ts'),
-      'utf-8',
-    );
-    expect(qual).toContain('NÚMERO TROCADO');
-    expect(qual).toContain('done=true, label "FRIO"');
-  });
-
   it('existe como encerrar uma conversa já aberta (o gatilho só vale no nascimento)', () => {
     const routes = readFileSync(
       join(dirname(fileURLToPath(import.meta.url)), '../routes/whatsapp.routes.ts'),

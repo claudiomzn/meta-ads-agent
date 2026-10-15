@@ -8,6 +8,7 @@ import { historicoDoNumero, lookupContact } from './contacts.js';
 import { instanceName } from './evolution.manager.js';
 import { LogTransport, PREFIXO_ENSAIO, resolveTransport, type InboundMessage } from './transport.js';
 import { lerRefDoSite, linhaDeOrigem, resolverOrigem } from './origem.js';
+import { roteiroEfetivo } from './roteiro.efetivo.js';
 import { resolverCampanhaDoAnuncio } from './origem.meta.js';
 import {
   type CotacaoResultado,
@@ -22,7 +23,6 @@ import {
   REPLY_COTACAO_FALHOU,
   resolverIntegracao,
 } from './cotacao.integration.js';
-import { nextReply, type QualConfig, type QualTurn } from './qualification.service.js';
 import {
   lerRoteiro,
   lerResposta,
@@ -509,126 +509,18 @@ export class WhatsappService {
       }
     }
 
-    // Roteiro fixo: desvia ANTES de montar a QualConfig. Daqui pra baixo é o
-    // fluxo generativo, onde a IA escreve cada mensagem — é exatamente o que o
-    // roteiro existe para não fazer.
-    if (config.scriptEnabled) {
-      return await this.handleScript(config, conv, msg, history);
+    // SÓ ROTEIRO (15/10/2026): a IA não fala mais com o lead. O antigo "modo
+    // IA" escrevia cada mensagem e mandou conversa fora de contexto a leads de
+    // verdade. Config que ainda não tem roteiro salvo usa as perguntas que o
+    // cliente escreveu para o modo IA, literais (ver roteiro.efetivo.ts).
+    const roteiro = roteiroEfetivo(config);
+    if (roteiro.convertido && conv.botMessages === 0) {
+      console.log(`[whatsapp:roteiro] sem roteiro salvo — usando as ${roteiro.passos.length} perguntas da config como roteiro (userId ${this.userId}, negócio ${this.businessId})`);
     }
-
-    const cfg: QualConfig = {
-      businessName: config.businessName,
-      product: config.product,
-      differentials: config.differentials,
-      region: config.region,
-      tone: config.tone,
-      questions: (config.questions as unknown as string[]) ?? [],
-      qualifiedCriteria: config.qualifiedCriteria,
-      maxQuestions: config.maxQuestions,
-      maxBotMessages: config.maxBotMessages,
-      businessHours: config.businessHours,
-    };
-
-    const turns: QualTurn[] = history.map((h) => ({ role: h.role, text: h.text }));
-    const result = await nextReply(this.userId, cfg, turns, conv.questionsAsked, conv.botMessages);
-
-    // ── Cotação na hora (integração personalizada, ver cotacao.integration.ts) ──
-    // Decidido ANTES de enviar: se esta conta tem a integração ligada, o lead é
-    // QUENTE e pessoa física com idades válidas, a resposta de encerramento
-    // vira a frase fixa "vou te passar uma cotação agora" — e o código a
-    // cumpre logo abaixo. Em qualquer outro caso a resposta da IA segue
-    // intacta, que é o comportamento de todo cliente do AdsGenius.
-    const integracao = process.env.COTE_QUOTE_USER
-      ? resolverIntegracao({
-        userId: this.userId,
-        email: (await prisma.user.findUnique({ where: { id: this.userId }, select: { email: true } }))?.email,
-      })
-      : null;
-    const dadosLead = result.done ? extrairDadosParaCotacao(result.dados) : null;
-    // Qual operadora: a que o lead disse, senão a da página do site. Plano que
-    // o Luiz vende sem tabela no Cote+ não promete cotação — vai ao vendedor.
-    const plano = dadosLead ? planoDeCotacao(dadosLead, conv.origemRef) : {};
-    const semTabelaDe = semTabela(plano);
-    const vaiCotar = Boolean(integracao) && result.done && result.label === 'QUENTE'
-      && podeCotarAutomaticamente(dadosLead) && !semTabelaDe;
-    const replyFinal = vaiCotar ? REPLY_COTACAO_AGORA : result.reply;
-
-    // Envia a resposta pelo transporte configurado
-    const transport = this.transporte(config, msg);
-    await transport.sendText(msg.from, replyFinal);
-
-    history.push({ role: 'assistant', text: replyFinal, at: new Date().toISOString() });
-
-    // A promessa acima é cumprida aqui. Falhou o Cote+? O lead recebe uma
-    // mensagem honesta ("o consultor te envia em instantes") e o vendedor
-    // recebe as idades para cotar à mão — ninguém fica no vácuo.
-    let notaVendedor = '';
-    let textoCotacao = '';
-    if (vaiCotar && integracao && dadosLead) {
-      let cotacao: CotacaoResultado | null = null;
-      let falha: string | undefined;
-      try {
-        cotacao = await cotarRespeitandoPreferencia(integracao, dadosLead, opcoesDoPlano(plano));
-      } catch (e) {
-        falha = e instanceof Error ? e.message : String(e);
-        console.error('[whatsapp:cotacao] falha ao pedir cotação ao Cote+:', e);
-      }
-      const textoAoLead = cotacao?.ok && cotacao.texto ? cotacao.texto : REPLY_COTACAO_FALHOU;
-      await transport.sendText(msg.from, textoAoLead).catch((e) =>
-        console.error('[whatsapp:cotacao] falha ao enviar cotação ao lead:', e),
-      );
-      history.push({ role: 'assistant', text: textoAoLead, at: new Date().toISOString() });
-      notaVendedor = montarNotaParaVendedor(dadosLead, cotacao, falha);
-      textoCotacao = textoAoLead;
-    } else if (integracao && result.done && result.label === 'QUENTE') {
-      // Integração ligada mas sem como cotar (CNPJ, idades ausentes): o
-      // vendedor fica sabendo o porquê e não repete as perguntas.
-      notaVendedor = montarNotaParaVendedor(dadosLead, null, undefined, semTabelaDe);
-    }
-
-    // Handoff: avisa o vendedor com o resumo
-    let avisoDeEnsaio = '';
-    if (result.done && result.state === 'handoff' && config.handoffContact) {
-      const resumo = [result.summary ?? '', notaVendedor, linhaDeOrigem(conv)].filter(Boolean).join('\n');
-      const aviso = await this.notifyVendor(config.handoffContact, msg.from, resumo, transport, msg.ensaio);
-      if (msg.ensaio) avisoDeEnsaio = aviso;
-    }
-
-    // Lead QUALIFICADO (QUENTE) → envia a conversão de Lead server-side às DUAS
-    // plataformas, uma única vez. Só no lead qualificado (não no 1º contato),
-    // para os algoritmos otimizarem por QUALIDADE de lead, não volume de clique.
-    //   • Meta CAPI (evento Lead)
-    //   • Google Enhanced Conversions for Leads (upload pelo telefone)
-    const isQualified = result.done && result.label === 'QUENTE';
-    // Ensaio nunca sobe conversão: um lead de teste no Google/Meta ensinaria o
-    // lance a procurar gente que não existe.
-    const shouldReport = isQualified && !conv.capiLeadFired && !msg.ensaio;
-    if (shouldReport) {
-      await this.fireCapiLead(conv.id, msg.from, msg.ctwaClid);
-      await this.fireGoogleLeadConversion(msg.from, conv.id);
-    }
-
-    await prisma.whatsappConversation.update({
-      where: { id: conv.id },
-      data: {
-        state: result.state,
-        label: result.label ?? conv.label,
-        // Marco do handoff: base do relógio dos lembretes ao vendedor. Só na
-        // TRANSIÇÃO — `updatedAt` não serve (se move a cada escrita, inclusive
-        // a do próprio lembrete).
-        ...(result.state === 'handoff' && conv.state !== 'handoff' ? { handoffEm: new Date() } : {}),
-        questionsAsked: conv.questionsAsked + (result.state === 'qualifying' ? 1 : 0),
-        botMessages: conv.botMessages + 1,
-        history: history as unknown as object,
-        summary: result.summary ?? conv.summary,
-        capiLeadFired: conv.capiLeadFired || shouldReport,
-      },
-    });
-
-    // O simulador da tela mostra só o que volta aqui: com cotação, volta as
-    // duas mensagens que o lead recebeu.
-    const respostaAoLead = textoCotacao ? `${replyFinal}\n\n${textoCotacao}` : replyFinal;
-    return { reply: avisoDeEnsaio ? `${respostaAoLead}\n\n${avisoDeEnsaio}` : respostaAoLead, state: result.state };
+    return await this.handleScript(
+      { ...config, scriptSteps: roteiro.passos as unknown as typeof config.scriptSteps, scriptIntro: roteiro.intro, scriptClosing: roteiro.encerramento },
+      conv, msg, history,
+    );
   }
 
   // ── Modo ROTEIRO FIXO ───────────────────────────────────────────────────────
@@ -643,9 +535,9 @@ export class WhatsappService {
   ): Promise<{ reply: string; state: string } | null> {
     const passos = lerRoteiro(config.scriptSteps);
     if (!passos.length) {
-      // Roteiro ligado e vazio: o bot fica MUDO. A alternativa seria cair no
-      // fluxo generativo — exatamente o que ligar o roteiro quis desligar.
-      console.warn(`[whatsapp:roteiro] scriptEnabled sem nenhum passo válido — bot mudo (userId ${this.userId}, negócio ${this.businessId})`);
+      // Sem roteiro e sem perguntas: o bot fica MUDO. Não existe mais fluxo
+      // generativo para onde cair — e calar é melhor do que improvisar.
+      console.warn(`[whatsapp:roteiro] sem roteiro nem perguntas na config — bot mudo (userId ${this.userId}, negócio ${this.businessId})`);
       return null;
     }
 
