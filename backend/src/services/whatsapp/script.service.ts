@@ -1,9 +1,10 @@
 // Modo ROTEIRO FIXO — o bot fala SÓ as palavras que o cliente escreveu.
 //
-// ⭐ A diferença para o `qualification.service.ts` é a única que importa:
-// lá a IA ESCREVE cada mensagem, aqui a IA nunca escreve nada. O roteiro fala
-// (texto literal da config, palavra por palavra) e a IA só LÊ a resposta do
-// lead para preencher um campo. Nada que a IA devolve é enviado ao cliente.
+// ⭐ A IA nunca escreve nada aqui. O roteiro fala (texto literal da config,
+// palavra por palavra) e a IA só LÊ a resposta do lead para preencher um
+// campo. Nada que a IA devolve é enviado ao cliente. Desde 15/10/2026 este é
+// o ÚNICO modo do bot: o antigo motor generativo (qualification.service.ts),
+// em que a IA escrevia cada mensagem, foi apagado — ver roteiro.efetivo.ts.
 //
 // Isso veio de um problema real (24/09/2026, Amazon Corretora): o bot gerava
 // conversa fora de contexto com o cliente. Não era regra desobedecida — era o

@@ -23,7 +23,7 @@ const ROTEIRO = [
 const base: EntradaDaAtivacao = {
   config: {
     enabled: true, handoffContact: '5592999990000', triggerKeyword: '(ref., vi o anúncio e quero uma cotação',
-    scriptEnabled: true, scriptSteps: ROTEIRO, questions: [],
+    scriptEnabled: true, scriptSteps: ROTEIRO, scriptIntro: null, scriptClosing: null, questions: [],
   },
   conexao: { estado: 'open' },
   ensaioConcluidoEm: new Date('2026-10-06T12:00:00Z'),
@@ -55,10 +55,16 @@ describe('avaliarAtivacaoWhatsapp — regra pura', () => {
     expect(passo({ ...base, config: null }, 'roteiro').motivo).toContain('não foi configurado');
   });
 
-  it('modo IA com perguntas passa, mas avisa que o roteiro fixo é o recomendado', () => {
-    const p = passo({ ...base, config: { ...base.config!, scriptEnabled: false, questions: ['Quantas pessoas?'] } }, 'roteiro');
+  it('⭐ sem roteiro salvo, as perguntas antigas viram roteiro: passa, e pede para revisar', () => {
+    const p = passo({ ...base, config: { ...base.config!, scriptEnabled: false, scriptSteps: [], questions: ['Quantas pessoas?'] } }, 'roteiro');
     expect(p.ok).toBe(true);
-    expect(p.aviso).toContain('modo IA');
+    expect(p.aviso).toContain('revise o roteiro');
+  });
+
+  it('sem roteiro e sem perguntas: não passa — o robô ficaria mudo', () => {
+    const p = passo({ ...base, config: { ...base.config!, scriptSteps: [], questions: [] } }, 'roteiro');
+    expect(p.ok).toBe(false);
+    expect(p.motivo).toContain('fica mudo');
   });
 
   it('gatilho em branco: passa, com o aviso de quem o robô deixa de atender', () => {

@@ -5,7 +5,7 @@
 // A regra mora aqui, no servidor, e o app só exibe: duas cópias da mesma
 // regra (tela e backend) divergem em silêncio — foi o que deixou o texto do
 // gatilho na tela dizendo uma coisa e o robô fazendo outra.
-import { lerRoteiro } from './script.service.js';
+import { roteiroEfetivo } from './roteiro.efetivo.js';
 import { parseTriggerKeywords } from './whatsapp.service.js';
 
 export type ChaveDoPasso = 'whatsapp' | 'roteiro' | 'simulador' | 'primeiro_quente';
@@ -28,6 +28,8 @@ export interface EntradaDaAtivacao {
     triggerKeyword: string | null;
     scriptEnabled: boolean;
     scriptSteps: unknown;
+    scriptIntro: string | null;
+    scriptClosing: string | null;
     questions: unknown;
   } | null;
   /** Estado da conexão: 'open' = conectado; null = transporte sem consulta. */
@@ -60,22 +62,21 @@ export function avaliarAtivacaoWhatsapp(e: EntradaDaAtivacao): PassoDeAtivacao[]
     motivoRoteiro = 'O robô está desligado. Marque "Ativo" na tela do robô.';
   } else if (!c.handoffContact?.trim()) {
     motivoRoteiro = 'Falta o WhatsApp do vendedor: sem ele ninguém é avisado quando o lead termina o atendimento.';
-  } else if (c.scriptEnabled) {
-    const passos = lerRoteiro(c.scriptSteps);
-    if (!passos.length) {
-      motivoRoteiro = 'O roteiro fixo está ligado, mas sem perguntas: o robô fica mudo.';
-    } else if (!passos.some((p) => p.campo === 'urgencia')) {
+  } else {
+    // Só roteiro (15/10/2026): o salvo, ou as perguntas convertidas.
+    const roteiro = roteiroEfetivo(c);
+    if (!roteiro.passos.length) {
+      motivoRoteiro = 'O robô não tem roteiro: escreva as perguntas na tela do robô. Sem elas ele fica mudo.';
+    } else if (!roteiro.passos.some((p) => p.campo === 'urgencia')) {
       // Ver CLAUDE.md: roteiro sem `urgencia` marca todo lead como FRIO e para
       // de reportar conversão, em silêncio.
       motivoRoteiro = 'O roteiro não tem a pergunta de urgência ("pretende contratar nos próximos dias?"). Sem ela nenhum lead vira QUENTE e a conversão não sobe ao Google nem à Meta.';
     } else {
       roteiroOk = true;
+      if (roteiro.convertido) {
+        avisoRoteiro = 'O robô está usando as suas perguntas antigas como roteiro. Abra a tela do robô, revise o roteiro e salve.';
+      }
     }
-  } else {
-    const perguntas = Array.isArray(c.questions) ? c.questions.filter((q) => typeof q === 'string' && q.trim()) : [];
-    roteiroOk = perguntas.length > 0;
-    motivoRoteiro = 'O robô não tem perguntas de qualificação.';
-    avisoRoteiro = 'O robô está no modo IA, que escreve as próprias mensagens. O roteiro fixo manda as suas perguntas palavra por palavra e é o recomendado.';
   }
   if (c && !parseTriggerKeywords(c.triggerKeyword ?? '').length) {
     const semGatilho = 'Sem palavra-gatilho, o robô só atende quem clica em anúncio da Meta ou vem do seu site com o código "(ref. …)". Lead de outro site ou de anúncio do Google sem o código não é atendido.';

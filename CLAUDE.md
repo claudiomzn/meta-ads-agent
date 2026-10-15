@@ -77,14 +77,13 @@ npx vitest run <arquivo> --reporter=json --outputFile=/tmp/res.json
 
 **Mock acessado com `new` precisa ser uma CLASSE de verdade.** `vi.fn().mockImplementation(() => ({...}))` não é construtível: o `TypeError` é engolido pelo `try/catch` da produção e um `expect(...).not.toHaveBeenCalled()` passa **sempre**. Confirme que todo teste novo **reprova** o código antigo.
 
-## Modo roteiro fixo do bot (25/09/2026)
+## O bot só fala por roteiro (25/09 → 15/10/2026)
 
-Existem dois comportamentos no mesmo bot, e a chave é `WhatsappConfig.scriptEnabled`:
+Desde 15/10/2026 **não existe mais modo IA**: o bot envia **literalmente** o texto do roteiro, uma pergunta por vez, e a IA só **lê** a resposta para preencher um campo. Nada que a IA devolve chega ao cliente. No fim manda uma frase de encerramento, avisa o vendedor e cala para sempre naquele número (`handoff` é estado terminal).
 
-- **`false`** (padrão) — modo generativo: a IA escreve cada mensagem.
-- **`true`** — roteiro fixo: o bot envia **literalmente** o texto da config, uma pergunta por vez, e a IA só **lê** a resposta para preencher um campo. Nada que a IA devolve chega ao cliente. No fim manda uma frase de encerramento, avisa o vendedor e cala para sempre naquele número (`handoff` é estado terminal).
+Histórico: o roteiro fixo nasceu em 25/09 como opção (`WhatsappConfig.scriptEnabled`), porque o modo generativo gerava conversa fora de contexto. Em 15/10 o modo IA mandou mensagens "aleatórias" a leads reais e foi **apagado** (`qualification.service.ts` não existe mais). `scriptEnabled` ficou no banco mas **não decide nada**.
 
-Veio de um problema real: o bot gerava conversa fora de contexto com o lead. Separar **quem fala** de **quem entende** preserva o orçamento automático (que precisa de tipo + idades estruturados) sem devolver o microfone à IA.
+Qual roteiro vale (`roteiro.efetivo.ts`): o salvo em `scriptSteps`; senão, as antigas "Perguntas de qualificação" (`questions`) convertidas — linhas iniciais sem "?" viram apresentação, cada pergunta vai literal com o campo deduzido do texto, e a pergunta de urgência é acrescentada se faltar; senão, o bot fica mudo.
 
 ⚠️ O `campo` de cada passo decide o rótulo **QUENTE/FRIO**, e o rótulo decide se a conversão de lead qualificado sobe para o Google e para o Meta. Roteiro sem o campo `urgencia` marca todo lead como frio e **para de reportar conversão, em silêncio**.
 

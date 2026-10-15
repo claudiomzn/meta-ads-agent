@@ -13,16 +13,6 @@ import whatsappRoutes from '../routes/whatsapp.routes.js';
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
-// O motor generativo. Se ele for chamado no modo roteiro, é regressão.
-const mockNextReply = vi.fn().mockResolvedValue({
-  reply: 'Texto INVENTADO pela IA — nunca deveria chegar ao lead no modo roteiro.',
-  state: 'qualifying',
-  done: false,
-});
-vi.mock('../services/whatsapp/qualification.service.js', () => ({
-  nextReply: (...args: unknown[]) => mockNextReply(...args),
-}));
-
 // A leitura de campo é a ÚNICA chamada de IA do modo roteiro. Mockamos só ela
 // e deixamos as funções puras reais — são elas que definem o comportamento que
 // este arquivo está testando.
@@ -139,7 +129,6 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
-  mockNextReply.mockClear();
   mockLerResposta.mockReset();
   mockSendLead.mockClear();
   mockCampanhaDoAnuncio.mockClear();
@@ -158,7 +147,6 @@ describe('⭐ Roteiro fixo: quem fala é o roteiro, a IA só lê', () => {
 
     const conv = await lerConversa('rot-a', '5511900010001');
     expect(falasDoBot(conv)).toEqual([INTRO, P1]);
-    expect(mockNextReply).not.toHaveBeenCalled();
     expect(mockLerResposta).not.toHaveBeenCalled(); // nada a ler ainda
     expect(conv?.scriptStep).toBe(0);
   });
@@ -178,7 +166,6 @@ describe('⭐ Roteiro fixo: quem fala é o roteiro, a IA só lê', () => {
     // ⭐ A frase de encerramento sai JUNTO com a última resposta — quem acabou
     // de responder tudo não pode ficar no vácuo esperando.
     expect(falasDoBot(conv)).toEqual([INTRO, P1, P2, P3, P4, P5, FECHAMENTO]);
-    expect(mockNextReply).not.toHaveBeenCalled();
     expect(conv?.state).toBe('handoff');
     // ⭐ QUENTE sobe a conversão. Esta asserção também é o que prova que o mock
     // do CAPI está LIGADO — sem ela, o `not.toHaveBeenCalled()` do teste FRIO
@@ -252,7 +239,6 @@ describe('Resposta fora do roteiro: repete UMA vez, depois segue', () => {
     expect(conv?.state).toBe('handoff');
     expect(conv?.label).toBe('FRIO');
     expect(conv?.summary).toContain('Pessoas: não respondeu');
-    expect(mockNextReply).not.toHaveBeenCalled();
   });
 });
 
@@ -271,7 +257,6 @@ describe('Depois do encerramento: silêncio de verdade', () => {
     const conv = await lerConversa('rot-b', '5511900010002');
     expect(falasDoBot(conv)).toEqual(antes); // nenhuma fala nova
     expect(conv?.state).toBe('handoff');
-    expect(mockNextReply).not.toHaveBeenCalled();
   });
 });
 
@@ -306,7 +291,6 @@ describe('Config: o roteiro não pode sumir sozinho', () => {
 
     const res = await enviar('rot-vazio', '5511900010005', 'oi');
     expect(res.body.reply).toBeUndefined();
-    expect(mockNextReply).not.toHaveBeenCalled();
   });
 });
 
@@ -650,30 +634,6 @@ describe('⭐ Simulador é ensaio: nada sai do sistema', () => {
       .get('/api/whatsapp/usage?businessId=ensaio-a')
       .set('Authorization', `Bearer ${token}`);
     expect(uso.body.todayConversations).toBe(0);
-  });
-
-  it('⭐ modo generativo (sem roteiro): mesmo ensaio — nada sai, nada sobe, o aviso vem na tela', async () => {
-    await configRoteiro('ensaio-ia', { scriptEnabled: false });
-    await prisma.whatsappConfig.update({
-      where: { userId_businessId: { userId, businessId: 'ensaio-ia' } },
-      data: { transport: 'evolution', transportConfig: { baseUrl: 'http://evolution.invalid', apiKey: 'k', instance: 'i' } },
-    });
-    mockNextReply.mockResolvedValueOnce({
-      reply: 'Perfeito, já passei para o corretor!', state: 'handoff', done: true,
-      label: 'QUENTE', summary: 'Quer contratar esta semana',
-    });
-    const { EvolutionTransport } = await import('../services/whatsapp/transport.js');
-    const evolution = vi.spyOn(EvolutionTransport.prototype, 'sendText').mockResolvedValue();
-
-    const r = await ensaiar('ensaio-ia', FONE, 'quero contratar plano');
-    evolution.mockRestore();
-
-    expect(mockNextReply).toHaveBeenCalledTimes(1); // prova que caiu no motor generativo
-    expect(evolution).not.toHaveBeenCalled();
-    expect(mockSendLead).not.toHaveBeenCalled();
-    expect(r.body.reply).toContain('Perfeito, já passei para o corretor!');
-    expect(r.body.reply).toContain('🧪 TESTE — este aviso NÃO foi enviado ao vendedor.');
-    expect(r.body.reply).toContain('Quer contratar esta semana');
   });
 
   it('sem `ensaio`, o simulador dos testes segue o fluxo real (é o que o resto da suíte usa)', async () => {

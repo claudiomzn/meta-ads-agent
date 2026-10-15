@@ -5,18 +5,6 @@ import { PrismaClient } from '@prisma/client';
 import authRoutes from '../routes/auth.routes.js';
 import whatsappRoutes from '../routes/whatsapp.routes.js';
 
-// ─── Mocks ──────────────────────────────────────────────────────────────────
-// Motor de IA: nunca chama a Anthropic de verdade nos testes — devolve uma
-// resposta fixa de "qualificando" (não encerra, não dispara CAPI/Google).
-const mockNextReply = vi.fn().mockResolvedValue({
-  reply: 'Oi! Me conta um pouco mais sobre o que você procura?',
-  state: 'qualifying',
-  done: false,
-});
-vi.mock('../services/whatsapp/qualification.service.js', () => ({
-  nextReply: (...args: unknown[]) => mockNextReply(...args),
-}));
-
 // E-mail: nunca envia de verdade (usado tanto pelo welcome do /register
 // quanto pelo aviso de recarga do bot).
 vi.mock('../services/email.service.js', () => ({
@@ -76,7 +64,6 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
-  mockNextReply.mockClear();
   mockEnsureAsaasCustomer.mockClear();
   mockCreateOverageCharge.mockClear();
 });
@@ -99,6 +86,9 @@ async function upsertConfig(
       product: 'Produto Teste',
       enabled: true,
       businessId,
+      // Sem roteiro nem perguntas o bot fica mudo (15/10/2026: não há mais modo
+      // IA para onde cair). Pergunta sem campo: avança sem chamar IA nenhuma.
+      questions: ['Qual o seu nome?'],
       ...overrides,
     });
   if (Object.keys(directPatch).length) {
@@ -228,15 +218,17 @@ describe('Corrida no MESMO lead: mensagens concorrentes são serializadas', () =
         .send({ businessId: 'lock-b', from: '+551190003002', text: 'segunda' }),
     ]);
 
-    const chamadasDesteTeste = mockNextReply.mock.calls.filter(
-      (args) => (args[2] as { text: string }[])?.some((t) => t.text === 'primeira' || t.text === 'segunda'),
-    );
-    expect(chamadasDesteTeste).toHaveLength(2);
-    const tamanhos = chamadasDesteTeste.map((args) => (args[2] as unknown[]).length).sort((a, b) => a - b);
-    // 1ª chamada vê só o próprio turno (1 mensagem no histórico); a 2ª,
-    // rodando DEPOIS da 1ª já ter salvo, vê os 3 (1 turno da 1ª + resposta +
-    // o turno novo dela). Se as duas virem o mesmo tamanho, é corrida.
-    expect(tamanhos).toEqual([1, 3]);
+    // Sem lock, as duas leriam a conversa vazia e mandariam, cada uma, a
+    // apresentação + 1ª pergunta. Serializadas, a 2ª já vê a 1ª respondida e
+    // segue para a pergunta seguinte: as respostas do bot NÃO se repetem.
+    const conv = await prisma.whatsappConversation.findUnique({
+      where: { userId_businessId_leadPhone: { userId, businessId: 'lock-b', leadPhone: '+551190003002' } },
+    });
+    const history = (conv?.history ?? []) as unknown as { role: string; text: string }[];
+    const doBot = history.filter((h) => h.role === 'assistant').map((h) => h.text);
+    expect(doBot.length).toBeGreaterThan(1);
+    expect(new Set(doBot).size).toBe(doBot.length);
+    expect(conv?.scriptStep).toBe(1);
   });
 });
 
@@ -349,7 +341,6 @@ describe('Palavra-gatilho por negócio', () => {
       where: { userId, businessId: 'trig-a' },
     });
     expect(convs).toHaveLength(0); // nenhuma conversa criada
-    expect(mockNextReply).not.toHaveBeenCalled(); // IA nunca chamada
   });
 
   it('1ª mensagem COM o gatilho em variação de caixa/acento cria a conversa e responde', async () => {
@@ -363,7 +354,6 @@ describe('Palavra-gatilho por negócio', () => {
       where: { userId_businessId_leadPhone: { userId, businessId: 'trig-a', leadPhone: '+551190007002' } },
     });
     expect(conv).not.toBeNull();
-    expect(mockNextReply).toHaveBeenCalled();
   });
 
   it('conversa JÁ existente responde normal mesmo sem o gatilho na mensagem', async () => {
@@ -374,7 +364,6 @@ describe('Palavra-gatilho por negócio', () => {
       .send({ businessId: 'trig-a', from: '+551190007002', text: 'pode me falar mais?' });
 
     expect(res.body.reply).toBeDefined();
-    expect(mockNextReply).toHaveBeenCalled();
   });
 
   // Sem gatilho, só abre conversa quem nasceu de anúncio (06/10/2026). O
