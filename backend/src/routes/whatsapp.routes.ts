@@ -16,6 +16,8 @@ import {
   webhookUrl,
 } from '../services/whatsapp/evolution.manager.js';
 import prisma from '../lib/prisma.js';
+import { aiBudget } from '../middleware/aiBudget.middleware.js';
+import { sugerirRoteiro } from '../services/whatsapp/roteiro.sugerido.js';
 
 const router = Router();
 
@@ -225,6 +227,29 @@ router.delete('/businesses/:businessId', authMiddleware, async (req: AuthRequest
       console.warn(`[whatsapp:businesses] falha ao apagar instância Evolution (${req.userId}/${businessId}):`, e));
   }
   res.json({ ok: true });
+});
+
+// ── "Criar roteiro com IA para o meu negócio" (15/10/2026) ───────────────────
+// Devolve um RASCUNHO conferido (roteiro.sugerido.ts): nada é salvo nem enviado
+// ao lead — o cliente revisa na tela e salva. O crédito de IA só é cobrado em
+// 2xx (aiBudget): IA fora do ar ou resposta inaproveitável → 502, crédito devolvido.
+router.post('/roteiro/sugerir', authMiddleware, aiBudget('creative_generate'), async (req: AuthRequest, res: Response) => {
+  const { businessName, product, region } = (req.body ?? {}) as Record<string, unknown>;
+  const produto = typeof product === 'string' ? product.trim() : '';
+  if (!produto) {
+    return res.status(400).json({ error: 'Preencha "Produto/serviço" para a IA saber o que você vende.' });
+  }
+  try {
+    const roteiro = await sugerirRoteiro({
+      businessName: typeof businessName === 'string' ? businessName.trim().slice(0, 120) : '',
+      product: produto.slice(0, 300),
+      region: typeof region === 'string' ? region.trim().slice(0, 120) : null,
+    });
+    return res.json(roteiro);
+  } catch (e) {
+    console.warn('[whatsapp:roteiro] sugestão da IA não aproveitada:', e instanceof Error ? e.message : 'erro');
+    return res.status(502).json({ error: 'Não consegui montar o roteiro agora. Tente de novo em instantes.' });
+  }
 });
 
 // ── Teste manual do fluxo (autenticado) — simula uma mensagem de lead ─────────
