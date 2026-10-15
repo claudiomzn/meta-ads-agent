@@ -31,6 +31,12 @@ export interface InboundMessage {
    * — ver podeAbrirConversa.
    */
   simulado?: boolean;
+  /** Id da mensagem no WhatsApp (key.id) — para não contar a própria mensagem
+   *  como "conversa anterior" ao consultar o histórico do número. */
+  mensagemId?: string | null;
+  /** Quando o lead ENVIOU a mensagem (ms), segundo o WhatsApp. Mensagem antiga
+   *  reentregue na reconexão não é lead chegando agora. */
+  enviadaEm?: number | null;
 }
 
 /** Prefixo do leadPhone das conversas de ensaio: isola do número real e deixa
@@ -114,7 +120,8 @@ export class EvolutionTransport implements WhatsappTransport {
     }
     const raw = Array.isArray(body.data) ? body.data[0] : body.data;
     const data = raw as {
-      key?: { remoteJid?: string; fromMe?: boolean };
+      key?: { remoteJid?: string; fromMe?: boolean; id?: string };
+      messageTimestamp?: unknown;
       message?: { conversation?: string; extendedTextMessage?: { text?: string } };
     } | undefined;
     if (!data?.key?.remoteJid) return null;
@@ -139,7 +146,11 @@ export class EvolutionTransport implements WhatsappTransport {
       console.warn('[whatsapp:origem] mensagem com cara de anúncio sem ctwaClid/sourceId reconhecível — chaves:',
         JSON.stringify(Object.keys((raw ?? {}) as object)), JSON.stringify(Object.keys((data.message ?? {}) as object)));
     }
-    return { from, text, transport: this.name, ctwaClid: anuncio?.ctwaClid ?? null, anuncio };
+    return {
+      from, text, transport: this.name, ctwaClid: anuncio?.ctwaClid ?? null, anuncio,
+      mensagemId: data.key.id ?? null,
+      enviadaEm: momentoDoWhatsapp(data.messageTimestamp),
+    };
   }
 }
 
@@ -166,4 +177,23 @@ export function resolveTransport(
     default:
       return new LogTransport();
   }
+}
+
+/**
+ * `messageTimestamp` do WhatsApp em ms. Vem em SEGUNDOS, e conforme a versão da
+ * Evolution como número, texto ou Long do protobuf ({ low, high }). Formato
+ * desconhecido → null (quem chama trata como "não dá para saber").
+ */
+export function momentoDoWhatsapp(v: unknown): number | null {
+  let seg: number | null = null;
+  if (typeof v === 'number') seg = v;
+  else if (typeof v === 'string' && /^\d+$/.test(v)) seg = Number(v);
+  else if (v && typeof v === 'object' && typeof (v as { low?: unknown }).low === 'number') {
+    const { low, high } = v as { low: number; high?: number };
+    seg = (high ?? 0) * 2 ** 32 + (low >>> 0);
+  }
+  if (seg == null || !Number.isFinite(seg)) return null;
+  const ms = seg > 1e11 ? seg : seg * 1000; // já veio em ms? não multiplica de novo
+  // Antes de 2020: não é um carimbo de verdade.
+  return ms < 1_577_836_800_000 ? null : ms;
 }
