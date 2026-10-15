@@ -125,23 +125,6 @@ export function montarResumoDoRoteiro(passos: PassoDoRoteiro[], dados: DadosDoRo
   return linhas.join('\n');
 }
 
-/**
- * PURO. Converte o que o roteiro coletou para o formato que a cotação
- * automática valida (ver cotacao.integration.ts).
- *
- * Não valida nada aqui de propósito — `extrairDadosParaCotacao` é quem trata
- * isto como entrada externa, e ter DOIS validadores é o jeito clássico de as
- * duas regras divergirem em silêncio.
- */
-export function dadosParaCotacao(dados: DadosDoRoteiro): Record<string, unknown> {
-  return {
-    tipo: dados.tipo ?? null,
-    vidas: dados.vidas ?? null,
-    idades: dados.idades ?? [],
-    operadora: dados.operadora ?? null,
-  };
-}
-
 const INSTRUCAO_POR_CAMPO: Record<CampoDoRoteiro, string> = {
   tipo:
     '"pf" se o plano é para a pessoa, a família ou dependentes; "cnpj" se é para uma empresa, MEI ou funcionários.',

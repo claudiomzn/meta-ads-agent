@@ -11,26 +11,12 @@ import { lerRefDoSite, linhaDeOrigem, resolverOrigem } from './origem.js';
 import { roteiroEfetivo } from './roteiro.efetivo.js';
 import { resolverCampanhaDoAnuncio } from './origem.meta.js';
 import {
-  type CotacaoResultado,
-  extrairDadosParaCotacao,
-  montarNotaParaVendedor,
-  cotarRespeitandoPreferencia,
-  opcoesDoPlano,
-  planoDeCotacao,
-  podeCotarAutomaticamente,
-  semTabela,
-  REPLY_COTACAO_AGORA,
-  REPLY_COTACAO_FALHOU,
-  resolverIntegracao,
-} from './cotacao.integration.js';
-import {
   lerRoteiro,
   lerResposta,
   roteiroTerminou,
   gravarCampo,
   rotuloDoLead,
   montarResumoDoRoteiro,
-  dadosParaCotacao,
   lerFichaDoSite,
   proximoPassoPendente,
   type PassoDoRoteiro,
@@ -628,50 +614,15 @@ export class WhatsappService {
     const rotulo = rotuloDoLead(dados);
     const enviados: string[] = [];
 
-    // Cotação na hora — mesma regra de sempre: só promete o que o código tem
-    // como cumprir (integração ligada + dados que passam na validação).
-    const integracao = process.env.COTE_QUOTE_USER
-      ? resolverIntegracao({
-        userId: this.userId,
-        email: (await prisma.user.findUnique({ where: { id: this.userId }, select: { email: true } }))?.email,
-      })
-      : null;
-    const dadosLead = extrairDadosParaCotacao(dadosParaCotacao(dados));
-    // O roteiro não pergunta operadora: a página do site de onde o lead veio
-    // é que diz. Sem isto, todo lead recebia a cotação do leque padrão (Samel).
+    // SEM COTAÇÃO AO LEAD (Luiz, 15/10/2026): "o bot faz o atendimento inicial e
+    // passa para o corretor fazer o orçamento. Faz isso em todas." Antes, na
+    // conta com a integração Cote+, o lead QUENTE recebia preços na hora — de
+    // todas as operadoras quando ninguém sabia qual plano ele queria. Preço é
+    // conversa do corretor: o robô só pergunta, encerra e passa.
     const origem = await prisma.whatsappConversation.findUnique({
       where: { id: convId }, select: { origemCanal: true, origemRef: true },
     });
-    const plano = dadosLead ? planoDeCotacao(dadosLead, origem?.origemRef) : {};
-    const semTabelaDe = semTabela(plano);
-    const vaiCotar = Boolean(integracao) && podeCotarAutomaticamente(dadosLead) && !semTabelaDe;
-
-    // Mesma condição do montarResumoDoRoteiro: se o resumo já traz "Idades",
-    // a nota não repete a linha.
-    const resumoTemIdades = passos.some((p) => p.campo === 'idades') && 'idades' in dados;
-    const opcoesDaNota = { semLinhaDeIdades: resumoTemIdades };
-    let notaVendedor = '';
     let textoFinal = '';
-    if (vaiCotar && integracao && dadosLead) {
-      await transport.sendText(leadPhone, REPLY_COTACAO_AGORA);
-      enviados.push(REPLY_COTACAO_AGORA);
-      let cotacao: CotacaoResultado | null = null;
-      let falha: string | undefined;
-      try {
-        cotacao = await cotarRespeitandoPreferencia(integracao, dadosLead, opcoesDoPlano(plano));
-      } catch (e) {
-        falha = e instanceof Error ? e.message : String(e);
-        console.error('[whatsapp:roteiro] falha ao pedir cotação ao Cote+:', e);
-      }
-      const textoAoLead = cotacao?.ok && cotacao.texto ? cotacao.texto : REPLY_COTACAO_FALHOU;
-      await transport.sendText(leadPhone, textoAoLead).catch((e) =>
-        console.error('[whatsapp:roteiro] falha ao enviar cotação ao lead:', e));
-      enviados.push(textoAoLead);
-      textoFinal = textoAoLead;
-      notaVendedor = montarNotaParaVendedor(dadosLead, cotacao, falha, undefined, opcoesDaNota);
-    } else if (integracao && semTabelaDe) {
-      notaVendedor = montarNotaParaVendedor(dadosLead, null, undefined, semTabelaDe, opcoesDaNota);
-    }
 
     // A ÚLTIMA frase que o lead ouve do bot, e ela sai AGORA — não na próxima
     // mensagem dele. Quem acabou de responder cinco perguntas não pode receber
@@ -690,7 +641,7 @@ export class WhatsappService {
     // respondeu um roteiro inteiro merece um humano olhando, e o resumo diz
     // o que ficou faltando (ver montarResumoDoRoteiro).
     if (config.handoffContact) {
-      const resumo = [montarResumoDoRoteiro(passos, dados), notaVendedor, origem ? linhaDeOrigem(origem) : null]
+      const resumo = [montarResumoDoRoteiro(passos, dados), origem ? linhaDeOrigem(origem) : null]
         .filter(Boolean).join('\n');
       const aviso = await this.notifyVendor(config.handoffContact, leadPhone, resumo, transport, ensaio);
       // No ensaio, o aviso que iria para o vendedor volta na resposta da tela.
@@ -704,7 +655,7 @@ export class WhatsappService {
       await this.fireGoogleLeadConversion(leadPhone, convId);
     }
 
-    console.log(`[whatsapp:roteiro] roteiro concluído (lead ${leadPhone}, rótulo ${rotulo}, cotou=${vaiCotar}) — bot em silêncio a partir daqui`);
+    console.log(`[whatsapp:roteiro] roteiro concluído (lead ${leadPhone}, rótulo ${rotulo}) — bot em silêncio a partir daqui`);
     return { texto: textoFinal, enviados, rotulo };
   }
 
