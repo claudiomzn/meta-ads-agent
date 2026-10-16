@@ -34,6 +34,11 @@ const AVISO_DO_JOAO = '🔔 Novo lead qualificado!\nContato: 559291111001\nTipo:
 let userId: string;
 const enviadas: Array<{ to: string; text: string }> = [];
 let fetchMock: ReturnType<typeof vi.fn>;
+// Tabela `campaigns` do Supabase: id da campanha Google → conta. Vazia = não
+// sincronizada (a venda cai na conta ativa, com aviso).
+let campanhas: Record<string, string> = {};
+const ATIVA = '4131358962'; // Tabelasamel
+const SITE_NOVO = '7285749588'; // "[Site novo] Planos de Saúde Manaus"
 
 beforeAll(async () => {
   process.env.SUPABASE_URL = 'https://supabase.test';
@@ -71,6 +76,7 @@ afterAll(async () => {
 beforeEach(async () => {
   enviadas.length = 0;
   purchases.length = 0;
+  campanhas = {};
   await prisma.whatsappConversation.deleteMany({ where: { userId } });
   await prisma.vendedorPendencia.deleteMany({ where: { userId } });
   await prisma.mCPConnection.upsert({
@@ -83,7 +89,14 @@ beforeEach(async () => {
   fetchMock = vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
     const u = String(url);
     if (u.includes('/rest/v1/google_ads_connections')) {
-      return respostaJson([{ active_customer_id: '4131358962' }]);
+      return respostaJson([{ active_customer_id: ATIVA, customer_ids: [ATIVA, SITE_NOVO, '3004856946'] }]);
+    }
+    if (u.includes('/rest/v1/campaigns')) {
+      const id = decodeURIComponent(/id=eq\.([^&]+)/.exec(u)?.[1] ?? '');
+      return respostaJson(campanhas[id] ? [{ customer_id: campanhas[id] }] : []);
+    }
+    if (u.includes('/rest/v1/agency_clients')) {
+      return respostaJson([]);
     }
     if (u.includes('/rest/v1/closed_sales')) {
       return respostaJson([{ id: 'venda-uuid-1' }]);
@@ -174,6 +187,29 @@ describe('"fechou <valor>" registra a venda', () => {
     await leadEmAberto({ origemCanal: 'meta_whatsapp', origemCampanhaId: '120210000000000' });
     await doVendedor('fechou 1200', AVISO_DO_JOAO);
     expect(corpoDoFetch('/rest/v1/closed_sales')).toMatchObject({ campaign_id: null });
+  });
+
+  it('⭐ venda de lead da campanha da 728 grava na 728, não na conta ativa', async () => {
+    campanhas = { '21345678901': SITE_NOVO };
+    await leadEmAberto({ origemCampanhaId: '21345678901' });
+    await doVendedor('fechou 1200', AVISO_DO_JOAO);
+    expect(corpoDoFetch('/rest/v1/closed_sales')).toMatchObject({ customer_id: SITE_NOVO, campaign_id: '21345678901' });
+  });
+
+  it('⭐ campanha não sincronizada: grava na ativa e AVISA no log', async () => {
+    const aviso = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await leadEmAberto({ origemCampanhaId: '99999999999' });
+    await doVendedor('fechou 1200', AVISO_DO_JOAO);
+    expect(corpoDoFetch('/rest/v1/closed_sales')).toMatchObject({ customer_id: ATIVA });
+    expect(aviso.mock.calls.some((c) => String(c[0]).includes('conta ATIVA') && String(c[0]).includes('99999999999'))).toBe(true);
+    aviso.mockRestore();
+  });
+
+  it('⭐ campanha de conta que NÃO é do usuário (ref forjado): não usa essa conta', async () => {
+    campanhas = { '21345678901': '1112223334' };
+    await leadEmAberto({ origemCampanhaId: '21345678901' });
+    await doVendedor('fechou 1200', AVISO_DO_JOAO);
+    expect(corpoDoFetch('/rest/v1/closed_sales')).toMatchObject({ customer_id: ATIVA });
   });
 
   it('⭐ "fechou" sem valor PERGUNTA o valor — não grava venda de valor zero', async () => {
