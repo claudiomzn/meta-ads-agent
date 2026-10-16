@@ -4,6 +4,7 @@
 
 import prisma from '../../lib/prisma.js';
 import { cliqueDaConversa } from './clique.js';
+import { contaGoogleDoLead, type ContaDoLead } from './conta.google.js';
 import { historicoDoNumero, lookupContact } from './contacts.js';
 import { instanceName } from './evolution.manager.js';
 import { LogTransport, PREFIXO_ENSAIO, resolveTransport, type InboundMessage } from './transport.js';
@@ -848,6 +849,25 @@ ou esperar a virada do dia, quando as conversas grátis renovam sozinhas.</p>
       // Lido AGORA, não na 1ª mensagem: o registro do site pode chegar depois.
       const clique = await cliqueDaConversa(convId);
 
+      // Conta do ANÚNCIO que trouxe o lead, não a ativa (16/10/2026): o lead
+      // da campanha da 728 subia na 413 e o Google recusava ou não casava.
+      // Sem campanha resolvida, a function cai na ativa — e isso fica no log.
+      const conv = await prisma.whatsappConversation.findUnique({
+        where: { id: convId }, select: { origemCanal: true, origemCampanhaId: true },
+      });
+      const campanhaGoogleId = conv?.origemCanal === 'google' ? conv.origemCampanhaId : null;
+      let conta: ContaDoLead;
+      try {
+        conta = await contaGoogleDoLead(base, serviceKey, user.supabaseUserId, campanhaGoogleId);
+      } catch (e) {
+        // O lead QUENTE não tem segunda chance: sem resposta do Supabase,
+        // sobe na ativa a avisar — melhor que não subir nada.
+        conta = { customerId: null, origem: 'ativa', aviso: `conta do anúncio ilegível (${e instanceof Error ? e.message : 'erro'})` };
+      }
+      if (conta.aviso) {
+        console.warn(`[google-conv] ⚠️ lead ${leadPhone} vai para a conta ATIVA — ${conta.aviso}. Se veio de anúncio de outra conta, o Google não vai casar.`);
+      }
+
       const resp = await fetch(`${base}/functions/v1/upload-lead-conversion`, {
         method: 'POST',
         headers: {
@@ -859,11 +879,14 @@ ou esperar a virada do dia, quando as conversas grátis renovam sozinhas.</p>
           user_id: user.supabaseUserId,
           phone: leadPhone,
           conversion_action_name: WhatsappService.QUALIFIED_CONVERSION_ACTION,
+          // Só a conta resolvida pela campanha vai no pedido; sem ela, a
+          // function usa a ativa (e avisa também do lado de lá).
+          ...(conta.origem === 'campanha' && conta.customerId ? { customer_id: conta.customerId } : {}),
           ...clique,
         }),
       });
       const data = await resp.json().catch(() => ({}));
-      if (data?.ok) console.log(`[google-conv] Lead enviado (lead ${leadPhone}${clique.gclid || clique.gbraid || clique.wbraid ? ', com o clique do anúncio' : ''})`);
+      if (data?.ok) console.log(`[google-conv] Lead enviado à conta ${data.customer_id ?? '?'} (${conta.origem === 'campanha' ? 'a da campanha' : 'a ATIVA'}; lead ${leadPhone}${clique.gclid || clique.gbraid || clique.wbraid ? ', com o clique do anúncio' : ''})`);
       else console.warn(`[google-conv] Lead não enviado (lead ${leadPhone}):`, data?.error ?? data?.partial_failure_error ?? resp.status);
     } catch (e) {
       console.error('[google-conv] erro inesperado ao enviar conversão:', e);

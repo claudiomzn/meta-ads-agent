@@ -18,6 +18,7 @@
 import prisma from '../../lib/prisma.js';
 import { CapiService } from '../capi.service.js';
 import { idDoEventoDaVenda } from './venda.id.js';
+import { contaGoogleDoLead } from './conta.google.js';
 
 export interface VendaParaRegistrar {
   userId: string;
@@ -77,29 +78,26 @@ function headers(key: string): Record<string, string> {
 }
 
 /**
- * Conta do Google Ads do cliente, lida da conexão dele.
+ * Onde a venda pode morar na tela: a conta do ANÚNCIO que trouxe o lead (ou a
+ * ativa, com aviso — ver conta.google.ts), ou o porquê de não haver.
  *
  * ⚠️ Sem fallback para GOOGLE_ADS_CUSTOMER_ID: esse padrão já fez campanha de
  * cliente nascer dentro da conta do fundador.
  */
-async function contaDoCliente(base: string, key: string, supabaseUserId: string): Promise<string | null> {
-  const url = `${base}/rest/v1/google_ads_connections?user_id=eq.${encodeURIComponent(supabaseUserId)}&select=active_customer_id&limit=1`;
-  const resp = await fetch(url, { headers: headers(key) });
-  if (!resp.ok) throw new Error(`conexão Google ilegível (HTTP ${resp.status})`);
-  const linhas = (await resp.json().catch(() => [])) as Array<{ active_customer_id?: string | null }>;
-  return linhas[0]?.active_customer_id ?? null;
-}
-
-/** Onde a venda pode morar na tela: a conta do cliente, ou o porquê de não haver. */
 async function destinoNaTela(
   userId: string,
+  campanhaGoogleId: string | null,
 ): Promise<{ cfg: { base: string; key: string }; supabaseUserId: string; customerId: string } | { semConta: string }> {
   const cfg = supabaseConfig();
   if (!cfg) return { semConta: 'AdsGenius não configurado neste servidor' };
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { supabaseUserId: true } });
   if (!user?.supabaseUserId) return { semConta: 'conta sem login unificado do AdsGenius' };
-  const customerId = await contaDoCliente(cfg.base, cfg.key, user.supabaseUserId);
-  if (!customerId) return { semConta: 'nenhuma conta Google Ads conectada' };
+  const conta = await contaGoogleDoLead(cfg.base, cfg.key, user.supabaseUserId, campanhaGoogleId);
+  if (!conta.customerId) return { semConta: 'nenhuma conta Google Ads conectada' };
+  if (conta.aviso) {
+    console.warn(`[venda:vendedor] ⚠️ conta ATIVA ${conta.customerId} usada para a venda — ${conta.aviso}. Se o lead veio de outra conta, o Google não vai casar.`);
+  }
+  const customerId = conta.customerId;
   return { cfg, supabaseUserId: user.supabaseUserId, customerId };
 }
 
@@ -115,7 +113,7 @@ async function destinoNaTela(
 export async function registrarVendaNasPlataformas(v: VendaParaRegistrar): Promise<ResultadoDoRegistro> {
   let destino: Awaited<ReturnType<typeof destinoNaTela>>;
   try {
-    destino = await destinoNaTela(v.userId);
+    destino = await destinoNaTela(v.userId, v.campanhaGoogleId ?? null);
   } catch (e) {
     console.error('[venda:vendedor] falha ao ler a conexão do cliente:', e instanceof Error ? e.message : 'erro');
     return { tela: 'falhou', saleId: null, google: 'falhou', meta: 'falhou', detalhe: 'o AdsGenius não respondeu' };
