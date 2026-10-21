@@ -50,11 +50,39 @@ export interface InboundMessage {
   /** Quando o lead ENVIOU a mensagem (ms), segundo o WhatsApp. Mensagem antiga
    *  reentregue na reconexão não é lead chegando agora. */
   enviadaEm?: number | null;
+  /**
+   * Mensagem ENVIADA por este WhatsApp (key.fromMe), não recebida (21/10/2026).
+   * Ou é o eco do próprio robô, ou é a atendente digitando no celular da
+   * empresa — e aí uma pessoa assumiu a conversa e o robô tem de sair. Quem
+   * separa um caso do outro é o serviço (ver tratarMensagemDaEquipe).
+   */
+  fromMe?: boolean;
 }
 
 /** Prefixo do leadPhone das conversas de ensaio: isola do número real e deixa
  *  fácil excluir de franquia, relatório e busca de venda. */
 export const PREFIXO_ENSAIO = 'teste:';
+
+// ── Mensagens que o PRÓPRIO robô enviou (21/10/2026) ─────────────────────────
+// A Evolution devolve o key.id de cada envio e depois reentrega a mesma
+// mensagem no webhook como fromMe. Guardar o id é o que separa o eco do robô
+// da resposta que a atendente digitou no celular. Em memória, por processo
+// (mesma premissa do withLeadLock): depois de um restart o serviço ainda
+// reconhece o eco pelo texto gravado no histórico da conversa.
+const ENVIADAS_PELO_ROBO_TTL_MS = 6 * 60 * 60 * 1000;
+const enviadasPeloRobo = new Map<string, number>();
+
+export function registrarEnvioDoRobo(id: string, agora = Date.now()): void {
+  enviadasPeloRobo.set(id, agora);
+  // Saída do "estado de espera": nada fica aqui para sempre.
+  for (const [k, em] of enviadasPeloRobo) {
+    if (agora - em > ENVIADAS_PELO_ROBO_TTL_MS) enviadasPeloRobo.delete(k);
+  }
+}
+
+export function foiEnviadaPeloRobo(id: string | null | undefined): boolean {
+  return Boolean(id) && enviadasPeloRobo.has(id as string);
+}
 
 export interface WhatsappTransport {
   /** Nome do transporte ("evolution" | "meta" | "log"). */
@@ -115,7 +143,12 @@ export class EvolutionTransport implements WhatsappTransport {
       });
       if (!resp.ok) {
         console.error(`[whatsapp:evolution] sendText falhou (${resp.status}):`, await resp.text());
+        return;
       }
+      // O id do envio marca a mensagem como do robô: quando ela voltar no
+      // webhook como fromMe, não pode ser confundida com a atendente.
+      const corpo = await resp.json().catch(() => null) as { key?: { id?: unknown } } | null;
+      if (typeof corpo?.key?.id === 'string') registrarEnvioDoRobo(corpo.key.id);
     } catch (e) {
       console.error('[whatsapp:evolution] erro inesperado no sendText:', e);
     }
@@ -152,16 +185,27 @@ export class EvolutionTransport implements WhatsappTransport {
     } | undefined;
     if (!data?.key?.remoteJid) return null;
 
-    // Ignora mensagens enviadas por nós mesmos (eco do próprio bot).
-    if (data.key.fromMe) return null;
-
     // Ignora mensagens de grupo (jid termina em @g.us; contatos terminam em @s.whatsapp.net).
     if (data.key.remoteJid.endsWith('@g.us')) return null;
 
     const text = data.message?.conversation ?? data.message?.extendedTextMessage?.text;
-    if (!text) return null; // status, ack, reação, mídia sem legenda, etc. — não é lead falando
-
     const from = data.key.remoteJid.replace('@s.whatsapp.net', '');
+
+    // Mensagem ENVIADA por este número. Até 21/10/2026 era descartada aqui
+    // como "eco do próprio bot" — mas a resposta que a atendente digita no
+    // celular da empresa também é fromMe, e o robô nunca soube que uma pessoa
+    // tinha assumido: seguia mandando o roteiro no meio da conversa dela. Agora
+    // sobe ao serviço, que separa eco do robô de gente. Áudio/foto da atendente
+    // também contam (texto vazio): quem mandou foi uma pessoa.
+    if (data.key.fromMe) {
+      return {
+        from, text: text ?? '', transport: this.name, fromMe: true,
+        mensagemId: data.key.id ?? null,
+        enviadaEm: momentoDoWhatsapp(data.messageTimestamp),
+      };
+    }
+
+    if (!text) return null; // status, ack, reação, mídia sem legenda, etc. — não é lead falando
 
     // Referral do anúncio "clique para o WhatsApp". Até 01/10/2026 ninguém lia
     // isto — o ctwaClid do tipo acima ficava sempre vazio.
