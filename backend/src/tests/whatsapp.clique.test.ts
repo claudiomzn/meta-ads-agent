@@ -109,9 +109,30 @@ describe('⭐ lead QUENTE sobe ao Google com o gclid do clique', () => {
     await prisma.$disconnect();
   });
 
-  const conversa = (origemClique: string | null, leadPhone: string) => prisma.whatsappConversation.create({
-    data: { userId, businessId: 'b-clique', leadPhone, state: 'handoff', origemClique },
+  const conversa = (origemClique: string | null, leadPhone: string, origem: { origemCanal?: string; origemCampanhaId?: string } = {}) =>
+    prisma.whatsappConversation.create({
+      data: { userId, businessId: 'b-clique', leadPhone, state: 'handoff', origemClique, ...origem },
+    });
+
+  /** Supabase falso: conexão com as 3 contas do Luiz, campanha 21345678901 na 728. */
+  const supabaseFalso = () => vi.fn(async (url: string) => {
+    const u = String(url);
+    const json = (b: unknown) => new Response(JSON.stringify(b));
+    if (u.includes('/rest/v1/google_ads_connections')) {
+      return json([{ active_customer_id: '4131358962', customer_ids: ['4131358962', '7285749588', '3004856946'] }]);
+    }
+    if (u.includes('/rest/v1/campaigns')) return json(u.includes('id=eq.21345678901') ? [{ customer_id: '7285749588' }] : []);
+    if (u.includes('/rest/v1/agency_clients')) return json([]);
+    return json({ ok: true, customer_id: 'x' });
   });
+  const leadDaFunction = (fetchMock: ReturnType<typeof vi.fn>) => {
+    const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/functions/v1/upload-lead-conversion'));
+    return JSON.parse((call?.[1] as { body: string }).body);
+  };
+  const disparar = async (convId: string, phone: string) => {
+    const svc = new WhatsappService(userId, 'b-clique') as unknown as { fireGoogleLeadConversion(p: string, id: string): Promise<void> };
+    await svc.fireGoogleLeadConversion(phone, convId);
+  };
 
   it('cliqueDaConversa: acha o gclid pelo código da conversa', async () => {
     const c = await conversa('bbbbbbbbb1', '5592911110001');
@@ -126,14 +147,54 @@ describe('⭐ lead QUENTE sobe ao Google com o gclid do clique', () => {
   it('⭐ o corpo enviado ao upload-lead-conversion leva o gclid', async () => {
     process.env.SUPABASE_URL = 'https://sb.example';
     process.env.SUPABASE_SERVICE_ROLE_KEY = 'chave-de-teste';
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+    const fetchMock = supabaseFalso();
     vi.stubGlobal('fetch', fetchMock);
     const c = await conversa('bbbbbbbbb1', '5592911110004');
-    const svc = new WhatsappService(userId, 'b-clique') as unknown as { fireGoogleLeadConversion(p: string, id: string): Promise<void> };
-    await svc.fireGoogleLeadConversion('5592911110004', c.id);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
-    expect(url).toBe('https://sb.example/functions/v1/upload-lead-conversion');
-    expect(JSON.parse(init.body)).toMatchObject({ phone: '5592911110004', gclid: GCLID });
+    await disparar(c.id, '5592911110004');
+    const chamadas = fetchMock.mock.calls.filter((x) => String(x[0]).includes('/functions/v1/'));
+    expect(chamadas).toHaveLength(1);
+    expect(String(chamadas[0][0])).toBe('https://sb.example/functions/v1/upload-lead-conversion');
+    expect(leadDaFunction(fetchMock)).toMatchObject({ phone: '5592911110004', gclid: GCLID });
+  });
+
+  it('⭐ lead da campanha da 728 sobe com customer_id da 728, não da ativa', async () => {
+    process.env.SUPABASE_URL = 'https://sb.example';
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'chave-de-teste';
+    const fetchMock = supabaseFalso();
+    vi.stubGlobal('fetch', fetchMock);
+    const c = await conversa('bbbbbbbbb1', '5592911110005', { origemCanal: 'google', origemCampanhaId: '21345678901' });
+    await disparar(c.id, '5592911110005');
+    expect(leadDaFunction(fetchMock)).toMatchObject({ customer_id: '7285749588', gclid: GCLID });
+  });
+
+  it('⭐ sem campanha resolvida: vai sem customer_id (a function usa a ativa) e AVISA no log', async () => {
+    process.env.SUPABASE_URL = 'https://sb.example';
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'chave-de-teste';
+    const fetchMock = supabaseFalso();
+    vi.stubGlobal('fetch', fetchMock);
+    const aviso = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const c = await conversa(null, '5592911110006', { origemCanal: 'google', origemCampanhaId: '99999999999' });
+    await disparar(c.id, '5592911110006');
+    expect(leadDaFunction(fetchMock).customer_id).toBeUndefined();
+    expect(aviso.mock.calls.some((x) => String(x[0]).includes('conta ATIVA') && String(x[0]).includes('99999999999'))).toBe(true);
+    aviso.mockRestore();
+  });
+
+  it('⭐ campanha de conta que não é do usuário: não manda essa conta', async () => {
+    process.env.SUPABASE_URL = 'https://sb.example';
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'chave-de-teste';
+    const fetchMock = vi.fn(async (url: string) => {
+      const u = String(url);
+      const json = (b: unknown) => new Response(JSON.stringify(b));
+      if (u.includes('/rest/v1/google_ads_connections')) return json([{ active_customer_id: '4131358962', customer_ids: ['4131358962'] }]);
+      if (u.includes('/rest/v1/campaigns')) return json([{ customer_id: '7285749588' }]);
+      if (u.includes('/rest/v1/agency_clients')) return json([]);
+      return json({ ok: true });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const c = await conversa(null, '5592911110007', { origemCanal: 'google', origemCampanhaId: '21345678901' });
+    await disparar(c.id, '5592911110007');
+    expect(leadDaFunction(fetchMock).customer_id).toBeUndefined();
   });
 });
