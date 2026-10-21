@@ -144,9 +144,13 @@ export async function historicoDoNumero(
   instance: string,
   phone: string,
   opts: { mensagemId?: string | null; enviadaEm?: number | null },
+  // Self-hosted: a Evolution do cliente, não a central. Sem isto a consulta
+  // ia sempre à central — e, com a falha fechada (21/10/2026), um cliente
+  // self-hosted nunca teria conversa aberta.
+  evolution?: { baseUrl?: string; apiKey?: string },
 ): Promise<HistoricoVeredito> {
-  const base = (process.env.EVOLUTION_URL ?? '').replace(/\/$/, '');
-  const apikey = process.env.EVOLUTION_API_KEY ?? '';
+  const base = (evolution?.baseUrl || process.env.EVOLUTION_URL || '').replace(/\/$/, '');
+  const apikey = evolution?.apiKey || process.env.EVOLUTION_API_KEY || '';
   if (!base || !apikey || !instance) return { existente: null, reason: 'Evolution não configurada' };
 
   const digits = phone.replace(/\D/g, '');

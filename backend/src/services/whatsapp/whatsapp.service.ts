@@ -6,7 +6,7 @@ import prisma from '../../lib/prisma.js';
 import { cliqueDaConversa } from './clique.js';
 import { historicoDoNumero, lookupContact } from './contacts.js';
 import { instanceName } from './evolution.manager.js';
-import { LogTransport, PREFIXO_ENSAIO, resolveTransport, type InboundMessage } from './transport.js';
+import { LogTransport, PREFIXO_ENSAIO, foiEnviadaPeloRobo, resolveTransport, type InboundMessage } from './transport.js';
 import { lerRefDoSite, linhaDeOrigem, resolverOrigem } from './origem.js';
 import { roteiroEfetivo } from './roteiro.efetivo.js';
 import { resolverCampanhaDoAnuncio } from './origem.meta.js';
@@ -137,6 +137,35 @@ export { cliqueDaConversa };
 
 /** Mensagem que o lead enviou há mais que isto é reentrega, não lead chegando. */
 export const MENSAGEM_VELHA_MS = 15 * 60 * 1000;
+
+/**
+ * Para ABRIR conversa, a mensagem tem de ter chegado com atraso curto
+ * (21/10/2026). A Evolution do Luiz chega a entregar com minutos de atraso, e
+ * nesse tempo a atendente já respondeu pelo celular: o robô entrava depois
+ * dela, no meio da conversa. Conversa já aberta segue com MENSAGEM_VELHA_MS.
+ */
+export const ATRASO_MAXIMO_PARA_ABRIR_MS = 2 * 60 * 1000;
+
+/** Estados em que o robô não fala mais naquele número. `humano` = uma pessoa
+ *  da equipe respondeu pelo WhatsApp da empresa — nunca reabre sozinho. */
+const ESTADOS_TERMINAIS = ['closed', 'handoff', 'cold', 'humano'];
+
+/** Por quanto tempo lembrar que a equipe falou com um número que ainda não
+ *  tinha conversa do robô (a resposta dela chegou antes da mensagem do lead). */
+const EQUIPE_FALOU_TTL_MS = 24 * 60 * 60 * 1000;
+const equipeFalouCom = new Map<string, number>();
+
+function marcarEquipeFalou(chave: string, agora = Date.now()): void {
+  equipeFalouCom.set(chave, agora);
+  for (const [k, em] of equipeFalouCom) {
+    if (agora - em > EQUIPE_FALOU_TTL_MS) equipeFalouCom.delete(k);
+  }
+}
+
+function equipeJaFalou(chave: string, agora = Date.now()): boolean {
+  const em = equipeFalouCom.get(chave);
+  return em != null && agora - em <= EQUIPE_FALOU_TTL_MS;
+}
 
 /** Conversa sem nenhuma mensagem por este tempo é encerrada em silêncio. */
 export const CONVERSA_EXPIRA_MS = 48 * 60 * 60 * 1000;
@@ -325,6 +354,11 @@ export class WhatsappService {
     const config = await this.getConfig();
     if (!config || !config.enabled) return null;
 
+    // Mensagem ENVIADA pelo WhatsApp da empresa: eco do robô ou a atendente.
+    // Antes de tudo — nunca é lead falando, nem o vendedor (o aviso que o
+    // robô manda ao vendedor também volta como fromMe).
+    if (msg.fromMe) return await this.tratarMensagemDaEquipe(msg);
+
     // Mensagem velha reentregue (15/10/2026): quando o WhatsApp reconecta, a
     // Evolution pode repassar mensagens de horas ou dias atrás como se fossem
     // novas — e o bot respondia cliente que nem estava falando com ele. Quem
@@ -371,19 +405,44 @@ export class WhatsappService {
         return null;
       }
 
-      // Só CLIENTE NOVO (15/10/2026): cliente antigo também clica no anúncio
-      // ou no botão do site, e chegava aqui como lead. Quem já tem conversa
-      // com este WhatsApp é do vendedor — o bot não abre conversa com ele.
-      // Sem resposta da Evolution (null), segue: calar por falha de consulta
-      // perderia o lead novo, e a porta do anúncio acima já filtrou o resto.
+      // A equipe já respondeu este número pelo celular (a resposta dela
+      // chegou ao webhook antes da mensagem do lead): a conversa é dela.
+      if (equipeJaFalou(this.chaveDoNumero(msg.from))) {
+        console.log(`[whatsapp:humano] a equipe já respondeu este número — bot não abre conversa (lead ${msg.from}, userId ${this.userId}, negócio ${this.businessId})`);
+        return null;
+      }
+
       if (config.transport === 'evolution' && !msg.ensaio && !msg.simulado) {
-        const historico = await historicoDoNumero(instanceName(this.userId, this.businessId), msg.from, msg);
+        // Só abre com mensagem FRESCA (21/10/2026): com atraso de entrega, a
+        // atendente já está conversando quando o robô fica sabendo do lead.
+        // Sem horário legível também não abre — na dúvida, não entra.
+        const atraso = msg.enviadaEm ? Date.now() - msg.enviadaEm : null;
+        if (atraso === null || atraso > ATRASO_MAXIMO_PARA_ABRIR_MS) {
+          console.log(`[whatsapp:atrasada] mensagem chegou ${atraso === null ? 'sem horário de envio' : `${Math.round(atraso / 1000)}s depois de enviada`} — bot não abre conversa (lead ${msg.from}, userId ${this.userId}, negócio ${this.businessId})`);
+          return null;
+        }
+
+        // Só CLIENTE NOVO (15/10/2026): cliente antigo também clica no anúncio
+        // ou no botão do site, e chegava aqui como lead. Quem já tem conversa
+        // com este WhatsApp é do vendedor — o bot não abre conversa com ele.
+        //
+        // FALHA FECHADA (21/10/2026): sem resposta da Evolution (null), o bot
+        // NÃO abre. Até aqui a dúvida virava "número novo", e com a Evolution
+        // lenta (timeouts de 18/10) o robô entrava em conversa que a atendente
+        // já tocava. O lead novo perdido para o robô continua com a equipe —
+        // o Luiz prefere isso a atrapalhar.
+        const cfg = (config.transportConfig ?? {}) as { baseUrl?: string; apiKey?: string };
+        const historico = await historicoDoNumero(
+          instanceName(this.userId, this.businessId), msg.from, msg,
+          { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey },
+        );
         if (historico.existente) {
           console.log(`[whatsapp:cliente-antigo] ${historico.reason} — bot não abre conversa (lead ${msg.from}, userId ${this.userId}, negócio ${this.businessId})`);
           return null;
         }
         if (historico.existente === null) {
-          console.warn(`[whatsapp:cliente-antigo] histórico indisponível (${historico.reason}) — tratado como número novo (lead ${msg.from}, userId ${this.userId}, negócio ${this.businessId})`);
+          console.warn(`[whatsapp:cliente-antigo] histórico indisponível — bot não abre (falha fechada): ${historico.reason} (lead ${msg.from}, userId ${this.userId}, negócio ${this.businessId})`);
+          return null;
         }
       }
 
@@ -440,14 +499,15 @@ export class WhatsappService {
     // Conversa largada no meio (06/10/2026): o lead parou de responder e volta
     // dias depois com outro assunto — o bot retomava o roteiro de onde parou.
     // Passado o prazo, ela fecha em silêncio e o número fica com o vendedor.
-    if (!['closed', 'handoff', 'cold'].includes(conv.state)
+    if (!ESTADOS_TERMINAIS.includes(conv.state)
       && Date.now() - conv.updatedAt.getTime() > CONVERSA_EXPIRA_MS) {
       await prisma.whatsappConversation.update({ where: { id: conv.id }, data: { state: 'closed' } });
       console.log(`[whatsapp:expirou] conversa sem resposta há mais de 48h encerrada em silêncio (lead ${msg.from}, userId ${this.userId}, negócio ${this.businessId})`);
       return null;
     }
-    if (conv.state === 'closed' || conv.state === 'handoff' || conv.state === 'cold') {
+    if (ESTADOS_TERMINAIS.includes(conv.state)) {
       // Já encaminhado/encerrado — não responde mais (humano assume).
+      // `humano` (21/10/2026): a atendente respondeu pelo celular.
       //
       // `cold` entrou aqui em 22/09/2026: a IA já podia concluir "sem
       // intenção" (label FRIO → state cold), mas esse estado NÃO silenciava
@@ -507,6 +567,45 @@ export class WhatsappService {
       { ...config, scriptSteps: roteiro.passos as unknown as typeof config.scriptSteps, scriptIntro: roteiro.intro, scriptClosing: roteiro.encerramento },
       conv, msg, history,
     );
+  }
+
+  private chaveDoNumero(phone: string): string {
+    return `${this.userId}:${this.businessId}:${phone}`;
+  }
+
+  // ── A pessoa assumiu, o robô sai (21/10/2026) ───────────────────────────────
+  // Relato do Luiz: "ele entra na hora errada, no meio da conversa com os
+  // clientes". A atendente respondia pelo celular da empresa e o robô, que
+  // não via essa resposta, mandava a próxima pergunta do roteiro por cima.
+  //
+  // Toda mensagem fromMe que NÃO é eco do robô é gente. Eco = id que o próprio
+  // envio devolveu (transport.ts) OU texto que o robô gravou no histórico
+  // desta conversa — o lock por lead garante que o histórico já foi gravado
+  // quando o eco é processado. Nunca responde nada.
+  private async tratarMensagemDaEquipe(msg: InboundMessage): Promise<null> {
+    if (foiEnviadaPeloRobo(msg.mensagemId)) return null;
+
+    const conv = await prisma.whatsappConversation.findUnique({
+      where: {
+        userId_businessId_leadPhone: { userId: this.userId, businessId: this.businessId, leadPhone: msg.from },
+      },
+    });
+    if (!conv) {
+      // Ainda sem conversa do robô: a equipe chegou primeiro. Lembra, para a
+      // mensagem do lead (que pode chegar depois, atrasada) não abrir conversa.
+      marcarEquipeFalou(this.chaveDoNumero(msg.from));
+      return null;
+    }
+
+    const texto = msg.text.trim();
+    const history = (conv.history as unknown as HistoryItem[]) ?? [];
+    if (texto && history.some((h) => h.role === 'assistant' && h.text.trim() === texto)) return null;
+
+    if (!ESTADOS_TERMINAIS.includes(conv.state)) {
+      await prisma.whatsappConversation.update({ where: { id: conv.id }, data: { state: 'humano' } });
+      console.log(`[whatsapp:humano] a equipe respondeu pelo WhatsApp da empresa — bot sai desta conversa (lead ${msg.from}, userId ${this.userId}, negócio ${this.businessId})`);
+    }
+    return null;
   }
 
   // ── Modo ROTEIRO FIXO ───────────────────────────────────────────────────────

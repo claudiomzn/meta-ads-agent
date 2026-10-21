@@ -520,7 +520,7 @@ model WhatsappConversation {
   businessId String @default("default")
   leadPhone  String // número do lead (E.164 ou id do WhatsApp)
 
-  state          String  @default("greeting") // greeting | qualifying | qualified | cold | handoff | closed
+  state          String  @default("greeting") // greeting | qualifying | qualified | cold | handoff | closed | humano (a equipe respondeu pelo celular)
   label          String? // QUENTE | FRIO | SEM_RESPOSTA
   questionsAsked Int     @default(0)
   botMessages    Int     @default(0)
