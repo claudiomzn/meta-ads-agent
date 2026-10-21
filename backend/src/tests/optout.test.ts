@@ -78,8 +78,10 @@ const svc = readFileSync(
 );
 
 describe('estados que silenciam o bot', () => {
-  it('cold encerra junto com closed e handoff', () => {
-    expect(svc).toContain("conv.state === 'closed' || conv.state === 'handoff' || conv.state === 'cold'");
+  it('cold encerra junto com closed e handoff (e humano, 21/10/2026)', () => {
+    // Uma lista só, usada pelo gate de silêncio e pela expiração de 48h.
+    expect(svc).toContain("const ESTADOS_TERMINAIS = ['closed', 'handoff', 'cold', 'humano'];");
+    expect(svc).toContain('if (ESTADOS_TERMINAIS.includes(conv.state)) {');
   });
 
   it('existe como encerrar uma conversa já aberta (o gatilho só vale no nascimento)', () => {

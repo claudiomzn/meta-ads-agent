@@ -140,7 +140,10 @@ describe('⭐ Brecha 1: cliente antigo que clica no anúncio não vira lead', ()
     expect((await conversa('cn-1', '5592900000303'))?.origemCanal).toBe('meta_whatsapp');
   });
 
-  it('Evolution fora do ar: segue atendendo (calar perderia o lead novo)', async () => {
+  // Invertido em 21/10/2026: na dúvida o robô NÃO entra (falha fechada). Com
+  // a Evolution lenta, "segue atendendo" era o robô abrindo conversa que a
+  // atendente já tocava. O lead novo continua com a equipe.
+  it('Evolution fora do ar: NÃO abre conversa (falha fechada)', async () => {
     await config('cn-1');
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: { body?: string }) => {
       if (url.includes('/message/sendText/')) {
@@ -149,7 +152,9 @@ describe('⭐ Brecha 1: cliente antigo que clica no anúncio não vira lead', ()
       }
       return new Response('erro', { status: 500 });
     }));
-    expect(await receber('cn-1', '5592900000304')).not.toBeNull();
+    expect(await receber('cn-1', '5592900000304')).toBeNull();
+    expect(enviados).toEqual([]);
+    expect(await conversa('cn-1', '5592900000304')).toBeNull();
   });
 });
 
