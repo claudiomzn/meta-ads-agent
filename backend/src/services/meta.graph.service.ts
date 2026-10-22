@@ -30,6 +30,8 @@ import type {
   MetaGeoLocation,
   MetaInterest,
   MetaPage,
+  MetaPageOverview,
+  MetaPagePost,
   SpendSummary,
 } from '../types/meta.types.js';
 
@@ -111,6 +113,23 @@ function mapInsights(row: GraphInsightRow | undefined, dateRange: DateRange): In
   };
 }
 
+function summaryCount(v: unknown): number {
+  return num((v as { summary?: { total_count?: unknown } } | undefined)?.summary?.total_count);
+}
+
+function mapPagePost(p: Record<string, unknown>): MetaPagePost {
+  return {
+    id: String(p.id ?? ''),
+    message: String(p.message ?? ''),
+    createdTime: String(p.created_time ?? ''),
+    ...(typeof p.permalink_url === 'string' ? { permalinkUrl: p.permalink_url } : {}),
+    ...(typeof p.full_picture === 'string' ? { imageUrl: p.full_picture } : {}),
+    reactions: summaryCount(p.reactions),
+    comments: summaryCount(p.comments),
+    shares: num((p.shares as { count?: unknown } | undefined)?.count),
+  };
+}
+
 export class MetaGraphService {
   private userId: string;
   private token: string | null = null;
@@ -130,7 +149,11 @@ export class MetaGraphService {
   }
 
   private async graphGet<T>(path: string, params: Record<string, unknown> = {}): Promise<T> {
-    const token = await this.getToken();
+    return this.graphGetAs<T>(await this.getToken(), path, params);
+  }
+
+  // Mesma chamada com outro token — o da Página, para ler os posts dela.
+  private async graphGetAs<T>(token: string, path: string, params: Record<string, unknown> = {}): Promise<T> {
     const res = await axios.get(`${GRAPH}/${path}`, {
       params: { access_token: token, ...params },
       timeout: 20000,
@@ -231,6 +254,55 @@ export class MetaGraphService {
       }
       return result.value.data ?? [];
     });
+  }
+
+  // Identidade e engajamento da Página que vai assinar o anúncio. É o uso de
+  // `pages_read_engagement` que o cliente vê: foto, seguidores e a resposta do
+  // público aos últimos posts, para confirmar que escolheu a Página certa antes
+  // de publicar. Quem chama já conferiu que a Página é desta conexão.
+  //
+  // Os posts exigem o token da PÁGINA; com o do usuário a Graph recusa. Se a
+  // Meta não entregar esse token (Página só alcançável pelo portfólio, sem ter
+  // sido marcada no diálogo de permissões), a tela diz que os posts não vieram —
+  // nunca "nenhum post".
+  async getPageOverview(pageId: string): Promise<MetaPageOverview> {
+    const page = await this.graphGet<Record<string, unknown>>(pageId, {
+      fields: 'id,name,link,fan_count,followers_count,picture.type(large){url},access_token',
+    });
+
+    const pageToken = typeof page.access_token === 'string' ? page.access_token : '';
+    let posts: MetaPagePost[] = [];
+    let postsAvailable = false;
+    try {
+      const fields = [
+        'id', 'message', 'created_time', 'permalink_url', 'full_picture', 'shares',
+        'reactions.summary(total_count).limit(0)',
+        'comments.summary(total_count).limit(0)',
+      ].join(',');
+      const feed = await this.graphGetAs<{ data?: Array<Record<string, unknown>> }>(
+        pageToken || (await this.getToken()),
+        `${pageId}/published_posts`,
+        { fields, limit: 3 },
+      );
+      posts = (feed.data ?? []).map(mapPagePost);
+      postsAvailable = true;
+    } catch (error) {
+      // Só o status: o erro do axios carrega a URL, e a URL carrega o token.
+      const status = (error as { response?: { status?: number } }).response?.status;
+      console.warn(`[meta:pages] posts da Página ${pageId} indisponíveis (HTTP ${status ?? '?'})`);
+    }
+
+    const picture = page.picture as { data?: { url?: unknown } } | undefined;
+    return {
+      id: String(page.id ?? pageId),
+      name: String(page.name ?? ''),
+      ...(typeof page.link === 'string' ? { link: page.link } : {}),
+      ...(typeof picture?.data?.url === 'string' ? { pictureUrl: picture.data.url } : {}),
+      followers: page.followers_count != null ? num(page.followers_count) : null,
+      likes: page.fan_count != null ? num(page.fan_count) : null,
+      posts,
+      postsAvailable,
+    };
   }
 
   // ─── Leitura — Campanhas ──────────────────────────────────────────────────────
