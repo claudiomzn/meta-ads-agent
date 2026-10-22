@@ -74,12 +74,18 @@ vi.mock('../lib/metaAdAccounts.js', async (importOriginal) => {
   return { ...actual, listTokenAdAccountIds: mockListTokenAdAccountIds };
 });
 
-const { mockListPages } = vi.hoisted(() => ({
+const { mockListPages, mockGetPageOverview, mockGraphListAdAccounts } = vi.hoisted(() => ({
   mockListPages: vi.fn(),
+  mockGetPageOverview: vi.fn(),
+  mockGraphListAdAccounts: vi.fn(),
 }));
 vi.mock('../services/meta.graph.service.js', () => ({
   MetaGraphService: vi.fn().mockImplementation(function () {
-    return { listPages: mockListPages };
+    return {
+      listPages: mockListPages,
+      getPageOverview: mockGetPageOverview,
+      listAdAccounts: mockGraphListAdAccounts,
+    };
   }),
 }));
 
@@ -353,6 +359,82 @@ describe('GET /api/mcp/pages', () => {
 
     expect(res.status).toBe(503);
     expect(res.body.error).not.toContain('token secreto');
+  });
+});
+
+describe('GET /api/mcp/pages/:pageId/overview', () => {
+  it('lê a Página que pertence à conexão', async () => {
+    mockGetPageOverview.mockResolvedValueOnce({ id: '456', name: 'Página Teste', posts: [], postsAvailable: true });
+    const res = await request(app)
+      .get('/api/mcp/pages/456/overview')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.name).toBe('Página Teste');
+    expect(mockGetPageOverview).toHaveBeenCalledWith('456');
+  });
+
+  it('recusa Página que não é desta conexão, sem ir à Meta', async () => {
+    mockGetPageOverview.mockClear();
+    const res = await request(app)
+      .get('/api/mcp/pages/999/overview')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(403);
+    expect(mockGetPageOverview).not.toHaveBeenCalled();
+  });
+
+  it('recusa da Meta vira orientação, sem detalhe interno', async () => {
+    mockGetPageOverview.mockRejectedValueOnce(new Error('token secreto inválido'));
+    const res = await request(app)
+      .get('/api/mcp/pages/456/overview')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(502);
+    expect(res.body.error).toMatch(/marque esta Página/);
+    expect(res.body.error).not.toContain('token secreto');
+  });
+});
+
+describe('GET /api/mcp/ad-accounts', () => {
+  async function linkAccounts(ids: string[]) {
+    const data = { connected: true, adAccountIds: JSON.stringify(ids) };
+    await prisma.mCPConnection.upsert({
+      where: { userId },
+      update: data,
+      create: { ...data, userId, metaAccessToken: 'enc:token', mcpUrl: 'https://mcp.test.com', mcpProvider: 'pipeboard' },
+    });
+  }
+
+  it('devolve as contas da conexão com nome, na ordem da conexão', async () => {
+    await linkAccounts(['222', 'act_111']);
+    mockGraphListAdAccounts.mockResolvedValueOnce([
+      { id: 'act_111', name: 'Conta B', currency: 'BRL', timezone: '', status: 1 },
+      { id: 'act_222', name: 'Conta A', currency: 'BRL', timezone: '', status: 1 },
+      { id: 'act_333', name: 'Conta de outro cliente', currency: 'BRL', timezone: '', status: 1 },
+    ]);
+
+    const res = await request(app)
+      .get('/api/mcp/ad-accounts')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((a: { id: string; name: string }) => [a.id, a.name])).toEqual([
+      ['222', 'Conta A'],
+      ['111', 'Conta B'],
+    ]);
+  });
+
+  it('Graph fora do ar não esconde as contas — só o nome', async () => {
+    await linkAccounts(['222']);
+    mockGraphListAdAccounts.mockRejectedValueOnce(new Error('timeout'));
+
+    const res = await request(app)
+      .get('/api/mcp/ad-accounts')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([{ id: '222', name: 'Conta 222', currency: '', status: null }]);
   });
 });
 

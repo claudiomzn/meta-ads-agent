@@ -613,6 +613,67 @@ router.get('/pages', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Resumo da Página antes de publicar (foto, seguidores, engajamento dos últimos
+// posts). A Página precisa estar entre as desta conexão: sem a checagem, qualquer
+// id numérico viraria leitura de Página alheia com o token do cliente.
+router.get('/pages/:pageId/overview', async (req: AuthRequest, res: Response) => {
+  const { pageId } = req.params;
+  if (!/^\d+$/.test(pageId)) {
+    res.status(400).json({ error: 'Página inválida.' });
+    return;
+  }
+  const graph = new MetaGraphService(req.userId!);
+  try {
+    const pages = await graph.listPages();
+    if (!pages.some((page) => page.id === pageId)) {
+      res.status(403).json({ error: 'Esta Página não pertence à sua conexão Meta.' });
+      return;
+    }
+  } catch (error) {
+    console.error('[mcp:pages:overview] Falha ao listar Páginas:', error instanceof Error ? error.message : 'erro');
+    res.status(503).json({ error: 'Não foi possível carregar suas Páginas do Facebook. Renove a conexão com a Meta e tente novamente.' });
+    return;
+  }
+  try {
+    res.json(await graph.getPageOverview(pageId));
+  } catch (error) {
+    const status = (error as { response?: { status?: number } }).response?.status;
+    console.error(`[mcp:pages:overview] Meta recusou a leitura da Página ${pageId} (HTTP ${status ?? '?'})`);
+    res.status(502).json({
+      error: 'A Meta não liberou a leitura desta Página. Reconecte com o Facebook e marque esta Página na tela de permissões.',
+    });
+  }
+});
+
+// Contas de anúncio desta conexão, com nome, para o cliente escolher onde a
+// campanha nasce. Antes a publicação ia calada para a primeira da lista.
+router.get('/ad-accounts', async (req: AuthRequest, res: Response) => {
+  const conn = await prisma.mCPConnection.findUnique({ where: { userId: req.userId! } });
+  let linked: string[] = [];
+  try {
+    linked = conn?.connected ? (JSON.parse(conn.adAccountIds) as unknown[]).map((id) => String(id).replace(/^act_/, '')) : [];
+  } catch {
+    linked = [];
+  }
+  if (!linked.length) {
+    res.json([]);
+    return;
+  }
+  try {
+    const accounts = await new MetaGraphService(req.userId!).listAdAccounts();
+    const byId = new Map(accounts.map((a) => [a.id.replace(/^act_/, ''), a]));
+    // A ordem é a da conexão (a mesma que a publicação usava por padrão), e a
+    // conta que a Graph não devolveu continua na lista, só sem nome.
+    res.json(linked.map((id) => {
+      const account = byId.get(id);
+      return { id, name: account?.name || `Conta ${id}`, currency: account?.currency ?? '', status: account?.status ?? null };
+    }));
+  } catch (error) {
+    console.error('[mcp:ad-accounts] Falha ao ler nomes das contas:', error instanceof Error ? error.message : 'erro');
+    res.json(linked.map((id) => ({ id, name: `Conta ${id}`, currency: '', status: null })));
+  }
+});
+
 // ─── Publicação ───────────────────────────────────────────────────────────────
 
 router.post('/publish/dry-run', async (req: AuthRequest, res: Response) => {

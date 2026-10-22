@@ -12,6 +12,32 @@ export interface MetaPage {
   instagramBusinessAccountId?: string;
 }
 
+// O que o cliente vê da Página antes de publicar: a identidade que vai assinar
+// o anúncio e como o público dela tem respondido aos posts.
+export interface MetaPagePost {
+  id: string;
+  message: string;
+  createdTime: string;
+  permalinkUrl?: string;
+  imageUrl?: string;
+  reactions: number;
+  comments: number;
+  shares: number;
+}
+
+export interface MetaPageOverview {
+  id: string;
+  name: string;
+  link?: string;
+  pictureUrl?: string;
+  followers: number | null;
+  likes: number | null;
+  posts: MetaPagePost[];
+  // Falso quando a Meta não entregou os posts (Página sem token próprio para o
+  // app). A tela diz isso em vez de mostrar "nenhum post", que seria mentira.
+  postsAvailable: boolean;
+}
+
 export interface DateRange {
   since: string; // YYYY-MM-DD
   until: string;
