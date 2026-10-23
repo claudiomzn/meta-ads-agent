@@ -24,6 +24,9 @@ export interface RespostaDoVendedor {
   resultado: Resultado;
   /** Valor da venda em centavos. Ausente = o vendedor disse "fechou" sem valor. */
   valorCents?: number;
+  /** O que foi vendido ("Hapvida individual"), quando o vendedor escreveu.
+   *  Ausente = não disse; a venda vale igual (ver lerProduto). */
+  produto?: string;
   motivo?: MotivoPerda;
   /** O texto cru do motivo, como o vendedor escreveu (vai para o relatório). */
   motivoTexto?: string;
@@ -146,21 +149,169 @@ const NAO_E_VALOR = /^\s*(vidas?|pessoas?|benefici\w*|titular\w*|dependentes?|an
  * check de `closed_sales.amount_brl > 0`).
  */
 export function lerValorEmCentavos(texto: string): number | null {
-  const t = normalizar(texto).replace(/r\$/g, ' ');
+  return acharValor(prepararTexto(texto))?.cents ?? null;
+}
+
+/** Normaliza e troca "r$" por DOIS espaços — mantém as posições, para o
+ *  produto saber qual trecho da frase foi lido como valor. */
+function prepararTexto(texto: string): string {
+  return normalizar(texto).replace(/r\$/g, '  ');
+}
+
+interface ValorAchado {
+  cents: number;
+  /** Trecho de `t` lido como valor — o produto não pode reaproveitá-lo. */
+  inicio: number;
+  fim: number;
+}
+
+function acharValor(t: string): ValorAchado | null {
   const numeros = /\d[\d.,]*/g;
   let m: RegExpExecArray | null;
   while ((m = numeros.exec(t)) !== null) {
     const bruto = m[0].replace(/[.,]+$/, ''); // pontuação de fim de frase
     const resto = t.slice(m.index + m[0].length);
     if (NAO_E_VALOR.test(resto)) continue;
+    // "amil 400", "unimed plus 2": número curto colado no nome do plano é o
+    // MODELO do plano, não o valor (23/10/2026). Sem isto, "fechou amil 400
+    // por 958,80" gravava venda de R$ 400. Sozinho ("fechou amil 400") é
+    // ambíguo — o bot pergunta o valor em vez de chutar.
+    if (/^\d{1,3}$/.test(bruto) && MODELO_DE_PLANO.has(ultimaPalavra(t.slice(0, m.index)))) continue;
     // "3 mil", "1,2k" — sem isto viravam R$ 3,00 e R$ 1,20.
     const multiplicador = /^\s*(mil\b|k\b)/.test(resto) ? 1000 : 1;
     const valor = numeroBrasileiro(bruto) * multiplicador;
     if (!Number.isFinite(valor) || valor <= 0) return null;
     const cents = Math.round(valor * 100);
-    return cents >= VALOR_MIN_CENTS && cents <= VALOR_MAX_CENTS ? cents : null;
+    return cents >= VALOR_MIN_CENTS && cents <= VALOR_MAX_CENTS
+      ? { cents, inicio: m.index, fim: m.index + bruto.length }
+      : null;
   }
   return null;
+}
+
+function ultimaPalavra(antes: string): string {
+  return /([a-z]+)\W*$/.exec(antes)?.[1] ?? '';
+}
+
+// ── O que foi vendido ───────────────────────────────────────────────────────
+//
+// "fechou 958,80 hapvida individual" grava o valor E o produto (23/10/2026).
+// Caso real: leads do grupo Adventista (Proasa) fechando Hapvida individual —
+// sem o produto, o app não mostra "procurou X, fechou Y".
+//
+// Por VOCABULÁRIO, não por "o que sobrou da frase": o que sobra é a pista de
+// QUAL lead ("fechou 1200 João"), e um nome lido como produto (ou o contrário)
+// grava a venda no lead errado. Palavra fora da lista continua sendo pista —
+// no pior caso o bot pergunta qual lead, nunca chuta. A lista é de plano de
+// saúde (o nicho de quem usa o bot hoje); outro ramo registra sem produto,
+// como antes.
+
+/** Operadoras: abrem o produto e, seguidas de número curto, ele é o modelo.
+ *  Fora de propósito: "Assim" e "Sul" (de Sul América) — são palavras comuns,
+ *  e "fechou 1200 zona sul" viraria produto. "SulAmérica" junto entra. */
+const OPERADORAS: Record<string, string> = {
+  hapvida: 'Hapvida', samel: 'Samel', unimed: 'Unimed', amil: 'Amil', bradesco: 'Bradesco',
+  sulamerica: 'SulAmérica', proasa: 'Proasa', notredame: 'NotreDame',
+  intermedica: 'Intermédica', gndi: 'GNDI', porto: 'Porto', prevent: 'Prevent', golden: 'Golden',
+  cassi: 'Cassi', geap: 'Geap', careplus: 'Care Plus', medsenior: 'MedSênior', allianz: 'Allianz',
+  odontoprev: 'OdontoPrev',
+};
+
+/** Modalidades: também abrem o produto ("fechou 600 individual"). */
+const MODALIDADES: Record<string, string> = {
+  individual: 'individual', familiar: 'familiar', empresarial: 'empresarial', pme: 'PME',
+  adesao: 'adesão', coletivo: 'coletivo', coletiva: 'coletiva', mei: 'MEI',
+  odonto: 'odonto', odontologico: 'odontológico', dental: 'dental',
+};
+
+/** Só continuam um produto já aberto — sozinhas não querem dizer plano. */
+const COMPLEMENTOS: Record<string, string> = {
+  saude: 'Saúde', seguro: 'Seguro', cross: 'Cross', senior: 'Senior', america: 'América', dame: 'Dame',
+  mix: 'Mix', plus: 'Plus', top: 'Top', flex: 'Flex', premium: 'Premium', smart: 'Smart', max: 'Max',
+  nacional: 'nacional', regional: 'regional', estadual: 'estadual',
+  enfermaria: 'enfermaria', apartamento: 'apartamento', apto: 'apto',
+  copart: 'copart', coparticipacao: 'coparticipação', coparticipativo: 'coparticipativo',
+};
+
+/** Ligam duas partes do produto só quando a seguinte também é do produto:
+ *  "por adesão", "com coparticipação" — e "por 958,80" não entra. */
+const CONECTORES = new Set(['por', 'com', 'sem']);
+
+/** Palavras depois das quais número curto é modelo do plano ("amil 400"). */
+const MODELO_DE_PLANO = new Set([
+  ...Object.keys(OPERADORAS), 'mix', 'plus', 'top', 'flex', 'premium', 'smart', 'max',
+]);
+
+const PRODUTO_MAX = 120; // teto de closed_sales.product
+
+interface ProdutoAchado {
+  texto: string;
+  /** Trechos de `t` que compõem o produto — saem da pista do lead. */
+  trechos: Array<[number, number]>;
+}
+
+function acharProduto(t: string, valor: ValorAchado | null): ProdutoAchado | null {
+  const tokens = [...t.matchAll(/\S+/g)].map((m) => {
+    const cru = m[0];
+    const ini = m.index! + (cru.length - cru.replace(/^[^\w]+/, '').length);
+    const nucleo = cru.replace(/^[^\w]+|[^\w]+$/g, '');
+    return {
+      nucleo, ini, fim: ini + nucleo.length,
+      ehValor: Boolean(valor && m.index! < valor.fim && m.index! + cru.length > valor.inicio),
+    };
+  });
+  const abre = (n: string) => n in OPERADORAS || n in MODALIDADES;
+  const continua = (n: string) => abre(n) || n in COMPLEMENTOS;
+
+  const inicio = tokens.findIndex((tk) => !tk.ehValor && abre(tk.nucleo));
+  if (inicio < 0) return null;
+
+  const partes: string[] = [];
+  const trechos: Array<[number, number]> = [];
+  let anterior = '';
+  for (let i = inicio; i < tokens.length; i++) {
+    const tk = tokens[i];
+    if (tk.ehValor) continue; // "hapvida 958,80 individual": o valor no meio não corta o produto
+    const n = tk.nucleo;
+    // "unimed plus 2 por 900 com coparticipação": o "por" do valor também
+    // não corta o produto — senão "coparticipação" sobrava como nome de lead.
+    if (CONECTORES.has(n) && tokens[i + 1]?.ehValor) continue;
+    const proximo = tokens.slice(i + 1).find((x) => !x.ehValor)?.nucleo ?? '';
+    let rotulo: string | null = null;
+    if (continua(n)) rotulo = OPERADORAS[n] ?? MODALIDADES[n] ?? COMPLEMENTOS[n];
+    else if (CONECTORES.has(n) && continua(proximo)) rotulo = n;
+    // Número do modelo só entra quando OUTRO número foi o valor: sozinho é
+    // ambíguo (acharValor também o recusou) e não vira nem valor nem produto.
+    else if (/^\d{1,3}$/.test(n) && MODELO_DE_PLANO.has(anterior) && valor) rotulo = n;
+    if (rotulo === null) break;
+    partes.push(rotulo);
+    trechos.push([tk.ini, tk.fim]);
+    anterior = n;
+  }
+  const texto = partes.join(' ');
+  return {
+    texto: (texto.charAt(0).toLocaleUpperCase('pt-BR') + texto.slice(1)).slice(0, PRODUTO_MAX),
+    trechos,
+  };
+}
+
+/**
+ * PURA. O que foi vendido, quando a mensagem diz: "fechou 958,80 hapvida
+ * individual" → "Hapvida individual". null quando não há palavra de plano —
+ * "fechou 958,80" continua uma venda completa, só sem produto.
+ */
+export function lerProduto(texto: string): string | null {
+  const t = prepararTexto(texto);
+  return acharProduto(t, acharValor(t))?.texto ?? null;
+}
+
+/** Tira o produto do texto antes de extrair a pista: "hapvida individual"
+ *  não é nome de lead, e lido como nome faria o bot perguntar "qual deles?"
+ *  mesmo com um lead aberto só. */
+function semOsTrechos(t: string, trechos: Array<[number, number]>): string {
+  let saida = t;
+  for (const [ini, fim] of trechos) saida = saida.slice(0, ini) + ' '.repeat(fim - ini) + saida.slice(fim);
+  return saida;
 }
 
 /** Sobra da mensagem depois de tirar gatilho, valor e pontuação: a pista de
@@ -204,10 +355,15 @@ export function interpretarRespostaDoVendedor(texto: string): RespostaDoVendedor
     return { resultado: 'negociando', pista };
   }
   if (GATILHOS_VENDA.some((g) => t.includes(g))) {
-    const valorCents = lerValorEmCentavos(cru);
-    return valorCents === null
-      ? { resultado: 'venda', pista }
-      : { resultado: 'venda', valorCents, pista };
+    const preparado = prepararTexto(cru);
+    const valor = acharValor(preparado);
+    const produto = acharProduto(preparado, valor);
+    return {
+      resultado: 'venda',
+      ...(valor ? { valorCents: valor.cents } : {}),
+      ...(produto ? { produto: produto.texto } : {}),
+      pista: produto ? extrairPista(semOsTrechos(preparado, produto.trechos)) : pista,
+    };
   }
   return null;
 }

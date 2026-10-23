@@ -27,6 +27,9 @@ export interface VendaParaRegistrar {
   /** Telefone do lead (comprador). */
   telefone: string;
   valorCents: number;
+  /** O que foi vendido ("Hapvida individual"), quando o vendedor escreveu.
+   *  Vai só para `closed_sales.product` — NÃO sobe ao Google nem à Meta. */
+  produto?: string | null;
   /** Nome do lead, quando o WhatsApp informou. */
   nome?: string | null;
   /** Campanha do Google que trouxe o lead, quando a origem é Google. */
@@ -126,22 +129,35 @@ export async function registrarVendaNasPlataformas(v: VendaParaRegistrar): Promi
 
   let saleId: string | null = null;
   try {
-    const resp = await fetch(`${destino.cfg.base}/rest/v1/closed_sales`, {
+    const venda = {
+      user_id: destino.supabaseUserId,
+      customer_id: destino.customerId,
+      // Só campanha do GOOGLE entra aqui: closed_sales.campaign_id é lido
+      // pela medição de lucro por campanha do Google. Id de campanha da
+      // Meta neste campo viraria receita atribuída a uma campanha que não
+      // existe naquela conta.
+      campaign_id: v.campanhaGoogleId ?? null,
+      client_name: v.nome?.trim() || null,
+      amount_brl: (v.valorCents / 100).toFixed(2),
+      closed_at: hojeEmManaus(),
+    };
+    const gravar = (corpo: Record<string, unknown>) => fetch(`${destino.cfg.base}/rest/v1/closed_sales`, {
       method: 'POST',
       headers: { ...headers(destino.cfg.key), Prefer: 'return=representation' },
-      body: JSON.stringify({
-        user_id: destino.supabaseUserId,
-        customer_id: destino.customerId,
-        // Só campanha do GOOGLE entra aqui: closed_sales.campaign_id é lido
-        // pela medição de lucro por campanha do Google. Id de campanha da
-        // Meta neste campo viraria receita atribuída a uma campanha que não
-        // existe naquela conta.
-        campaign_id: v.campanhaGoogleId ?? null,
-        client_name: v.nome?.trim() || null,
-        amount_brl: (v.valorCents / 100).toFixed(2),
-        closed_at: hojeEmManaus(),
-      }),
+      body: JSON.stringify(corpo),
     });
+    // `product` só vai quando há produto: a coluna nasceu numa migration do
+    // Supabase aplicada à mão (20261023120000), e o PostgREST recusa coluna
+    // que não conhece MESMO com valor nulo. Assim "fechou 958,80" nunca
+    // depende dela.
+    const produto = v.produto?.trim().slice(0, 120) || null;
+    let resp = await gravar(produto ? { ...venda, product: produto } : venda);
+    // Banco ainda sem a coluna: grava sem o produto em vez de perder a venda
+    // — venda não registrada é pior que venda incompleta.
+    if (!resp.ok && produto && (await faltaColunaProduto(resp))) {
+      console.warn('[venda:vendedor] closed_sales ainda sem a coluna product — venda gravada sem o produto');
+      resp = await gravar(venda);
+    }
     if (resp.ok) {
       const linhas = (await resp.json().catch(() => [])) as Array<{ id?: string }>;
       saleId = linhas[0]?.id ?? null;
@@ -162,6 +178,13 @@ export async function registrarVendaNasPlataformas(v: VendaParaRegistrar): Promi
     enviarAMeta(v, idDoEventoDaVenda(saleId)),
   ]);
   return { tela: 'gravada', saleId, google, meta };
+}
+
+/** A recusa do PostgREST é pela coluna `product` inexistente (PGRST204 no
+ *  insert)? Lê só o corpo do erro; nada dele vai para o log. */
+async function faltaColunaProduto(resp: Response): Promise<boolean> {
+  const erro = (await resp.json().catch(() => ({}))) as { code?: string; message?: string };
+  return (erro?.code === 'PGRST204' || erro?.code === '42703') && /\bproduct\b/.test(String(erro?.message ?? ''));
 }
 
 async function enviarAoGoogle(

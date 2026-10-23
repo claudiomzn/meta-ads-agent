@@ -18,6 +18,7 @@ import { chaveDoTelefone } from './funil.js';
 import {
   comoChamarOLead,
   DIAS_DE_LEMBRETE,
+  lerProduto,
   lerValorEmCentavos,
   telefoneDoAvisoCitado,
   dentroDoAtendimento,
@@ -111,14 +112,19 @@ export async function tratarRespostaDoVendedor(
       const nova = interpretarRespostaDoVendedor(msg.text);
       if (nova && !esperandoValor(nova)) {
         await apagarPendencia(userId, businessId);
-        return await aplicar(userId, businessId, config, msg, lead, nova);
+        return await aplicar(userId, businessId, config, msg, lead, comProdutoDe(nova, pendencia.resposta));
       }
       // lerValorEmCentavos já recusa valor abaixo de R$ 10: à espera de valor,
       // um "2" é "o segundo da lista" ou dedo escorregado, não venda de R$ 2.
       const valorCents = lerValorEmCentavos(msg.text);
       if (valorCents !== null) {
         await apagarPendencia(userId, businessId);
-        return await aplicar(userId, businessId, config, msg, lead, { resultado: 'venda', valorCents, pista: '' });
+        // "fechou hapvida individual" → "Por quanto?" → "958,80": o produto
+        // dito antes não se perde; dito agora ("958,80 amil 400"), vale o de agora.
+        const produto = lerProduto(msg.text) ?? pendencia.resposta.produto;
+        return await aplicar(userId, businessId, config, msg, lead, {
+          resultado: 'venda', valorCents, ...(produto ? { produto } : {}), pista: '',
+        });
       }
     }
   }
@@ -135,8 +141,8 @@ export async function tratarRespostaDoVendedor(
       // ele vale mais que o guardado — é o que o vendedor acabou de dizer.
       const agora = interpretarRespostaDoVendedor(msg.text);
       const resposta = agora && !(agora.resultado === 'venda' && agora.valorCents === undefined)
-        ? agora
-        : pendencia.resposta;
+        ? comProdutoDe(agora, pendencia.resposta)
+        : comProdutoDe(pendencia.resposta, agora);
       return await aplicar(userId, businessId, config, msg, escolhido, resposta);
     }
   }
@@ -172,6 +178,14 @@ export async function tratarRespostaDoVendedor(
     config, msg,
     `Qual destes leads? Responda com o número (ou o nome):\n${lista}`,
   );
+}
+
+/** Venda que não disse o produto herda o da outra mensagem da mesma conversa
+ *  com o vendedor (a pendência, ou a resposta ao "qual deles?"). O produto
+ *  dito na mensagem principal sempre vence. */
+function comProdutoDe(r: RespostaDoVendedor, outra: RespostaDoVendedor | null | undefined): RespostaDoVendedor {
+  if (r.resultado !== 'venda' || r.produto || !outra?.produto) return r;
+  return { ...r, produto: outra.produto };
 }
 
 /** "fechou" sem valor: ainda falta o número para poder registrar. */
@@ -286,7 +300,7 @@ async function aplicar(
     return await responder(config, msg, `Fechou com ${nome}, ótimo! 🎉 Por quanto? (ex.: 1200 ou 1.200,00)`);
   }
 
-  return await registrarVenda(userId, businessId, config, msg, lead, resposta.valorCents);
+  return await registrarVenda(userId, businessId, config, msg, lead, resposta.valorCents, resposta.produto ?? null);
 }
 
 async function registrarVenda(
@@ -296,6 +310,7 @@ async function registrarVenda(
   msg: InboundMessage,
   lead: ConversaAberta,
   valorCents: number,
+  produto: string | null,
 ): Promise<{ reply: string; state: string }> {
   const nome = comoChamarOLead(lead);
 
@@ -325,6 +340,7 @@ async function registrarVenda(
     convId: lead.id,
     telefone: lead.leadPhone,
     valorCents,
+    produto,
     nome: lead.nome,
     // Campanha só quando a origem é GOOGLE — ver venda.externa.ts.
     campanhaGoogleId: lead.origemCanal === 'google' ? lead.origemCampanhaId : null,
@@ -351,7 +367,7 @@ async function registrarVenda(
     where: { id: lead.id },
     data: { vendaSaleId: envio.saleId, vendaRegistradaEm: new Date() },
   });
-  return await responder(config, msg, textoDaVendaRegistrada(nome, valorCents, envio));
+  return await responder(config, msg, textoDaVendaRegistrada(nome, valorCents, envio, produto));
 }
 
 /**
@@ -362,8 +378,12 @@ async function registrarVenda(
 export function textoDaVendaRegistrada(
   nome: string, valorCents: number,
   envio: Pick<ResultadoDoRegistro, 'tela' | 'google' | 'meta' | 'detalhe'>,
+  produto: string | null = null,
 ): string {
-  const linha = `✅ Venda de R$ ${reais(valorCents)} registrada para ${nome}`;
+  // O produto na confirmação: é como o vendedor confere que o bot entendeu
+  // "hapvida individual" como plano, e não como nome de lead.
+  const oQue = produto ? ` (${produto})` : '';
+  const linha = `✅ Venda de R$ ${reais(valorCents)}${oQue} registrada para ${nome}`;
   const falharam = [
     envio.google === 'falhou' ? 'Google' : null,
     envio.meta === 'falhou' ? 'Meta' : null,
