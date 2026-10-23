@@ -563,3 +563,78 @@ describe('lembrete de retorno (dias 2, 5 e 10)', () => {
     });
   });
 });
+
+// O que foi vendido (23/10/2026). Os ⭐ reprovam o código anterior: o produto
+// não chegava a closed_sales, e "hapvida individual" com um lead aberto só
+// virava a pergunta "qual destes leads?".
+describe('"fechou <valor> <produto>" grava também o que foi vendido', () => {
+  it('⭐ grava o produto em closed_sales e confirma com ele — sem perguntar qual lead', async () => {
+    await leadEmAberto();
+    const r = await doVendedor('fechou 958,80 hapvida individual');
+
+    expect(r?.reply).toBe('✅ Venda de R$ 958,80 (Hapvida individual) registrada para João Silva');
+    expect(corpoDoFetch('/rest/v1/closed_sales')).toMatchObject({
+      amount_brl: '958.80', product: 'Hapvida individual', client_name: 'João Silva',
+    });
+  });
+
+  it('⭐ o produto NÃO vai ao Google nem à Meta', async () => {
+    await leadEmAberto();
+    await doVendedor('fechou 958,80 hapvida individual', AVISO_DO_JOAO);
+    expect(JSON.stringify(corpoDoFetch('/functions/v1/upload-sale-conversion'))).not.toMatch(/hapvida|product/i);
+    expect(JSON.stringify(purchases)).not.toMatch(/hapvida|product/i);
+    expect(purchases).toHaveLength(1);
+  });
+
+  it('"fechou 958,80" sem produto não manda a coluna product (funciona antes da migration)', async () => {
+    await leadEmAberto();
+    const r = await doVendedor('fechou 958,80', AVISO_DO_JOAO);
+    expect(r?.reply).toBe('✅ Venda de R$ 958,80 registrada para João Silva');
+    expect(corpoDoFetch('/rest/v1/closed_sales')).not.toHaveProperty('product');
+  });
+
+  it('⭐ produto dito antes do valor não se perde: "fechou hapvida individual" → "958,80"', async () => {
+    await leadEmAberto();
+    expect((await doVendedor('fechou hapvida individual', AVISO_DO_JOAO))?.reply).toContain('Por quanto?');
+    const r = await doVendedor('958,80');
+    expect(r?.reply).toBe('✅ Venda de R$ 958,80 (Hapvida individual) registrada para João Silva');
+    expect(corpoDoFetch('/rest/v1/closed_sales')).toMatchObject({ amount_brl: '958.80', product: 'Hapvida individual' });
+  });
+
+  it('⭐ banco sem a coluna product: grava a venda sem o produto em vez de perdê-la', async () => {
+    const original = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url: string, init?: { method?: string; body?: string }) => {
+      if (String(url).includes('/rest/v1/closed_sales') && String(init?.body ?? '').includes('"product"')) {
+        return {
+          ok: false, status: 400,
+          json: async () => ({ code: 'PGRST204', message: "Could not find the 'product' column of 'closed_sales' in the schema cache" }),
+          text: async () => '',
+        } as unknown as Response;
+      }
+      return original(url, init);
+    });
+    const conv = await leadEmAberto();
+    const r = await doVendedor('fechou 958,80 hapvida individual', AVISO_DO_JOAO);
+
+    const inserts = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/rest/v1/closed_sales'));
+    expect(inserts).toHaveLength(2);
+    expect(JSON.parse(String(inserts[1][1]?.body))).not.toHaveProperty('product');
+    expect(r?.reply).toContain('✅ Venda de R$ 958,80');
+    const depois = await prisma.whatsappConversation.findUnique({ where: { id: conv.id } });
+    expect(depois).toMatchObject({ resultado: 'venda', vendaSaleId: 'venda-uuid-1' });
+  });
+
+  it('outra recusa do banco NÃO é regravada sem produto: destrava o lead como antes', async () => {
+    const original = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url: string, init?: { method?: string; body?: string }) => {
+      if (String(url).includes('/rest/v1/closed_sales')) {
+        return { ok: false, status: 500, json: async () => ({ code: 'XX000', message: 'erro' }), text: async () => '' } as unknown as Response;
+      }
+      return original(url, init);
+    });
+    await leadEmAberto();
+    const r = await doVendedor('fechou 958,80 hapvida individual', AVISO_DO_JOAO);
+    expect(fetchMock.mock.calls.filter((c) => String(c[0]).includes('/rest/v1/closed_sales'))).toHaveLength(1);
+    expect(r?.reply).toContain('Não consegui registrar');
+  });
+});
