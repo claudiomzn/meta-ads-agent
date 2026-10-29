@@ -59,6 +59,13 @@ describe('origemDaVenda', () => {
     ]);
     expect(r?.campanhaId).toBe('B');
   });
+  it('devolve o código do clique da conversa escolhida (a rota troca pelo gclid)', () => {
+    const r = origemDaVenda('92981234567', [
+      { ...conv('5592981234567', 'google', '2026-10-21', 'A'), origemRef: 'ADV-G', origemClique: 'k7xq9pz2ab' },
+    ]);
+    expect(r).toMatchObject({ ref: 'ADV-G', clique: 'k7xq9pz2ab' });
+    expect(origemDaVenda('92981234567', [conv('5592981234567', 'google', '2026-10-21', 'A')])?.clique).toBeNull();
+  });
   it('outro DDD com o mesmo final não casa', () => {
     expect(origemDaVenda('11981234567', [conv('5592981234567', 'google', '2026-10-01', 'A')])).toBeNull();
   });

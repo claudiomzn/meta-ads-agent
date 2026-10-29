@@ -56,6 +56,9 @@ const PENDENCIA_VALIDA_MS = 24 * 60 * 60 * 1000;
 interface ConversaAberta extends LeadAberto {
   origemCanal: string | null;
   origemCampanhaId: string | null;
+  /** Código de origem do site ("ADV-G") — dá o grupo de anúncios da venda. */
+  origemRef: string | null;
+  createdAt: Date;
   /** null ou 'negociando' — é para onde a trava volta se a gravação falhar. */
   resultado: string | null;
   ctwaClid: string | null;
@@ -76,12 +79,12 @@ async function leadsAbertos(userId: string, businessId: string): Promise<Convers
     take: LEADS_ABERTOS_MAX,
     select: {
       id: true, leadPhone: true, leadNome: true, handoffEm: true,
-      origemCanal: true, origemCampanhaId: true, resultado: true, ctwaClid: true,
+      origemCanal: true, origemCampanhaId: true, origemRef: true, createdAt: true, resultado: true, ctwaClid: true,
     },
   });
   return linhas.map((l) => ({
     id: l.id, leadPhone: l.leadPhone, nome: l.leadNome, handoffEm: l.handoffEm,
-    origemCanal: l.origemCanal, origemCampanhaId: l.origemCampanhaId,
+    origemCanal: l.origemCanal, origemCampanhaId: l.origemCampanhaId, origemRef: l.origemRef, createdAt: l.createdAt,
     resultado: l.resultado, ctwaClid: l.ctwaClid,
   }));
 }
@@ -345,6 +348,10 @@ async function registrarVenda(
     // Campanha só quando a origem é GOOGLE — ver venda.externa.ts.
     campanhaGoogleId: lead.origemCanal === 'google' ? lead.origemCampanhaId : null,
     clique,
+    // Grupo de anúncios da venda (29/10/2026): o código do site só vale
+    // quando o Google é a origem, como a campanha acima.
+    ref: lead.origemCanal === 'google' ? lead.origemRef : null,
+    cliqueEm: lead.createdAt.toISOString(),
     ctwaClid: lead.ctwaClid,
   });
 

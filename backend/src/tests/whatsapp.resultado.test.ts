@@ -116,7 +116,7 @@ function respostaJson(body: unknown) {
 async function leadEmAberto(opts: {
   phone?: string; nome?: string | null; label?: string; handoffDiasAtras?: number;
   origemCanal?: string | null; origemCampanhaId?: string | null; resumo?: string | null;
-  ctwaClid?: string | null;
+  ctwaClid?: string | null; origemRef?: string | null;
 } = {}) {
   const dias = opts.handoffDiasAtras ?? 0;
   return prisma.whatsappConversation.create({
@@ -130,6 +130,7 @@ async function leadEmAberto(opts: {
       origemCanal: opts.origemCanal ?? 'google',
       origemCampanhaId: opts.origemCampanhaId ?? '21345678901',
       ctwaClid: opts.ctwaClid ?? null,
+      origemRef: opts.origemRef ?? null,
     },
   });
 }
@@ -169,6 +170,20 @@ describe('"fechou <valor>" registra a venda', () => {
 
     const depois = await prisma.whatsappConversation.findUnique({ where: { id: conv.id } });
     expect(depois).toMatchObject({ resultado: 'venda', vendaValorCents: 120000, vendaSaleId: 'venda-uuid-1' });
+  });
+
+  it('⭐ caso real (29/10/2026): a venda de R$ 958,80 com ref ADV leva o código ao AdsGenius, que acha o grupo Adventista', async () => {
+    const conv = await leadEmAberto({ origemRef: 'ADV-G' });
+    await doVendedor('fechou 958,80', AVISO_DO_JOAO);
+    expect(corpoDoFetch('/functions/v1/upload-sale-conversion')).toMatchObject({
+      sale_id: 'venda-uuid-1', ref: 'ADV-G', click_date: conv.createdAt.toISOString(),
+    });
+  });
+
+  it('código do site de conversa que não veio do Google não vai (não aponta grupo do Google)', async () => {
+    await leadEmAberto({ origemCanal: 'meta_whatsapp', origemRef: 'ADV-M' });
+    await doVendedor('fechou 958,80', AVISO_DO_JOAO);
+    expect(corpoDoFetch('/functions/v1/upload-sale-conversion') ?? {}).not.toHaveProperty('ref');
   });
 
   it('⭐ a MESMA venda não é registrada duas vezes (vendedor repete a mensagem)', async () => {

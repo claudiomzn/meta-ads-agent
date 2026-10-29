@@ -67,11 +67,18 @@ router.get('/origem-do-telefone', authMiddleware, async (req: AuthRequest, res: 
   // Pré-filtro no banco pelos 8 finais; o DDD é conferido em origemDaVenda.
   const conversas = await prisma.whatsappConversation.findMany({
     where: { userId: req.userId!, leadPhone: { endsWith: chave.slice(2), not: { startsWith: PREFIXO_ENSAIO } } },
-    select: { leadPhone: true, origemCanal: true, origemCampanhaId: true, origemRef: true, label: true, createdAt: true },
+    select: { leadPhone: true, origemCanal: true, origemCampanhaId: true, origemRef: true, origemClique: true, label: true, createdAt: true },
     orderBy: { createdAt: 'desc' },
     take: 20,
   });
-  res.json({ origem: origemDaVenda(telefone, conversas) });
+  const achada = origemDaVenda(telefone, conversas);
+  if (!achada) return res.json({ origem: null });
+  // O gclid do clique (29/10/2026): com ele o AdsGenius pergunta ao Google
+  // de qual grupo de anúncios e palavra veio a venda. O código interno do
+  // clique não sai daqui.
+  const { clique, ...origem } = achada;
+  const registro = clique ? await prisma.cliqueDoSite.findUnique({ where: { codigo: clique }, select: { gclid: true } }) : null;
+  res.json({ origem: { ...origem, gclid: registro?.gclid ?? null } });
 });
 
 // GET /api/whatsapp/ativacao?businessId=…
