@@ -75,6 +75,8 @@ export interface ConversaComOrigem {
   origemRef: string | null;
   label: string | null;
   createdAt: Date;
+  /** Código do clique registrado pelo site (CliqueDoSite), quando houve. */
+  origemClique?: string | null;
 }
 
 export interface OrigemDaVenda {
@@ -83,6 +85,8 @@ export interface OrigemDaVenda {
   ref: string | null;
   rotulo: string | null;
   desde: string;
+  /** Código do clique da conversa escolhida — a rota troca pelo gclid. */
+  clique: string | null;
 }
 
 /**
@@ -98,5 +102,8 @@ export function origemDaVenda(telefone: string, conversas: ConversaComOrigem[]):
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   const c = doNumero[0];
   if (!c) return null;
-  return { canal: c.origemCanal, campanhaId: c.origemCampanhaId, ref: c.origemRef, rotulo: c.label, desde: c.createdAt.toISOString() };
+  return {
+    canal: c.origemCanal, campanhaId: c.origemCampanhaId, ref: c.origemRef, rotulo: c.label,
+    desde: c.createdAt.toISOString(), clique: c.origemClique ?? null,
+  };
 }

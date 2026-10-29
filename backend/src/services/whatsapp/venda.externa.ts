@@ -36,6 +36,13 @@ export interface VendaParaRegistrar {
   campanhaGoogleId?: string | null;
   /** gclid/gbraid/wbraid do clique do site, quando houver. */
   clique?: { gclid?: string; gbraid?: string; wbraid?: string };
+  /** Código de origem do site ("ADV-G"), quando a conversa veio do Google
+   *  pelo site. O AdsGenius casa a página com o grupo de anúncios cuja URL
+   *  final é ela (29/10/2026). */
+  ref?: string | null;
+  /** Quando a conversa começou (ISO) — logo depois do clique. Encurta a busca
+   *  do clique no Google, que só consulta um dia por vez. */
+  cliqueEm?: string | null;
   /** Click id do anúncio CTWA da Meta, quando o lead veio de um. */
   ctwaClid?: string | null;
 }
@@ -197,7 +204,13 @@ async function enviarAoGoogle(
       // user_id no corpo porque a chamada é server-to-server (não há JWT de
       // usuário): a function valida a service role e confere que a venda é
       // deste user_id. Valor e data ela lê de closed_sales, nunca do corpo.
-      body: JSON.stringify({ user_id: supabaseUserId, sale_id: saleId, phone: v.telefone, ...(v.clique ?? {}) }),
+      // `ref` e `click_date` (29/10/2026): com eles a function descobre o
+      // grupo de anúncios da venda — ver _shared/atribuir-venda.ts de lá.
+      body: JSON.stringify({
+        user_id: supabaseUserId, sale_id: saleId, phone: v.telefone, ...(v.clique ?? {}),
+        ...(v.ref ? { ref: v.ref } : {}),
+        ...(v.cliqueEm ? { click_date: v.cliqueEm } : {}),
+      }),
     });
     const data = (await resp.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (data?.ok) {
