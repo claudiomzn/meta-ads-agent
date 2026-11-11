@@ -182,7 +182,9 @@ export async function connectInstance(userId: string, businessId?: string | null
 // instâncias conectadas antes da introdução do segredo passam a usar a URL nova
 // sem o usuário precisar reconectar (self-heal).
 export async function ensureManagedWebhooks(): Promise<void> {
-  if (!evolutionConfigured()) return;
+  // Sem EVOLUTION_URL (Evolution desligada) não há o que consertar — e tentar
+  // faria fetch para "/webhook/set/..." sem host, falhando uma vez por conta.
+  if (!process.env.EVOLUTION_URL || !evolutionConfigured()) return;
 
   const configs = await prisma.whatsappConfig.findMany({
     where: { transport: 'evolution' },
@@ -200,12 +202,14 @@ export async function ensureManagedWebhooks(): Promise<void> {
     try {
       const resp = await fetch(`${baseUrl()}/webhook/set/${name}`, {
         method: 'POST', headers: headers(), body: JSON.stringify(body),
+        // Evolution dormindo/desligada não pode pendurar o self-heal do boot.
+        signal: AbortSignal.timeout(10_000),
       });
       if (!resp.ok && resp.status !== 404) {
         console.warn(`[evolution] self-heal webhook falhou p/ ${cfg.userId}/${cfg.businessId} (${resp.status})`);
       }
     } catch (err) {
-      console.warn(`[evolution] self-heal webhook erro p/ ${cfg.userId}/${cfg.businessId}:`, err);
+      console.warn(`[evolution] self-heal webhook erro p/ ${cfg.userId}/${cfg.businessId}:`, err instanceof Error ? err.message : 'erro desconhecido');
     }
   }
 }

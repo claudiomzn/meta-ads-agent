@@ -477,6 +477,23 @@ describe('lembrete de retorno (dias 2, 5 e 10)', () => {
     expect(enviadas).toHaveLength(0);
   });
 
+  it('⭐ envio que FALHA não conta como enviado (nem por retorno false, nem por exceção) e não é repetido', async () => {
+    // Antes: o `.catch` engolia a falha e o cron contava/logava "enviado" assim mesmo.
+    const conv = await leadComHandoffEm(diasAtras(2));
+    const sendText = vi.mocked(LogTransport.prototype.sendText);
+    sendText.mockImplementationOnce(async () => false);
+    expect(await enviarLembretesPendentes(dentroDoHorario)).toBe(0);
+
+    // A reclamação vale mesmo na falha: perder o lembrete é melhor que metralhar.
+    expect((await prisma.whatsappConversation.findUnique({ where: { id: conv.id } }))?.lembretesEnviados).toBe(1);
+    expect(await enviarLembretesPendentes(dentroDoHorario)).toBe(0);
+
+    // Exceção do transporte: mesma coisa (outro lead, outro lembrete).
+    await prisma.whatsappConversation.update({ where: { id: conv.id }, data: { lembretesEnviados: 0, ultimoLembreteEm: null } });
+    sendText.mockImplementationOnce(async () => { throw new Error('Evolution fora do ar'); });
+    expect(await enviarLembretesPendentes(dentroDoHorario)).toBe(0);
+  });
+
   it('⭐ no dia 1 ainda não cobra', async () => {
     await leadComHandoffEm(diasAtras(1));
     expect(await enviarLembretesPendentes(dentroDoHorario)).toBe(0);

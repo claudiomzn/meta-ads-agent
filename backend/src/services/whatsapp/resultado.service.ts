@@ -568,12 +568,22 @@ export async function enviarLembretesPendentes(agora = new Date()): Promise<numb
     if (ganhou.count !== 1) continue;
 
     const transport = resolveTransport(config.transport, (config.transportConfig ?? {}) as Record<string, unknown>);
-    await transport.sendText(
+    // Só conta/loga como enviado se SAIU de fato. Antes, o `.catch` engolia a
+    // falha e o `enviados++` + "lembrete enviado" aconteciam mesmo assim — o log
+    // mentia. A reclamação acima continua valendo (não repete em loop).
+    const enviou = await transport.sendText(
       config.handoffContact,
       textoDoLembrete({ nome: c.leadNome, leadPhone: c.leadPhone, resumo: c.summary }),
-    ).catch((e) => console.error('[whatsapp:lembrete] falha ao enviar ao vendedor:', e));
+    ).then((r) => r !== false).catch((e) => {
+      console.error('[whatsapp:lembrete] falha ao enviar ao vendedor:', e instanceof Error ? e.message : 'erro desconhecido');
+      return false;
+    });
+    if (!enviou) {
+      console.warn(`[whatsapp:lembrete] ${devido}º lembrete NÃO enviado (negócio ${c.businessId}, userId ${c.userId}) — não será repetido`);
+      continue;
+    }
     enviados++;
-    console.log(`[whatsapp:lembrete] ${devido}º lembrete enviado (lead ${c.leadPhone}, userId ${c.userId}, negócio ${c.businessId})`);
+    console.log(`[whatsapp:lembrete] ${devido}º lembrete enviado (lead ...${c.leadPhone.slice(-4)}, userId ${c.userId}, negócio ${c.businessId})`);
   }
   return enviados;
 }
