@@ -2,6 +2,10 @@ import prisma from './lib/prisma.js';
 import dotenv from 'dotenv';
 dotenv.config({ override: true });
 import 'express-async-errors'; // captura erros async em Express 4 automaticamente
+import { instalarAxiosSemToken } from './lib/axiosSemToken.js';
+// Antes de qualquer chamada: erro do axios sai sem o access_token do cliente
+// (o log do Render já foi caminho de vazamento — ver lib/axiosSemToken.ts).
+instalarAxiosSemToken();
 import express from 'express';
 import cors from 'cors';
 import cliqueRoutes from './routes/clique.routes.js';
