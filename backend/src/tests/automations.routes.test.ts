@@ -14,7 +14,7 @@ const mockUpdateAdSetStatus = vi.fn().mockResolvedValue(undefined);
 const mockUpdateAdStatus = vi.fn().mockResolvedValue(undefined);
 const mockUpdateCampaignStatus = vi.fn().mockResolvedValue(undefined);
 const mockUpdateCampaignBudget = vi.fn().mockResolvedValue(undefined);
-const mockScaleCampaignBudget = vi.fn().mockResolvedValue(120);
+const mockScaleCampaignBudget = vi.fn().mockResolvedValue({ escalado: true, conjuntos: [], falhas: [] });
 const mockDisconnect = vi.fn().mockResolvedValue(undefined);
 
 vi.mock('../services/meta.mcp.service.js', () => ({
@@ -98,7 +98,7 @@ beforeEach(() => {
   mockUpdateAdStatus.mockResolvedValue(undefined);
   mockUpdateCampaignStatus.mockResolvedValue(undefined);
   mockUpdateCampaignBudget.mockResolvedValue(undefined);
-  mockScaleCampaignBudget.mockResolvedValue(120);
+  mockScaleCampaignBudget.mockResolvedValue({ escalado: true, conjuntos: [], falhas: [] });
   mockDisconnect.mockResolvedValue(undefined);
 });
 

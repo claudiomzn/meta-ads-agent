@@ -1,4 +1,5 @@
 import prisma from '../lib/prisma.js';
+import { REGRA_ROAS_PROMPT, temValorDeConversao } from '../lib/roas.js';
 import Anthropic from '@anthropic-ai/sdk';
 
 
@@ -131,7 +132,9 @@ Seja específico e acionável — evite conselhos genéricos.`;
         objective: c.objective,
         budget: c.budget,
         spend: c.metaSpend ?? null,
-        roas: c.metaRoas ?? null,
+        // ROAS 0 de campanha de lead não é retorno zero — é falta de valor
+        // cadastrado. Vai como null para a IA não chamar de "perdedora".
+        roas: temValorDeConversao(c.metaRoas) ? c.metaRoas : null,
         cpc: c.metaCpc ?? null,
         cpl: c.metaCpl ?? null,
         impressions: c.metaImpressions ?? null,
@@ -143,7 +146,7 @@ Seja específico e acionável — evite conselhos genéricos.`;
         adSets: c.adSets.map(as => ({
           name: as.name,
           targeting: as.targeting,
-          roas: as.metaRoas ?? null,
+          roas: temValorDeConversao(as.metaRoas) ? as.metaRoas : null,
           cpl: as.metaCpl ?? null,
           frequency: as.metaFrequency ?? null,
         })),
@@ -179,9 +182,10 @@ Seja específico e acionável — evite conselhos genéricos.`;
     // Estatísticas gerais para contexto
     const withMetrics = campaigns.filter(c => c.spend !== null && c.spend > 0);
     const totalSpend = withMetrics.reduce((s, c) => s + (c.spend ?? 0), 0);
+    const withRoas = withMetrics.filter(c => c.roas !== null);
     const avgRoas =
-      withMetrics.length > 0
-        ? withMetrics.reduce((s, c) => s + (c.roas ?? 0), 0) / withMetrics.length
+      withRoas.length > 0
+        ? withRoas.reduce((s, c) => s + (c.roas ?? 0), 0) / withRoas.length
         : null;
 
     const prompt = `Analise o histórico completo de campanhas Meta Ads abaixo e gere um relatório estratégico detalhado.
@@ -195,6 +199,7 @@ ${JSON.stringify(campaigns, null, 2)}
 - Campanhas com dados reais do Meta: ${withMetrics.length}
 - Gasto total: R$ ${totalSpend.toFixed(2)}
 - ROAS médio: ${avgRoas ? avgRoas.toFixed(2) + 'x' : 'sem dados'}
+- ${REGRA_ROAS_PROMPT} Aqui, roas null = sem valor de conversão.
 
 ## INSTRUÇÕES
 

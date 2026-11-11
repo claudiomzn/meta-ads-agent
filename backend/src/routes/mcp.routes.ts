@@ -41,6 +41,7 @@ import {
   META_CONNECTION_STAGES,
 } from '../services/metaConnectionAssistant.service.js';
 import { aiBudget } from '../middleware/aiBudget.middleware.js';
+import { mensagemDaRecusaMeta } from '../lib/metaRecusa.js';
 import {
   downloadStoredImage,
   isStoredUserMediaUrl,
@@ -857,6 +858,15 @@ router.post('/publish/:planId', publishRateLimit, async (req: AuthRequest, res: 
 
 // ─── Operações na conta ───────────────────────────────────────────────────────
 
+// Recusa da Meta vira 502 com o motivo dela (já sanitizado). Devolve false
+// para qualquer outro erro, que segue para o handler global.
+function responderRecusaMeta(res: Response, err: unknown): boolean {
+  const recusa = mensagemDaRecusaMeta(err);
+  if (!recusa) return false;
+  res.status(502).json({ error: recusa });
+  return true;
+}
+
 router.patch('/campaigns/:id/status', async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const { status } = req.body;
@@ -874,9 +884,21 @@ router.patch('/campaigns/:id/status', async (req: AuthRequest, res: Response) =>
     return;
   }
 
+  // A Meta recusa com HTTP 200; `updateCampaignStatus` agora lança nesse caso
+  // (requireOk). Sem o try, a recusa viraria 500 genérico — ou, antes da
+  // correção, "sucesso" com a campanha seguindo no ar.
   const svc = await createMetaMCPService(req.userId!);
-  await svc.updateCampaignStatus(id, status);  // corrigido: era updateAdSetStatus
-  await svc.disconnect();
+  try {
+    await svc.updateCampaignStatus(id, status);  // corrigido: era updateAdSetStatus
+  } catch (err) {
+    if (responderRecusaMeta(res, err)) return;
+    throw err;
+  } finally {
+    await svc.disconnect();
+  }
+
+  // Só depois do ok da Meta — o sininho e a lista leem daqui até o próximo sync.
+  await prisma.campaign.update({ where: { id: campaign.id }, data: { metaStatus: status } });
 
   await auditLog({
     userId: req.userId!,
@@ -908,8 +930,14 @@ router.patch('/campaigns/:id/budget', async (req: AuthRequest, res: Response) =>
   }
 
   const svc = await createMetaMCPService(req.userId!);
-  await svc.updateCampaignBudget(id, budget);
-  await svc.disconnect();
+  try {
+    await svc.updateCampaignBudget(id, budget);
+  } catch (err) {
+    if (responderRecusaMeta(res, err)) return;
+    throw err;
+  } finally {
+    await svc.disconnect();
+  }
 
   await auditLog({
     userId: req.userId!,
@@ -936,8 +964,15 @@ router.post('/adsets/:id/duplicate', publishRateLimit, async (req: AuthRequest, 
   }
 
   const svc = await createMetaMCPService(req.userId!);
-  const result = await svc.duplicateAdSet(id, newBudget);
-  await svc.disconnect();
+  let result: Awaited<ReturnType<typeof svc.duplicateAdSet>>;
+  try {
+    result = await svc.duplicateAdSet(id, newBudget);
+  } catch (err) {
+    if (responderRecusaMeta(res, err)) return;
+    throw err;
+  } finally {
+    await svc.disconnect();
+  }
 
   await auditLog({
     userId: req.userId!,

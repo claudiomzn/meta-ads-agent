@@ -160,6 +160,17 @@ export async function runWithAiBudget<T>(
   return value;
 }
 
+// Rotas com `aiBudget` que tratam falha da IA devolvendo 200 (score neutro,
+// interesses fixos, fallback algorítmico, erro dentro do SSE) chamam isto
+// antes de responder. O middleware vê a marca e LIBERA a reserva em vez de
+// liquidar: cobrar crédito em todo 2xx cobrava o cliente por IA que não
+// entregou nada.
+const MARCA_NAO_ENTREGUE = 'aiBudgetNaoEntregue';
+
+export function marcarIaNaoEntregue(res: Response, motivo: string): void {
+  res.locals[MARCA_NAO_ENTREGUE] = motivo.slice(0, 200);
+}
+
 export function aiBudget(feature: AiBudgetFeature) {
   return async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
     if (process.env.NODE_ENV === 'test') {
@@ -205,10 +216,15 @@ export function aiBudget(feature: AiBudgetFeature) {
 
     const reservationId = String(result.reservation_id);
     let finalized = false;
-    res.once('finish', () => {
+    const finalize = (encerrouNormalmente: boolean) => {
       if (finalized) return;
       finalized = true;
-      const success = res.statusCode >= 200 && res.statusCode < 400;
+      const naoEntregue = res.locals[MARCA_NAO_ENTREGUE] as string | undefined;
+      const success =
+        encerrouNormalmente && !naoEntregue && res.statusCode >= 200 && res.statusCode < 400;
+      const reason = !encerrouNormalmente
+        ? 'conexão encerrada antes da resposta'
+        : naoEntregue ?? `HTTP ${res.statusCode}`;
       const task = success
         ? rpc('settle_ai_usage', {
             p_reservation_id: reservationId,
@@ -225,12 +241,21 @@ export function aiBudget(feature: AiBudgetFeature) {
           })
         : rpc('release_ai_usage', {
             p_reservation_id: reservationId,
-            p_reason: `HTTP ${res.statusCode}`,
+            p_reason: reason,
           });
       task
         .then(() => success ? notifyBudgetThreshold() : undefined)
-        .catch((error) => console.error('[ai-budget:meta] finalização falhou:', error));
-    });
+        .catch((error) => console.error(
+          '[ai-budget:meta] finalização falhou:',
+          error instanceof Error ? error.message : 'erro',
+        ));
+    };
+    res.once('finish', () => finalize(true));
+    // Cliente que fecha a aba no meio (comum no chat por SSE) não dispara
+    // `finish` — só `close`. Sem isto a reserva ficava presa em `reserved`
+    // para sempre, contando no limite do cliente. `close` também vem depois
+    // de todo `finish`; aí o `finalized` já está marcado e nada acontece.
+    res.once('close', () => finalize(res.writableFinished));
     next();
   };
 }

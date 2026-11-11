@@ -222,6 +222,10 @@ cron.schedule('*/15 * * * *', async () => {
           (rule.condition === 'lte' && val <= rule.value);
 
         if (triggered) {
+          // Toda ação abaixo LANÇA se a Meta recusar (requireOk): o throw cai no
+          // catch da regra, ANTES do RuleLog e do cooldown. Antes a recusa
+          // voltava como sucesso e a regra dormia 24h sem ter feito nada.
+          let executou = true;
           if (rule.action === 'PAUSE') {
             if (rule.targetType === 'adset') await svc.updateAdSetStatus(rule.targetId, 'PAUSED');
             else if (rule.targetType === 'ad') await svc.updateAdStatus(rule.targetId, 'PAUSED');
@@ -240,9 +244,20 @@ cron.schedule('*/15 * * * *', async () => {
               console.warn(
                 `[Automação] Regra "${rule.name}" (${rule.id}): escala de orçamento só é suportada em campanhas (targetType=${rule.targetType}) — pulando`,
               );
+              executou = false;
             } else {
-              await svc.scaleCampaignBudget(rule.targetId, rule.action === 'SCALE_UP' ? 1.2 : 0.8);
+              const escala = await svc.scaleCampaignBudget(rule.targetId, rule.action === 'SCALE_UP' ? 1.2 : 0.8);
+              if (!escala.escalado) {
+                console.warn(`[Automação] Regra "${rule.name}" (${rule.id}) não escalou: ${escala.motivo}`);
+                executou = false;
+              }
             }
+          }
+
+          // Ação que não aconteceu não vira RuleLog nem abre cooldown.
+          if (!executou) {
+            await prisma.automationRule.update({ where: { id: rule.id }, data: { lastChecked: new Date() } });
+            continue;
           }
 
           await prisma.ruleLog.create({
@@ -258,7 +273,8 @@ cron.schedule('*/15 * * * *', async () => {
 
         await prisma.automationRule.update({ where: { id: rule.id }, data: { lastChecked: new Date() } });
       } catch (err) {
-        console.error(`[Automação] Erro na regra "${rule.name}":`, err);
+        // Só a mensagem: o objeto de erro cru já levou token de cliente ao log.
+        console.error(`[Automação] Erro na regra "${rule.name}":`, err instanceof Error ? err.message : 'erro desconhecido');
       }
     }
     await svc.disconnect();

@@ -6,6 +6,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { createMetaMCPService } from '../services/meta.mcp.service.js';
 import { auditLog } from '../services/audit.service.js';
 import { targetBelongsToUser } from '../lib/ownership.js';
+import { mensagemDaRecusaMeta, motivoParaLog } from '../lib/metaRecusa.js';
 
 const router = Router();
 
@@ -95,8 +96,11 @@ router.post('/:id/run', async (req: AuthRequest, res: Response) => {
     return;
   }
 
+  // Fora do try para o catch conseguir desconectar: a recusa da Meta agora
+  // lança no meio, e a conexão MCP ficava aberta.
+  let svc: Awaited<ReturnType<typeof createMetaMCPService>> | undefined;
   try {
-    const svc = await createMetaMCPService(req.userId!);
+    svc = await createMetaMCPService(req.userId!);
 
     const today = new Date().toISOString().split('T')[0];
     const since = new Date(Date.now() - rule.window * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
@@ -133,6 +137,9 @@ router.post('/:id/run', async (req: AuthRequest, res: Response) => {
       if (isUnsupportedScale) {
         scaleError = 'Escala de orçamento só é suportada em campanhas.';
       } else {
+        // Toda ação abaixo LANÇA se a Meta recusar (requireOk) — e o throw cai
+        // no catch lá embaixo ANTES do RuleLog e do cooldown. Antes, a recusa
+        // voltava como sucesso e a regra registrava uma ação que não houve.
         switch (rule.action) {
           case 'PAUSE':
             if (rule.targetType === 'adset') await svc.updateAdSetStatus(rule.targetId, 'PAUSED');
@@ -146,15 +153,20 @@ router.post('/:id/run', async (req: AuthRequest, res: Response) => {
             break;
           // Escala a partir do orçamento ATUAL (fator 1.2/0.8) — nunca do valor
           // da métrica/gasto, que não tem relação com orçamento diário.
+          // `scaleCampaignBudget` pode decidir NÃO escalar (campanha sem
+          // conjunto com orçamento conhecido) — aí não houve ação: nada de
+          // RuleLog nem cooldown, e o cliente lê o motivo.
           case 'SCALE_UP':
-            await svc.scaleCampaignBudget(rule.targetId, 1.2);
+          case 'SCALE_DOWN': {
+            const escala = await svc.scaleCampaignBudget(rule.targetId, rule.action === 'SCALE_UP' ? 1.2 : 0.8);
+            if (!escala.escalado) scaleError = escala.motivo;
             break;
-          case 'SCALE_DOWN':
-            await svc.scaleCampaignBudget(rule.targetId, 0.8);
-            break;
+          }
         }
-        executed = true;
+        executed = !scaleError;
+      }
 
+      if (executed) {
         await prisma.ruleLog.create({
           data: {
             ruleId: rule.id,
@@ -182,6 +194,7 @@ router.post('/:id/run', async (req: AuthRequest, res: Response) => {
     }
 
     await svc.disconnect();
+    svc = undefined;
 
     await prisma.automationRule.update({
       where: { id: rule.id },
@@ -197,7 +210,10 @@ router.post('/:id/run', async (req: AuthRequest, res: Response) => {
       ...(scaleError && { error: scaleError }),
     });
   } catch (err) {
-    res.status(500).json({ error: 'Não foi possível executar a automação.' });
+    await svc?.disconnect().catch(() => undefined);
+    const recusa = mensagemDaRecusaMeta(err);
+    console.error('[Automação] Execução manual falhou:', rule.id, motivoParaLog(err));
+    res.status(recusa ? 502 : 500).json({ error: recusa ?? 'Não foi possível executar a automação.' });
   }
 });
 

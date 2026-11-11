@@ -4,7 +4,9 @@ import { AIService } from '../services/ai.service.js';
 import { executeProposal } from '../services/agentProposals.service.js';
 import { auditLog } from '../services/audit.service.js';
 import prisma from '../lib/prisma.js';
-import { aiBudget, runWithAiBudget } from '../middleware/aiBudget.middleware.js';
+import { aiBudget, marcarIaNaoEntregue, runWithAiBudget } from '../middleware/aiBudget.middleware.js';
+import { mensagemDaRecusaMeta, motivoParaLog } from '../lib/metaRecusa.js';
+import { REGRA_ROAS_PROMPT, roasParaIA, temValorDeConversao } from '../lib/roas.js';
 
 const router = Router();
 const ai = new AIService();
@@ -71,9 +73,15 @@ router.post('/proposals/:id/decide', async (req: AuthRequest, res: Response) => 
     });
     res.json({ ok: true, status: 'executed', result });
   } catch (err) {
-    const reason = 'Não foi possível executar a proposta no Meta.';
+    // A recusa da Meta (HTTP 200 com erro, agora barrada pelo `requireOk`)
+    // chega aqui com a explicação já sanitizada; o cliente lê o motivo em vez
+    // de "sucesso" com a campanha seguindo no ar.
+    const recusaMeta = mensagemDaRecusaMeta(err);
+    const obsoleta = err instanceof Error && err.name === 'PropostaObsoletaError' ? err.message : undefined;
+    const reason = obsoleta ?? recusaMeta ?? 'Não foi possível executar a proposta no Meta.';
+    console.error('[Agent] Proposta falhou:', id, motivoParaLog(err));
     await prisma.agentProposal.update({ where: { id }, data: { status: 'failed', result: reason } });
-    res.status(500).json({ ok: false, status: 'failed', error: reason });
+    res.status(obsoleta ? 409 : recusaMeta ? 502 : 500).json({ ok: false, status: 'failed', error: reason });
   }
 });
 
@@ -114,7 +122,7 @@ router.post('/chat', aiBudget('agent_chat'), async (req: AuthRequest, res: Respo
     const adSetsInfo = c.adSets.map((as) => ({
       nome: as.name,
       orcamento_diario: `R$ ${as.dailyBudget}`,
-      roas: as.metaRoas ?? 'sem dados',
+      roas: roasParaIA(as.metaRoas),
       gasto: as.metaSpend ? `R$ ${as.metaSpend.toFixed(2)}` : 'sem dados',
       cpl: as.metaCpl ? `R$ ${as.metaCpl.toFixed(2)}` : 'sem dados',
       frequencia: as.metaFrequency ?? 'sem dados',
@@ -134,7 +142,7 @@ router.post('/chat', aiBudget('agent_chat'), async (req: AuthRequest, res: Respo
       status: c.metaStatus ?? c.status,
       orcamento: `R$ ${c.budget}`,
       gasto_total: c.metaSpend ? `R$ ${c.metaSpend.toFixed(2)}` : 'sem dados',
-      roas: c.metaRoas ?? 'sem dados',
+      roas: roasParaIA(c.metaRoas),
       cpc: c.metaCpc ? `R$ ${c.metaCpc.toFixed(2)}` : 'sem dados',
       cpl: c.metaCpl ? `R$ ${c.metaCpl.toFixed(2)}` : 'sem dados',
       impressoes: c.metaImpressions ?? 0,
@@ -166,6 +174,7 @@ Use **negrito** para destacar números, métricas e pontos de ação. Use emojis
 Ao analisar dados:
 - Compare ROAS, CTR, CPL e frequência com benchmarks do setor
 - ROAS bom: ≥ 3x | CTR bom: ≥ 1,5% para Feed | Frequência alta: > 3,5
+- ${REGRA_ROAS_PROMPT}
 - Seja específico: cite nomes de campanhas, conjuntos e anúncios
 - Sempre termine com ações concretas numeradas
 
@@ -203,7 +212,10 @@ Total: **${campaigns.length} campanha(s)** · **${audiences.length} público(s)*
     res.end();
   };
 
+  // O SSE já mandou status 200 nos cabeçalhos: sem a marca, o middleware
+  // liquidava o crédito mesmo quando o cliente só recebeu a mensagem de erro.
   const sendError = (msg: string) => {
+    marcarIaNaoEntregue(res, 'erro no streaming do agente');
     res.write(`data: ${JSON.stringify({ error: msg })}\n\n`);
     res.end();
   };
@@ -237,17 +249,23 @@ Total: **${campaigns.length} campanha(s)** · **${audiences.length} público(s)*
       }
     }
 
-    // Persiste no banco após o stream completo
-    await prisma.chatMessage.createMany({
-      data: [
-        { userId: req.userId!, role: 'user',     content: message.trim() },
-        { userId: req.userId!, role: 'assistant', content: fullResponse },
-      ],
-    });
+    // Persiste no banco após o stream completo. Falha aqui não desfaz a
+    // resposta que o cliente já leu inteira — a IA entregou, então não vira
+    // erro (que liberaria o crédito de uma resposta consumida).
+    try {
+      await prisma.chatMessage.createMany({
+        data: [
+          { userId: req.userId!, role: 'user',     content: message.trim() },
+          { userId: req.userId!, role: 'assistant', content: fullResponse },
+        ],
+      });
+    } catch (err) {
+      console.error('[Agent] Falha ao salvar o histórico do chat:', motivoParaLog(err));
+    }
 
     sendDone();
   } catch (err) {
-    console.error('[Agent] Erro no streaming:', err);
+    console.error('[Agent] Erro no streaming:', motivoParaLog(err));
     sendError('Não foi possível concluir a resposta do agente. Tente novamente.');
   }
 });
@@ -270,15 +288,24 @@ router.get('/health-score', async (req: AuthRequest, res: Response) => {
   const breakdown: { label: string; score: number; max: number; tip: string }[] = [];
   let total = 0;
 
-  // 1. ROAS médio (25pts)
-  const avgRoas = published.reduce((s, c) => s + (c.metaRoas ?? 0), 0) / published.length;
-  const roasScore = avgRoas >= 3 ? 25 : avgRoas >= 2 ? 15 : avgRoas >= 1 ? 8 : 0;
-  total += roasScore;
-  breakdown.push({
-    label: 'ROAS médio',
-    score: roasScore, max: 25,
-    tip: avgRoas >= 3 ? 'Excelente! Seu retorno está acima do ideal.' : avgRoas >= 2 ? 'Razoável. Tente chegar a 3x.' : 'Baixo. Revise segmentação e criativos.',
-  });
+  // 1. ROAS médio (25pts) — SÓ das campanhas com valor de conversão medido.
+  // Conta de lead/WhatsApp tem ROAS sempre 0 e tirava 0 de 25 aqui, jogando
+  // a nota para "crítico" sem defeito nenhum. Sem campanha com valor, o item
+  // sai da nota e o total é reescalado para 100 com os demais.
+  const comValor = published.filter((c) => temValorDeConversao(c.metaRoas));
+  let maxPossivel = 100;
+  if (comValor.length > 0) {
+    const avgRoas = comValor.reduce((s, c) => s + (c.metaRoas ?? 0), 0) / comValor.length;
+    const roasScore = avgRoas >= 3 ? 25 : avgRoas >= 2 ? 15 : avgRoas >= 1 ? 8 : 0;
+    total += roasScore;
+    breakdown.push({
+      label: 'ROAS médio',
+      score: roasScore, max: 25,
+      tip: avgRoas >= 3 ? 'Excelente! Seu retorno está acima do ideal.' : avgRoas >= 2 ? 'Razoável. Tente chegar a 3x.' : 'Baixo. Revise segmentação e criativos.',
+    });
+  } else {
+    maxPossivel -= 25;
+  }
 
   // 2. CTR médio (20pts)
   const totalImpressions = published.reduce((s, c) => s + (c.metaImpressions ?? 0), 0);
@@ -334,6 +361,7 @@ router.get('/health-score', async (req: AuthRequest, res: Response) => {
     tip: avgCpl === 0 ? 'Sem dados de CPL ainda.' : avgCpl <= 20 ? 'Excelente CPL!' : avgCpl <= 50 ? 'CPL razoável.' : 'CPL alto. Revise o funil.',
   });
 
+  total = Math.round((total * 100) / maxPossivel);
   const status = total >= 75 ? 'saudavel' : total >= 50 ? 'atencao' : 'critico';
 
   res.json({ score: total, status, breakdown });
@@ -341,7 +369,12 @@ router.get('/health-score', async (req: AuthRequest, res: Response) => {
 
 // ─── GET /api/agent/daily-actions ─────────────────────────────────────────────
 // Gera 3-5 ações práticas do dia com base nas métricas reais — usa Claude
-router.get('/daily-actions', aiBudget('agent_quick'), async (req: AuthRequest, res: Response) => {
+//
+// ⚠️ Sem o middleware `aiBudget`, como o `/proactive-alerts`: o middleware
+// reserva na ENTRADA e liquidava em todo 200 — inclusive na conta sem campanha
+// (que nem fala com a IA) e no fallback algorítmico quando a IA falha. O
+// crédito é cobrado em volta da chamada de IA, e só se ela devolveu ações.
+router.get('/daily-actions', async (req: AuthRequest, res: Response) => {
   const campaigns = await prisma.campaign.findMany({
     where: { userId: req.userId! },
     include: { adSets: { include: { ads: true } } },
@@ -365,7 +398,7 @@ router.get('/daily-actions', aiBudget('agent_quick'), async (req: AuthRequest, r
   const summary = published.map((c) => ({
     nome: c.name,
     status: c.metaStatus,
-    roas: c.metaRoas,
+    roas: roasParaIA(c.metaRoas),
     cpl: c.metaCpl,
     cpc: c.metaCpc,
     impressoes: c.metaImpressions,
@@ -379,17 +412,22 @@ router.get('/daily-actions', aiBudget('agent_quick'), async (req: AuthRequest, r
     const Anthropic = (await import('@anthropic-ai/sdk')).default;
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
-    const response = await client.messages.create({
-      model: 'claude-haiku-4-5',
-      max_tokens: 800,
-      messages: [{
-        role: 'user',
-        content: `Você é consultor de Meta Ads. Analise estas campanhas e gere EXATAMENTE 4 ações práticas para hoje.
+    // O parse fica DENTRO do `runWithAiBudget`: resposta sem JSON utilizável
+    // libera a reserva, porque o cliente vai receber o fallback, não a IA.
+    const parsed = await runWithAiBudget(req.userId!, 'agent_quick', async () => {
+      const response = await client.messages.create({
+        model: 'claude-haiku-4-5',
+        max_tokens: 800,
+        messages: [{
+          role: 'user',
+          content: `Você é consultor de Meta Ads. Analise estas campanhas e gere EXATAMENTE 4 ações práticas para hoje.
 
 Dados:
 ${JSON.stringify(summary, null, 2)}
 
 Benchmarks: ROAS bom ≥ 3x | CTR bom ≥ 1.5% | Frequência alta > 3.5 | CPL bom ≤ R$30
+
+${REGRA_ROAS_PROMPT}
 
 Responda APENAS com JSON válido neste formato (sem texto antes ou depois):
 {
@@ -406,23 +444,25 @@ Responda APENAS com JSON válido neste formato (sem texto antes ou depois):
 
 Prioridades: use "urgente" para problemas críticos, "atencao" para melhorias, "ok" para pontos positivos, "dica" para sugestões.
 Links válidos: /campaigns, /copies, /audiences, /ab-tests, /automations, /agent, null`,
-      }],
+        }],
+      });
+
+      const text = response.content[0].type === 'text' ? response.content[0].text : '';
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('JSON não encontrado');
+
+      return JSON.parse(jsonMatch[0]) as unknown;
     });
-
-    const text = response.content[0].type === 'text' ? response.content[0].text : '';
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('JSON não encontrado');
-
-    const parsed = JSON.parse(jsonMatch[0]);
     res.json(parsed);
   } catch (err) {
-    console.error('[DailyActions] Erro:', err);
-    // Fallback algorítmico sem IA
+    console.error('[DailyActions] Erro:', motivoParaLog(err));
+    // Fallback algorítmico sem IA. ROAS só julga quem tem valor de conversão.
     const actions = [];
     for (const c of published.slice(0, 3)) {
-      if ((c.metaRoas ?? 0) < 2 && (c.metaSpend ?? 0) > 50) {
+      if (!temValorDeConversao(c.metaRoas)) continue;
+      if (c.metaRoas < 2 && (c.metaSpend ?? 0) > 50) {
         actions.push({ priority: 'urgente', icon: '⚠️', title: `"${c.name}" com ROAS baixo`, description: 'Seu retorno está abaixo do ideal. Pause ou revise o público e criativo.', link: `/campaigns/${c.id}` });
-      } else if ((c.metaRoas ?? 0) > 4) {
+      } else if (c.metaRoas > 4) {
         actions.push({ priority: 'ok', icon: '🚀', title: `"${c.name}" está indo bem`, description: 'ROAS acima de 4x. Considere aumentar o orçamento para gerar mais resultados.', link: `/campaigns/${c.id}` });
       }
     }
@@ -479,7 +519,7 @@ router.get('/proactive-alerts', async (req: AuthRequest, res: Response) => {
     metaCampaignId: c.metaCampaignId,
     nome: c.name,
     status: c.metaStatus,
-    roas: c.metaRoas,
+    roas: roasParaIA(c.metaRoas),
     cpl: c.metaCpl,
     cpc: c.metaCpc,
     gasto: c.metaSpend,
@@ -514,8 +554,9 @@ Benchmarks: ROAS bom ≥ 3x | CTR bom ≥ 1.5% | Frequência saturada > 3.5 | CP
 Regras:
 - Só inclua alertas realmente importantes (não invente problemas)
 - Use linguagem simples, sem jargão técnico
-- Se uma campanha gastou muito com ROAS < 1, é crítico
-- Se ROAS > 5x, é oportunidade de escalar
+- ${REGRA_ROAS_PROMPT}
+- Só para campanha COM valor de conversão (roas numérico > 0): gastou muito com ROAS < 1 é crítico; ROAS > 5x é oportunidade de escalar
+- Nunca sugira pausar campanha por ROAS quando o campo roas não for um número maior que 0
 - Se frequência > 3.5, o público está saturado
 - Sempre que possível, inclua uma action executável
 
@@ -553,27 +594,30 @@ Se não houver action possível, use null.`,
     const parsed = JSON.parse(jsonMatch[0]);
     res.json({ ...parsed, alerts: [...disapprovedAlerts, ...(parsed.alerts ?? [])] });
   } catch (err) {
-    console.error('[ProactiveAlerts] Erro:', err);
-    // Fallback algorítmico
+    console.error('[ProactiveAlerts] Erro:', motivoParaLog(err));
+    // Fallback algorítmico. ROAS só julga campanha com valor de conversão:
+    // em conta de lead ele é sempre 0, e este alerta oferecia "Pausar
+    // campanha" com 1 clique para a campanha que trazia os leads.
     const alerts: object[] = [...disapprovedAlerts];
     for (const c of published.slice(0, 3)) {
-      if ((c.metaRoas ?? 0) < 1 && (c.metaSpend ?? 0) > 100) {
+      if (!temValorDeConversao(c.metaRoas)) continue;
+      if (c.metaRoas < 1 && (c.metaSpend ?? 0) > 100) {
         alerts.push({
           id: `low-roas-${c.id}`,
           type: 'critical',
           emoji: '🚨',
           message: `"${c.name}" está gastando sem retorno`,
-          detail: `ROAS de ${c.metaRoas?.toFixed(1) ?? 0}x. Cada R$1 investido está retornando menos de R$1.`,
+          detail: `ROAS de ${c.metaRoas.toFixed(1)}x. Cada R$1 investido está retornando menos de R$1.`,
           campaignId: c.id,
           action: { label: 'Pausar campanha', method: 'PATCH', path: `/mcp/campaigns/${c.metaCampaignId}/status`, body: { status: 'PAUSED' } },
         });
-      } else if ((c.metaRoas ?? 0) > 5) {
+      } else if (c.metaRoas > 5) {
         alerts.push({
           id: `scale-${c.id}`,
           type: 'opportunity',
           emoji: '🚀',
           message: `"${c.name}" está performando muito bem`,
-          detail: `ROAS ${c.metaRoas?.toFixed(1)}x. Aumentar o orçamento pode gerar mais resultados agora.`,
+          detail: `ROAS ${c.metaRoas.toFixed(1)}x. Aumentar o orçamento pode gerar mais resultados agora.`,
           campaignId: c.id,
           action: null,
         });
