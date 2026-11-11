@@ -7,6 +7,7 @@
 // para testar contra o sandbox antes de operar com dinheiro de verdade).
 
 import axios from 'axios';
+import { instalarAxiosSemToken } from '../lib/axiosSemToken.js';
 
 const BASE_URL = process.env.ASAAS_SANDBOX === 'true'
   ? 'https://sandbox.asaas.com/api/v3'
@@ -15,11 +16,14 @@ const BASE_URL = process.env.ASAAS_SANDBOX === 'true'
 function client() {
   const apiKey = process.env.ASAAS_API_KEY;
   if (!apiKey) throw new Error('ASAAS_API_KEY não configurada — cobrança de excedente desativada');
-  return axios.create({
+  const instancia = axios.create({
     baseURL: BASE_URL,
     headers: { access_token: apiKey, 'Content-Type': 'application/json' },
     timeout: 15000,
   });
+  // A chave do Asaas vai no cabeçalho: sem isto, um erro logado a imprime.
+  instalarAxiosSemToken(instancia);
+  return instancia;
 }
 
 export function asaasConfigured(): boolean {
