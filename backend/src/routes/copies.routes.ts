@@ -3,7 +3,7 @@ import { Router, Response } from 'express';
 
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { AIService } from '../services/ai.service.js';
-import { aiBudget } from '../middleware/aiBudget.middleware.js';
+import { aiBudget, marcarIaNaoEntregue } from '../middleware/aiBudget.middleware.js';
 
 const router = Router();
 const ai = new AIService();
@@ -68,8 +68,11 @@ router.post('/score', aiBudget('agent_quick'), async (req: AuthRequest, res: Res
     const result = await ai.scoreCopy({ headline, body, cta, objective, product });
     res.json(result);
   } catch (err) {
-    console.error('[score] Erro ao analisar copy:', err);
-    // Retorna score neutro em vez de 500 para não quebrar a UI
+    console.error('[score] Erro ao analisar copy:', err instanceof Error ? err.message : 'erro');
+    // Retorna score neutro em vez de 500 para não quebrar a UI — mas sem
+    // cobrar: o 200 aqui não é análise de IA, e o middleware liquidava o
+    // crédito em todo 2xx.
+    marcarIaNaoEntregue(res, 'score de copy: IA falhou');
     res.json({
       score: 0,
       strengths: [],

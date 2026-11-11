@@ -121,7 +121,28 @@ const RESOURCE_LABELS: Record<string, string> = {
   upload_ad_video: 'o vídeo do anúncio',
   duplicate_ad_set: 'a cópia do conjunto',
   create_custom_audience: 'o público personalizado',
+  update_campaign: 'a alteração da campanha',
+  update_ad_set: 'a alteração do conjunto de anúncios',
+  update_ad: 'a alteração do anúncio',
 };
+
+// A Meta cobra orçamento em CENTAVOS inteiros e recusa número quebrado.
+// `19.99 * 100` dá 1998.9999999999998 em ponto flutuante — sem o arredondamento
+// o conjunto morria na publicação com "Invalid parameter" por causa de um
+// centavo que ninguém digitou.
+export function emCentavos(valorEmReais: number): number {
+  return Math.round(valorEmReais * 100);
+}
+
+// Resultado de `scaleCampaignBudget`. Quando não escala, `motivo` diz por quê
+// em linguagem de gente — vai para o log e para a resposta da automação.
+export type ResultadoEscalaOrcamento =
+  | {
+      escalado: true;
+      conjuntos: Array<{ metaAdSetId: string; de: number; para: number }>;
+      falhas: Array<{ metaAdSetId: string; erro: string }>;
+    }
+  | { escalado: false; motivo: string };
 
 // A Meta explica a recusa em `error_user_title`/`error_user_msg`, em português
 // e em linguagem de gente. Só que essa explicação vem DENTRO de um JSON
@@ -228,6 +249,39 @@ function safeToolErrorDetail(error: unknown): string | undefined {
     .trim()
     .slice(0, 400);
   return sanitized || undefined;
+}
+
+// A Meta responde recusa com HTTP 200: o `update_*` volta como JSON legítimo
+// com `error` dentro, ou `success: false`. O `call()` só lança em `isError` ou
+// texto que não é JSON — então esse retorno passava como sucesso, e quem
+// chamava gravava "PAUSED" no banco, marcava a proposta como executada e
+// abria o cooldown da automação com a campanha seguindo no ar, gastando.
+// Exportada para o teste conseguir reprovar o comportamento antigo direto.
+export function requireOk<T>(result: T, tool: string): T {
+  const recusa = (detail?: string, raw?: string): never => {
+    console.error(`[MCP] ${tool} recusado pela Meta`, { detail });
+    throw new MetaToolResponseError(RESOURCE_LABELS[tool] ?? `a chamada ${tool}`, detail, raw);
+  };
+
+  // A Graph API responde `{ success: true }` aos updates; se o Pipeboard
+  // repassar só o `true`, isso também é sucesso — não pode virar recusa e
+  // travar toda pausa que hoje funciona.
+  if (result === (true as unknown)) return result;
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    return recusa(undefined, typeof result === 'string' ? result : undefined);
+  }
+  const valor = result as Record<string, unknown>;
+  const temErro = valor.error !== undefined && valor.error !== null && valor.error !== false;
+  if (temErro || valor.success === false) {
+    let raw: string | undefined;
+    try {
+      raw = JSON.stringify(valor);
+    } catch {
+      raw = undefined;
+    }
+    return recusa(safeToolErrorDetail(temErro ? valor.error : valor), raw);
+  }
+  return result;
 }
 
 export class MetaMCPService {
@@ -507,8 +561,8 @@ export class MetaMCPService {
       // Pipeboard cria por padrão um orçamento também na campanha (CBO) e a
       // Meta pode rejeitar o orçamento duplicado do conjunto.
       use_adset_level_budgets: true,
-      ...(params.dailyBudget && { daily_budget: params.dailyBudget * 100 }),
-      ...(params.lifetimeBudget && { lifetime_budget: params.lifetimeBudget * 100 }),
+      ...(params.dailyBudget && { daily_budget: emCentavos(params.dailyBudget) }),
+      ...(params.lifetimeBudget && { lifetime_budget: emCentavos(params.lifetimeBudget) }),
     });
     return { id: this.requireId(result, 'campanha') };
   }
@@ -592,7 +646,7 @@ export class MetaMCPService {
         account_id: params.accountId,
         campaign_id: params.campaignId,
         name: params.name,
-        daily_budget: params.dailyBudget * 100,
+        daily_budget: emCentavos(params.dailyBudget),
         targeting: params.targeting,
         optimization_goal: params.optimizationGoal,
         billing_event: params.billingEvent,
@@ -665,60 +719,160 @@ export class MetaMCPService {
   }
 
   async createCustomAudience(params: CreateAudienceParams): Promise<{ id: string }> {
-    return this.call<{ id: string }>('create_custom_audience', {
+    const result = await this.call<{ id: string }>('create_custom_audience', {
       ad_account_id: params.adAccountId,
       name: params.name,
       subtype: params.subtype,
       description: params.description,
       rule: params.rule,
     });
+    return requireOk(result, 'create_custom_audience');
   }
 
   // ─── Escrita — Edição ─────────────────────────────────────────────────────
 
+  // Todo `update_*` passa pelo `requireOk`: a Meta recusa com HTTP 200, e
+  // quem chama só grava no banco DEPOIS que este método volta sem lançar.
+
   async updateCampaignStatus(campaignId: string, status: AdStatus): Promise<void> {
-    await this.call('update_campaign', { campaign_id: campaignId, status });
+    const result = await this.call<unknown>('update_campaign', { campaign_id: campaignId, status });
+    requireOk(result, 'update_campaign');
   }
 
+  // ⚠️ Orçamento diário NO NÍVEL DA CAMPANHA (CBO). Campanha criada pelo app
+  // usa orçamento por conjunto (`use_adset_level_budgets`), e nela a Meta
+  // recusa este campo — a recusa agora aparece, em vez de virar "sucesso".
+  // Para escalar campanha do app, use `scaleCampaignBudget`, que atua nos
+  // conjuntos.
   async updateCampaignBudget(campaignId: string, budget: number): Promise<void> {
-    await this.call('update_campaign', {
+    const result = await this.call<unknown>('update_campaign', {
       campaign_id: campaignId,
-      daily_budget: budget * 100,
+      daily_budget: emCentavos(budget),
     });
+    requireOk(result, 'update_campaign');
   }
 
-  // Escala o orçamento diário da campanha por um fator (1.2 = +20%), partindo
-  // do orçamento ATUAL salvo no banco — nunca do valor de uma métrica. Usado
-  // pelas automações SCALE_UP/SCALE_DOWN. Retorna o novo orçamento, ou null se
-  // a campanha não for encontrada / não tiver orçamento conhecido.
-  async scaleCampaignBudget(metaCampaignId: string, factor: number): Promise<number | null> {
+  async updateAdSetBudget(adSetId: string, dailyBudget: number): Promise<void> {
+    const result = await this.call<unknown>('update_ad_set', {
+      ad_set_id: adSetId,
+      daily_budget: emCentavos(dailyBudget),
+    });
+    requireOk(result, 'update_ad_set');
+  }
+
+  // Escala o orçamento por um fator (1.2 = +20%), usado pelas automações
+  // SCALE_UP/SCALE_DOWN.
+  //
+  // Atua no orçamento DIÁRIO de cada CONJUNTO, não na campanha. Antes isto
+  // mandava `Campaign.budget * fator` como `daily_budget` da campanha — mas
+  // `Campaign.budget` de campanha criada pelo app é o orçamento MENSAL ("Orçamento
+  // mensal" no plano da IA, mínimo R$ 300), e o orçamento de verdade mora nos
+  // conjuntos (`use_adset_level_budgets`). Uma SCALE_UP numa campanha de
+  // R$ 600/mês pedia R$ 720 POR DIA.
+  //
+  // Parte do `AdSet.dailyBudget` salvo de cada conjunto publicado — nunca do
+  // valor de uma métrica — e grava o novo valor só depois que a Meta aceitou
+  // aquele conjunto.
+  //
+  // Sem conjunto publicado com orçamento conhecido (campanha importada do
+  // Gerenciador, em geral com orçamento na campanha/CBO), NÃO escala: o
+  // `Campaign.budget` dela não diz com segurança se é diário, mensal ou zero,
+  // e chutar aqui é mexer no dinheiro do cliente às cegas.
+  //
+  // Falha parcial (um conjunto aceitou, outro não) conta como escalado, com a
+  // falha listada: se lançasse, a automação não abriria o cooldown e o
+  // próximo ciclo escalaria de novo o conjunto que já tinha subido.
+  async scaleCampaignBudget(metaCampaignId: string, factor: number): Promise<ResultadoEscalaOrcamento> {
     const campaign = await prisma.campaign.findFirst({
       where: { metaCampaignId },
-      select: { id: true, budget: true },
+      select: {
+        id: true,
+        adSets: { select: { id: true, metaAdSetId: true, dailyBudget: true } },
+      },
     });
-    if (!campaign || !campaign.budget || campaign.budget <= 0) {
-      console.warn(`[scaleBudget] Campanha ${metaCampaignId} sem orçamento conhecido — pulando scale`);
-      return null;
+    if (!campaign) {
+      return { escalado: false, motivo: 'Campanha não encontrada no AdsGenius.' };
     }
-    const newBudget = Math.round(campaign.budget * factor * 100) / 100;
-    await this.updateCampaignBudget(metaCampaignId, newBudget);
-    await prisma.campaign.update({ where: { id: campaign.id }, data: { budget: newBudget } });
-    return newBudget;
+
+    const conjuntos = campaign.adSets.filter(
+      (a): a is typeof a & { metaAdSetId: string } =>
+        !!a.metaAdSetId && Number.isFinite(a.dailyBudget) && a.dailyBudget > 0,
+    );
+    if (conjuntos.length === 0) {
+      const motivo =
+        'A campanha não tem conjunto publicado com orçamento diário conhecido no AdsGenius ' +
+        '(provavelmente foi criada no Gerenciador, com orçamento na campanha). ' +
+        'O orçamento não foi alterado — ajuste pelo Gerenciador de Anúncios.';
+      console.warn(`[scaleBudget] Campanha ${metaCampaignId}: ${motivo}`);
+      return { escalado: false, motivo };
+    }
+
+    const alterados: Array<{ metaAdSetId: string; de: number; para: number }> = [];
+    const falhas: Array<{ metaAdSetId: string; erro: string }> = [];
+    let primeiroErro: unknown;
+
+    for (const conjunto of conjuntos) {
+      const de = conjunto.dailyBudget;
+      // A Meta recusa conjunto abaixo do mínimo diário: o SCALE_DOWN para nele.
+      const para = Math.max(Math.round(de * factor * 100) / 100, MIN_META_ADSET_DAILY_BRL);
+      if (emCentavos(para) === emCentavos(de)) continue;
+
+      try {
+        await this.updateAdSetBudget(conjunto.metaAdSetId, para);
+      } catch (error) {
+        primeiroErro ??= error;
+        falhas.push({
+          metaAdSetId: conjunto.metaAdSetId,
+          erro: error instanceof Error ? error.message : 'erro desconhecido',
+        });
+        continue;
+      }
+      await prisma.adSet.update({ where: { id: conjunto.id }, data: { dailyBudget: para } });
+      alterados.push({ metaAdSetId: conjunto.metaAdSetId, de, para });
+    }
+
+    if (alterados.length === 0) {
+      // Nada mudou na Meta: se foi recusa, quem chama precisa ver a falha
+      // (sem RuleLog, sem cooldown).
+      if (primeiroErro) throw primeiroErro;
+      return {
+        escalado: false,
+        motivo: `Os conjuntos já estão no orçamento mínimo da Meta (R$ ${MIN_META_ADSET_DAILY_BRL.toFixed(2)}/dia).`,
+      };
+    }
+    if (falhas.length) {
+      console.error(`[scaleBudget] Campanha ${metaCampaignId}: ${falhas.length} conjunto(s) recusado(s) pela Meta`, {
+        falhas,
+      });
+    }
+    return { escalado: true, conjuntos: alterados, falhas };
   }
 
   async updateAdSetStatus(adSetId: string, status: AdStatus): Promise<void> {
-    await this.call('update_ad_set', { ad_set_id: adSetId, status });
+    const result = await this.call<unknown>('update_ad_set', { ad_set_id: adSetId, status });
+    requireOk(result, 'update_ad_set');
   }
 
   async updateAdStatus(adId: string, status: AdStatus): Promise<void> {
-    await this.call('update_ad', { ad_id: adId, status });
+    const result = await this.call<unknown>('update_ad', { ad_id: adId, status });
+    requireOk(result, 'update_ad');
   }
 
-  async duplicateAdSet(adSetId: string, newBudget?: number): Promise<{ id: string }> {
-    return this.call<{ id: string }>('duplicate_ad_set', {
-      ad_set_id: adSetId,
-      ...(newBudget && { daily_budget: newBudget * 100 }),
-    });
+  // O formato do ID da cópia no retorno do Pipeboard não é documentado; o
+  // `requireOk` barra a recusa, e o ID é procurado nos nomes conhecidos. Não
+  // exige ID: a cópia pode existir mesmo assim, e acusar falha faria o cliente
+  // clicar de novo e duplicar duas vezes.
+  async duplicateAdSet(adSetId: string, newBudget?: number): Promise<{ id?: string } & Record<string, unknown>> {
+    const result = requireOk(
+      await this.call<Record<string, unknown>>('duplicate_ad_set', {
+        ad_set_id: adSetId,
+        ...(newBudget && { daily_budget: emCentavos(newBudget) }),
+      }),
+      'duplicate_ad_set',
+    );
+    const id = [result.id, result.new_adset_id, result.new_ad_set_id, result.adset_id]
+      .find((v): v is string => typeof v === 'string' && v.trim().length > 0);
+    return { ...result, ...(id && { id }) };
   }
 
   // ─── Escrita — Upload de criativos ────────────────────────────────────────

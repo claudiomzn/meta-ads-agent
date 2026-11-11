@@ -4,7 +4,7 @@ import { Router, Response } from 'express';
 import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { AIService } from '../services/ai.service.js';
-import { aiBudget } from '../middleware/aiBudget.middleware.js';
+import { aiBudget, marcarIaNaoEntregue } from '../middleware/aiBudget.middleware.js';
 
 const router = Router();
 const ai = new AIService();
@@ -80,11 +80,18 @@ router.post('/suggest', aiBudget('campaign_create'), async (req: AuthRequest, re
     const rawInterests = plan.adSets?.[0]?.targeting?.interests ?? [];
     const interestNames = rawInterests.map((i) => i.name).filter(Boolean).join(', ');
 
+    // Sem interesse nenhum no plano, o cliente recebe a lista fixa abaixo —
+    // não é sugestão da IA, então não cobra.
+    if (!interestNames) marcarIaNaoEntregue(res, 'sugestão de público: IA sem interesses');
+
     res.json({
       interests: interestNames || 'Marketing digital, Empreendedorismo, Negócios',
       behaviors: 'Compradores online, Usuários de dispositivos móveis',
     });
   } catch {
+    // Interesses fixos com 200 para a tela não quebrar — mas a IA falhou, e o
+    // middleware liquidava o crédito em todo 2xx.
+    marcarIaNaoEntregue(res, 'sugestão de público: IA falhou');
     res.json({
       interests: 'Marketing digital, Empreendedorismo, Negócios',
       behaviors: 'Compradores online',

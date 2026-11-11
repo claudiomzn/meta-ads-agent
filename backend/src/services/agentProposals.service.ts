@@ -9,6 +9,7 @@
 
 import prisma from '../lib/prisma.js';
 import { createMetaMCPService } from './meta.mcp.service.js';
+import { temValorDeConversao } from '../lib/roas.js';
 
 const RECENT_WINDOW_DAYS = 14;
 const brl = (v: number) => `R$ ${v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -62,9 +63,13 @@ export async function scanUser(userId: string): Promise<number> {
   let created = 0;
 
   // ── 1. Campanha no prejuízo (ROAS baixo com gasto relevante) ────────────────
+  // Só campanha com valor de conversão medido (ROAS > 0). Campanha de lead tem
+  // `purchase_roas` sempre 0 — antes, toda campanha de lead com R$ 150 de gasto
+  // virava "Pausar — retorno de R$ 0,00", inclusive a melhor do cliente.
   for (const c of campaigns) {
     if ((c.metaSpend ?? 0) < 150) continue;
-    const roas = c.metaRoas ?? 0;
+    const roas = c.metaRoas;
+    if (!temValorDeConversao(roas)) continue;
     if (roas >= 0.5) continue;
 
     const ok = await createProposal(recentKeys, {
@@ -100,6 +105,14 @@ export async function scanUser(userId: string): Promise<number> {
   return created;
 }
 
+// Proposta que não deve mais ser executada. A mensagem vai ao cliente.
+export class PropostaObsoletaError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PropostaObsoletaError';
+  }
+}
+
 // Executa a ação da proposta aprovada no Meta de verdade.
 export async function executeProposal(proposal: { id: string; userId: string; type: string; payload: string }): Promise<string> {
   const payload = JSON.parse(proposal.payload) as Record<string, string | number>;
@@ -107,6 +120,19 @@ export async function executeProposal(proposal: { id: string; userId: string; ty
 
   try {
     if (proposal.type === 'pause_low_roas') {
+      // Proposta criada antes da regra "ROAS não julga conta de lead" ainda
+      // pode estar pendente. Confere de novo na hora de executar: aprovar uma
+      // delas pausaria uma campanha de lead que está indo bem.
+      const atual = await prisma.campaign.findUnique({
+        where: { id: String(payload.campaignId) },
+        select: { metaRoas: true },
+      });
+      if (!temValorDeConversao(atual?.metaRoas)) {
+        throw new PropostaObsoletaError(
+          'Esta proposta não vale mais: a campanha não tem valor de conversão cadastrado, então ROAS 0 não significa prejuízo. Nada foi pausado.',
+        );
+      }
+      // Lança se a Meta recusar (requireOk) — e aí o banco não é tocado.
       await svc.updateCampaignStatus(String(payload.metaCampaignId), 'PAUSED');
       await prisma.campaign.update({ where: { id: String(payload.campaignId) }, data: { metaStatus: 'PAUSED' } });
       return `Campanha "${payload.campaignName}" pausada no Meta Ads`;
