@@ -51,6 +51,11 @@ beforeEach(() => {
 });
 
 describe('requireOk — recusa da Meta com HTTP 200', () => {
+  it('sucesso da Graph API passa: { success: true } e o true puro', () => {
+    expect(requireOk({ success: true }, 'update_campaign')).toEqual({ success: true });
+    expect(requireOk(true, 'update_campaign')).toBe(true);
+  });
+
   it.each([
     ['updateCampaignStatus', (s: MetaMCPService) => s.updateCampaignStatus('c1', 'PAUSED')],
     ['updateCampaignBudget', (s: MetaMCPService) => s.updateCampaignBudget('c1', 50)],

@@ -263,6 +263,10 @@ export function requireOk<T>(result: T, tool: string): T {
     throw new MetaToolResponseError(RESOURCE_LABELS[tool] ?? `a chamada ${tool}`, detail, raw);
   };
 
+  // A Graph API responde `{ success: true }` aos updates; se o Pipeboard
+  // repassar só o `true`, isso também é sucesso — não pode virar recusa e
+  // travar toda pausa que hoje funciona.
+  if (result === (true as unknown)) return result;
   if (!result || typeof result !== 'object' || Array.isArray(result)) {
     return recusa(undefined, typeof result === 'string' ? result : undefined);
   }
