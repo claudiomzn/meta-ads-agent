@@ -87,8 +87,13 @@ export function foiEnviadaPeloRobo(id: string | null | undefined): boolean {
 export interface WhatsappTransport {
   /** Nome do transporte ("evolution" | "meta" | "log"). */
   readonly name: string;
-  /** Envia uma mensagem de texto para o lead. */
-  sendText(to: string, text: string): Promise<void>;
+  /**
+   * Envia uma mensagem de texto para o lead. Não lança por falha de envio
+   * (não-fatal para o fluxo de qualificação). `false` = NÃO foi enviada;
+   * `true`/`undefined` = enviada (quem não informa é tratado como enviado).
+   * Quem precisa saber se saiu de fato (ex.: lembrete ao vendedor) lê isso.
+   */
+  sendText(to: string, text: string): Promise<boolean | void>;
   /**
    * Converte o payload bruto do webhook do provedor numa InboundMessage
    * normalizada — ou null se o evento não for uma mensagem de texto de lead
@@ -132,8 +137,9 @@ export class EvolutionTransport implements WhatsappTransport {
     private instance: string,
   ) {}
 
-  // Não-fatal: falha no envio não pode derrubar o fluxo de qualificação.
-  async sendText(to: string, text: string): Promise<void> {
+  // Não-fatal: falha no envio não pode derrubar o fluxo de qualificação — mas
+  // devolve `false` para quem precisa distinguir envio de falha.
+  async sendText(to: string, text: string): Promise<boolean> {
     try {
       const url = `${this.baseUrl.replace(/\/$/, '')}/message/sendText/${this.instance}`;
       const resp = await fetch(url, {
@@ -143,14 +149,16 @@ export class EvolutionTransport implements WhatsappTransport {
       });
       if (!resp.ok) {
         console.error(`[whatsapp:evolution] sendText falhou (${resp.status}):`, await resp.text());
-        return;
+        return false;
       }
       // O id do envio marca a mensagem como do robô: quando ela voltar no
       // webhook como fromMe, não pode ser confundida com a atendente.
       const corpo = await resp.json().catch(() => null) as { key?: { id?: unknown } } | null;
       if (typeof corpo?.key?.id === 'string') registrarEnvioDoRobo(corpo.key.id);
+      return true;
     } catch (e) {
-      console.error('[whatsapp:evolution] erro inesperado no sendText:', e);
+      console.error('[whatsapp:evolution] erro inesperado no sendText:', e instanceof Error ? e.message : 'erro desconhecido');
+      return false;
     }
   }
 

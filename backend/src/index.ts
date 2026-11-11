@@ -56,7 +56,6 @@ import capiRoutes from './routes/capi.routes.js';
 import whatsappRoutes from './routes/whatsapp.routes.js';
 import metaConnectionRoutes from './routes/meta-connection.routes.js';
 import { verifyPendingMetaConnectionRequests } from './services/metaPartnerVerification.service.js';
-import { targetBelongsToUser } from './lib/ownership.js';
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -162,155 +161,43 @@ cron.schedule('*/15 * * * *', async () => {
   console.log('[Cron] Sincronizando status...');
   await runSyncForAllConnectedUsers((svc) => svc.syncCampaignStatuses()).catch(console.error);
 
-  // Executa regras de automação ativas para todos os usuários conectados
-  const connections = await prisma.mCPConnection.findMany({ where: { connected: true } });
-  for (const conn of connections) {
-    const rules = await prisma.automationRule.findMany({
-      where: { userId: conn.userId, active: true },
-    });
-    if (!rules.length) continue;
-
-    const { createMetaMCPService } = await import('./services/meta.mcp.service.js');
-    const svc = await createMetaMCPService(conn.userId);
-    const today = new Date().toISOString().split('T')[0];
-
-    for (const rule of rules) {
-      try {
-        // Cooldown de 24h — MESMA regra do Google (google-ads-agent,
-        // check-automation-rules). Este cron roda a cada 15 min, mas a janela
-        // de métricas da regra é de dias: a condição continua verdadeira muito
-        // depois da ação. Sem cooldown, SCALE_UP/SCALE_DOWN RECOMPÕEM a cada
-        // execução (1.2^96 num único dia) — o orçamento do cliente explode ou
-        // vai a zero sozinho. Vale para toda ação, pra manter o comportamento
-        // igual ao do Google.
-        if (
-          rule.lastTriggeredAt &&
-          Date.now() - rule.lastTriggeredAt.getTime() < 24 * 60 * 60 * 1000
-        ) {
-          continue;
-        }
-
-        // Defesa em profundidade: revalida ownership do targetId mesmo pra
-        // regras já criadas (ex.: item pode ter mudado de dono desde então).
-        // Token de servidor compartilhado (pipeboard/zapier) — sem isso o
-        // cron executaria ação numa campanha/adset/ad de outro cliente.
-        const owns = await targetBelongsToUser(
-          rule.targetType as 'campaign' | 'adset' | 'ad',
-          rule.targetId,
-          rule.userId,
-        );
-        if (!owns) {
-          console.warn(
-            `[Automação] Regra "${rule.name}" (${rule.id}) pulada — targetId ${rule.targetId} não pertence ao usuário ${rule.userId}`,
-          );
-          continue;
-        }
-
-        const since = new Date(Date.now() - rule.window * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-        const range = { since, until: today };
-
-        let insights;
-        if (rule.targetType === 'campaign') insights = await svc.getCampaignInsights(rule.targetId, range);
-        else if (rule.targetType === 'adset') insights = await svc.getAdSetInsights(rule.targetId, range);
-        else insights = await svc.getAdInsights(rule.targetId, range);
-
-        const val = (insights as unknown as Record<string, number>)[rule.trigger] ?? 0;
-        const triggered =
-          (rule.condition === 'gt' && val > rule.value) ||
-          (rule.condition === 'lt' && val < rule.value) ||
-          (rule.condition === 'gte' && val >= rule.value) ||
-          (rule.condition === 'lte' && val <= rule.value);
-
-        if (triggered) {
-          // Toda ação abaixo LANÇA se a Meta recusar (requireOk): o throw cai no
-          // catch da regra, ANTES do RuleLog e do cooldown. Antes a recusa
-          // voltava como sucesso e a regra dormia 24h sem ter feito nada.
-          let executou = true;
-          if (rule.action === 'PAUSE') {
-            if (rule.targetType === 'adset') await svc.updateAdSetStatus(rule.targetId, 'PAUSED');
-            else if (rule.targetType === 'ad') await svc.updateAdStatus(rule.targetId, 'PAUSED');
-            else await svc.updateCampaignStatus(rule.targetId, 'PAUSED');
-          } else if (rule.action === 'ACTIVATE') {
-            if (rule.targetType === 'adset') await svc.updateAdSetStatus(rule.targetId, 'ACTIVE');
-            else if (rule.targetType === 'ad') await svc.updateAdStatus(rule.targetId, 'ACTIVE');
-            else await svc.updateCampaignStatus(rule.targetId, 'ACTIVE');
-          } else if (rule.action === 'SCALE_UP' || rule.action === 'SCALE_DOWN') {
-            // scaleCampaignBudget espera um metaCampaignId — se a regra aponta
-            // pra um adset/ad, rule.targetId é o ID errado de entidade e a
-            // chamada acabaria escalando (ou falhando silenciosamente contra)
-            // algo que não é a campanha pretendida. Escala de orçamento só é
-            // suportada para targetType === 'campaign'.
-            if (rule.targetType !== 'campaign') {
-              console.warn(
-                `[Automação] Regra "${rule.name}" (${rule.id}): escala de orçamento só é suportada em campanhas (targetType=${rule.targetType}) — pulando`,
-              );
-              executou = false;
-            } else {
-              const escala = await svc.scaleCampaignBudget(rule.targetId, rule.action === 'SCALE_UP' ? 1.2 : 0.8);
-              if (!escala.escalado) {
-                console.warn(`[Automação] Regra "${rule.name}" (${rule.id}) não escalou: ${escala.motivo}`);
-                executou = false;
-              }
-            }
-          }
-
-          // Ação que não aconteceu não vira RuleLog nem abre cooldown.
-          if (!executou) {
-            await prisma.automationRule.update({ where: { id: rule.id }, data: { lastChecked: new Date() } });
-            continue;
-          }
-
-          await prisma.ruleLog.create({
-            data: { ruleId: rule.id, action: rule.action, metrics: JSON.stringify(insights) },
-          });
-          // Abre o cooldown de 24h — só quando a ação DE FATO executou.
-          await prisma.automationRule.update({
-            where: { id: rule.id },
-            data: { lastTriggeredAt: new Date(), triggerCount: { increment: 1 } },
-          });
-          console.log(`[Automação] Regra "${rule.name}" executada — ${rule.action} (${rule.trigger}=${val})`);
-        }
-
-        await prisma.automationRule.update({ where: { id: rule.id }, data: { lastChecked: new Date() } });
-      } catch (err) {
-        // Só a mensagem: o objeto de erro cru já levou token de cliente ao log.
-        console.error(`[Automação] Erro na regra "${rule.name}":`, err instanceof Error ? err.message : 'erro desconhecido');
-      }
-    }
-    await svc.disconnect();
-  }
+  // Executa regras de automação ativas — cada usuário isolado (ver automacoes.cron.ts).
+  const { executarAutomacoesDeTodos } = await import('./services/automacoes.cron.js');
+  await executarAutomacoesDeTodos();
 });
 
-// Todo dia às 5h — o agente analisa as campanhas de cada usuário conectado e
-// cria propostas de otimização (pausar campanha no prejuízo, pausar conjunto
-// saturado). Usa só dados já sincronizados pelos crons acima — sem custo
-// extra de chamadas ao Meta na hora do scan.
+// Agente de otimização: analisa as campanhas de cada usuário conectado e cria
+// propostas (pausar campanha no prejuízo, pausar conjunto saturado). Usa só
+// dados já sincronizados — sem custo extra de chamadas ao Meta.
+// No Render Free o serviço dorme e às 5h quase nunca está acordado, então o
+// agente também roda no boot e no cron de hora em hora; a trava de ~20h
+// (agenteScan.cron.ts) impede varrer mais de uma vez por dia. O de 5h fica:
+// se estiver acordado, roda.
 cron.schedule('0 5 * * *', async () => {
-  console.log('[Cron] Agente noturno: analisando campanhas...');
-  const connections = await prisma.mCPConnection.findMany({ where: { connected: true } });
-  const { scanUser } = await import('./services/agentProposals.service.js');
+  const { rodarAgenteSeForHora } = await import('./services/agenteScan.cron.js');
+  await rodarAgenteSeForHora('cron 5h');
+});
 
-  for (const conn of connections) {
-    try {
-      const created = await scanUser(conn.userId);
-      if (created > 0) console.log(`[Agente] ${created} proposta(s) criada(s) para ${conn.userId}`);
-    } catch (err) {
-      console.error(`[Agente] Falha ao analisar ${conn.userId}:`, err);
-    }
-  }
+cron.schedule('5 * * * *', async () => {
+  const { rodarAgenteSeForHora } = await import('./services/agenteScan.cron.js');
+  await rodarAgenteSeForHora('cron horário');
 });
 
 // De hora em hora (minuto 40, fora do minuto cheio dos outros crons): cobra do
 // vendedor o desfecho dos leads QUENTES que seguem em aberto — dias 2, 5 e 10
 // do handoff, e só dentro do horário de atendimento da config (ver
 // resultado.ts). Nunca toca em conversa de ensaio e nunca fala com o lead.
+// Pula se a Evolution não está configurada (EVOLUTION_URL ausente): é o único
+// transporte que envia de verdade; sem ela o cron só reclamaria lembretes que
+// não têm como sair.
 cron.schedule('40 * * * *', async () => {
+  if (!process.env.EVOLUTION_URL) return;
   try {
     const { enviarLembretesPendentes } = await import('./services/whatsapp/resultado.service.js');
     const enviados = await enviarLembretesPendentes();
     if (enviados > 0) console.log(`[Cron] ${enviados} lembrete(s) de retorno enviados aos vendedores`);
   } catch (err) {
-    console.error('[Cron] Falha ao enviar lembretes de retorno:', err);
+    console.error('[Cron] Falha ao enviar lembretes de retorno:', err instanceof Error ? err.message : 'erro desconhecido');
   }
 });
 
@@ -319,11 +206,19 @@ cron.schedule('40 * * * *', async () => {
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`✅ Backend rodando em http://0.0.0.0:${PORT}`);
   console.log(`   NODE_ENV: ${process.env.NODE_ENV}`);
-  console.log(`   Crons: métricas (1h) | status + automações (15min) | lembrete ao vendedor (1h) | agente noturno (5h)`);
+  console.log(`   Crons: métricas (1h) | status + automações (15min) | lembrete ao vendedor (1h) | agente de otimização (boot + 1h, no máx. 1x/20h; 5h)`);
+
+  // Agente: ~60s depois de acordar (não compete com o boot), sem bloquear.
+  // A trava de 20h evita repetir se o serviço acordar várias vezes no dia.
+  setTimeout(() => {
+    import('./services/agenteScan.cron.js')
+      .then((m) => m.rodarAgenteSeForHora('boot'))
+      .catch((err) => console.warn('[startup] agente falhou:', err instanceof Error ? err.message : 'erro desconhecido'));
+  }, 60_000).unref();
 
   // Self-heal: garante que os webhooks das instâncias gerenciadas usam a URL
   // atual (com segredo). Não-bloqueante — falha aqui não impede o servidor.
   import('./services/whatsapp/evolution.manager.js')
     .then((m) => m.ensureManagedWebhooks())
-    .catch((err) => console.warn('[startup] ensureManagedWebhooks falhou:', err));
+    .catch((err) => console.warn('[startup] ensureManagedWebhooks falhou:', err instanceof Error ? err.message : 'erro desconhecido'));
 });
